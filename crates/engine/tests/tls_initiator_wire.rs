@@ -964,3 +964,88 @@ fn the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits() {
          sleeping {sleeping}/{alive} ({states})"
     );
 }
+
+/// **An initiator whose venue refuses the handshake says so** — [ADR-0151]
+/// decision 4, the initiator's half, plan `2026-09-23-phase-3-found-defects`
+/// row D3.
+///
+/// The venue is a plain `rustls` server carrying `AES-256-GCM` only, so it
+/// answers this engine's `AES-128-GCM`-only `ClientHello` with
+/// `handshake_failure`. Before ADR-0151 that reached `dial` as the same
+/// `Admission::Failed` a vanished venue does and raised nothing.
+///
+/// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+#[test]
+fn an_initiator_refused_by_its_venue_says_so() {
+    let _counters = kernel_counters();
+    let (cert, key) = pki();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("bound").to_string();
+    listener.set_nonblocking(true).expect("non-blocking");
+
+    let mut p = rustls::crypto::ring::default_provider();
+    p.cipher_suites
+        .retain(|cs| cs.suite() == rustls::CipherSuite::TLS13_AES_256_GCM_SHA384);
+    let venue_cfg = std::sync::Arc::new(
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(p))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("TLS 1.3 is available")
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.clone()], key)
+            .expect("the certificate matches the key"),
+    );
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let (why_tx, why_rx) = std::sync::mpsc::channel::<String>();
+    let venue = std::thread::spawn(move || {
+        while stop_rx.try_recv().is_err() {
+            let Ok((mut sock, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            sock.set_nonblocking(false).ok();
+            sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut conn =
+                rustls::ServerConnection::new(venue_cfg.clone()).expect("a server connection");
+            // `complete_io` makes a last-gasp write of the alert before it
+            // returns the error.
+            let why = match conn.complete_io(&mut sock) {
+                Ok(_) => "the handshake completed".to_owned(),
+                Err(e) => format!("{e}"),
+            };
+            let _ = why_tx.send(why);
+        }
+    });
+
+    let handles = Handles::new();
+    let admin = handles.admin();
+    let observer = handles.observer();
+    let engine = initiator(
+        &addr,
+        initiator_cfg(),
+        client_tls(cert, false),
+        TlsProbe::Real,
+        handles,
+    );
+
+    let why = why_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the initiator never reached the venue");
+    eprintln!("venue: the handshake ended with {why}");
+    let refused = EventKind::TlsHandshakeRefused { count: 1 };
+    let seen = wait_for_all(&observer, &[refused], Duration::from_secs(5));
+    assert!(
+        seen.contains(&refused),
+        "the venue refused the handshake and the initiator said nothing; the \
+         stream held {seen:?}"
+    );
+
+    admin.shutdown(0);
+    let stopped = join_within(
+        engine,
+        Duration::from_secs(10),
+        "connect_and_serve_tls_with",
+    );
+    assert!(stopped.is_ok(), "came back with an error: {stopped:?}");
+    let _ = stop_tx.send(());
+    venue.join().expect("the venue did not panic");
+}

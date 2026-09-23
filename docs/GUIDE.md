@@ -1339,7 +1339,8 @@ listed in [SESSION-BEHAVIOUR.md §1](SESSION-BEHAVIOUR.md).
    know.
 
 The kinds today: `LoggedOn`, `Ended`, `EndedWithoutReason`, `Administered` (§8c),
-`ResendBeyondJournal` and `JournalRefused` (§6), `MessageLogLost` and `MessageLogUnsent` (§6c).
+`ResendBeyondJournal` and `JournalRefused` (§6), `MessageLogLost` and `MessageLogUnsent` (§6c),
+`TlsHandshakeRefused` (§9's TLS constraint 1).
 Gap detected, resend issued and reject sent are **not** here: they are message-rate, and
 nothing message-rate goes on the hot path until its cost has been measured.
 
@@ -1570,6 +1571,12 @@ and only the second means you may have to reconcile sequence numbers by hand.
 5. **Your application is not consulted.** There is no "let the dispatcher drain" phase, so an
    out-of-band dispatcher can lose work it had already accepted.
 
+**An initiator waiting to redial stops too.** `connect_and_serve` between a lost connection and
+its next dial is asleep on the engine's 100 ms timeout, not on `ReconnectInterval`, so
+`admin.shutdown` returns it in about 100 ms with `sessions() == 0` — there is nobody to say
+goodbye to. Before 2026-09-23 it returned only when the redial timer fired
+(`crates/engine/tests/reconnect_wire.rs::a_dial_waiting_to_reconnect_stops_when_asked_not_when_the_timer_fires`).
+
 Two more entries from STATUS's *Not proven* matter here: **nothing authenticates the holder
 of an `Admin`** (who you pass that handle to is the whole of the access control), and
 **nothing stops accepting during a shutdown**, so a socket arriving in the grace period is
@@ -1684,6 +1691,17 @@ Stated so you do not discover it in production:
      measured ([ADR-0005](decisions/ADR-0005-tls.md) question 2): `[measured 2026-09-14]` the
      kernel takes this suite on `7.0.0-31-generic`; no other suite and no minimum kernel has been
      measured ([DESIGN.md](DESIGN.md) §9, the TLS row).
+     **`[2026-09-23]` Such a counterparty is told, and you are told.** The handshake ends with a
+     TLS `handshake_failure` alert on the wire rather than a bare close, so its log names the
+     reason, and the engine raises `EventKind::TlsHandshakeRefused { count }` under
+     `ConnId::MAX` — on an acceptor for every refused socket, at most once per turn; on an
+     initiator with `count: 1` when the venue refused it. **Watch for it: it is the only trace
+     a wrong cipher suite leaves on your side**, since no session ever existed to end.
+     **A peer that connects and leaves is not counted** — a load balancer's TCP health check
+     raises nothing and is counted in `presession::Progress::gone` as before, so the event is
+     not buried under probes. The alert is offered to the socket once and never waited for; on
+     a socket too full to take it the counterparty still sees only the close, and the event is
+     raised all the same ([ADR-0151](decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md)).
   2. **You are told when a session leaves the kernel, and you can refuse it.**
      `[2026-09-10]` `EventKind::TlsFellBackToUserspace` names the connection that fell back, and
      `TlsRequireKernel=Y` refuses twice on either role: `serve_tls_requiring` **will not bind**

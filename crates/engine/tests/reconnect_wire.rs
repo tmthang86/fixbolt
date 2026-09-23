@@ -379,3 +379,209 @@ fn the_callers_observer_still_sees_the_logon_the_loop_acted_on() {
     engine.join().ok();
     venue.join().ok();
 }
+
+/// A port nobody listens on: bound for a free number, then let go, so every
+/// dial to it is refused and the loop goes straight into its reconnect wait.
+fn a_port_nobody_answers() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("bound").to_string();
+    drop(listener);
+    addr
+}
+
+/// The reconnect wait of both tests below: long enough that a loop which hears
+/// `Admin::shutdown` only when the timer fires is unmistakable against the
+/// 5 s deadline, and a flat ladder so the first refusal lands on it.
+const LONG_WAIT_MS: u64 = 20_000;
+
+/// **A dial waiting to reconnect stops when asked, not when the timer fires.**
+///
+/// Plan `2026-09-23-phase-3-found-defects` row D2. The wait between a refused
+/// dial and the next one used to be `idle_with(&[])` and `continue` — back to
+/// the top of the loop, past `engine.turn()`, which is where a shutdown is
+/// noticed, and past `shutdown_finished()`, which is where it is returned. So
+/// `Admin::shutdown` was heard only once the policy said `Now` again:
+/// `[measured 2026-09-23]` +26 s with `ReconnectInterval=30`, against
+/// QuickFIX/J.
+///
+/// **A deadline, not a join.** A loop that does not hear the stop does not
+/// fail, it waits out [`LONG_WAIT_MS`]; `recv_timeout` turns that into a red
+/// with a sentence (`docs/reference/a-reversal-can-fail-by-hanging.md`). The
+/// thread is left behind on a red, as the first test in this file leaves its
+/// own.
+#[test]
+fn a_dial_waiting_to_reconnect_stops_when_asked_not_when_the_timer_fires() {
+    let addr = a_port_nobody_answers();
+    let handles = Handles::new();
+    let admin = handles.admin();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let policy = Policy::new(LONG_WAIT_MS, LONG_WAIT_MS).expect("a legal pair");
+        let done = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _, _>(
+            &addr,
+            cfg(),
+            Never,
+            policy,
+            fixbolt_engine::recovery::NoRecovery,
+            fixbolt_engine::msglog::NoLog,
+            handles,
+        );
+        let _ = tx.send(done);
+    });
+
+    // Long enough for the first dial to be refused and the wait to begin.
+    std::thread::sleep(Duration::from_millis(300));
+    let asked = Instant::now();
+    admin.shutdown(0);
+    let done = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| {
+        panic!(
+            "a dial in its reconnect wait did not hear Admin::shutdown within \
+             5 s; it hears it only when the {} s timer fires",
+            LONG_WAIT_MS / 1000
+        )
+    });
+    let took = asked.elapsed();
+    let done = done.expect("connect_and_serve came back with an error");
+    assert_eq!(
+        done.sessions(),
+        0,
+        "nothing was connected while the loop waited, so there was nobody to \
+         say goodbye to: {done:?}"
+    );
+    println!(
+        "dial wait heard shutdown in {:.1} ms",
+        took.as_secs_f64() * 1e3
+    );
+}
+
+/// USER_HZ, the unit of `utime` and `stime` in `/proc/<pid>/task/<tid>/stat`.
+/// Copied from `tests/tls_initiator_wire.rs`, whose rustdoc says why it is a
+/// constant.
+#[cfg(target_os = "linux")]
+const CLK_TCK: f64 = 100.0;
+
+/// How long the dial thread's CPU is measured for: thirty of `Block`'s 100 ms
+/// timeouts. As `tests/tls_initiator_wire.rs`.
+#[cfg(target_os = "linux")]
+const CPU_WINDOW: Duration = Duration::from_secs(3);
+
+/// How many times the thread's scheduler state is read across that window.
+#[cfg(target_os = "linux")]
+const CPU_SAMPLES: usize = 30;
+
+/// The ceiling, and the same one as `tests/tls_initiator_wire.rs`, whose
+/// rustdoc argues it in both directions: a sleeping loop reads 0.00%, a
+/// spinning one 100%.
+#[cfg(target_os = "linux")]
+const CPU_CEILING_PCT: f64 = 20.0;
+
+/// `utime + stime` in clock ticks, and the scheduler state letter, for one
+/// thread of this process — `None` if the thread is gone. Copied from
+/// `tests/tls_initiator_wire.rs::task_cpu_and_state`; counted from the last
+/// `)` because `comm` may hold spaces.
+#[cfg(target_os = "linux")]
+fn task_cpu_and_state(tid: &str) -> Option<(u64, char)> {
+    let text = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).ok()?;
+    let (_, rest) = text.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let utime: u64 = fields.nth(10)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some((utime.saturating_add(stime), state))
+}
+
+/// **`standard` sleeps rather than spins while the dial waits to reconnect** —
+/// the guard on the fix above. Hearing the stop meant sending the wait through
+/// `engine.turn()`, and a wait that turns without sleeping is a `standard`
+/// engine that spins, which non-negotiable 4 counts as the same defect as an
+/// `hft` engine that sleeps.
+///
+/// Same set-up as the test above, no shutdown inside the window. The
+/// measurement is `tests/tls_initiator_wire.rs::the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`'s,
+/// on the other idle arm of the same loop:
+///
+/// 1. **CPU under [`CPU_CEILING_PCT`]** — a loop that spins fails this.
+/// 2. **The thread was alive** across the window: a thread that has died also
+///    costs 0%.
+/// 3. **Most reads found it sleeping** (`S`): a thread that is always `R` is
+///    spinning below the ceiling.
+///
+/// Its reversal is deleting the idle arm for "nothing connected, nothing
+/// handshaking" at the end of `dial`.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_dial_loop_sleeps_rather_than_spins_while_it_waits_to_reconnect() {
+    let addr = a_port_nobody_answers();
+    let handles = Handles::new();
+    let admin = handles.admin();
+    let (tid_tx, tid_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        // The tid of the thread that runs `dial`, from inside it, as the
+        // handshake test reads it.
+        let link = std::fs::read_link("/proc/thread-self").expect("/proc is mounted");
+        let path = link.to_string_lossy().into_owned();
+        let tid = path.rsplit('/').next().unwrap_or_default().to_owned();
+        let _ = tid_tx.send(tid);
+        let policy = Policy::new(LONG_WAIT_MS, LONG_WAIT_MS).expect("a legal pair");
+        let _ = fixbolt_engine::connect_and_serve::<Never, fixbolt_engine::journal::Store, _, _>(
+            &addr,
+            cfg(),
+            Never,
+            policy,
+            fixbolt_engine::recovery::NoRecovery,
+            fixbolt_engine::msglog::NoLog,
+            handles,
+        );
+    });
+    let tid = tid_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the dial thread never announced its tid");
+    // Settle: the first dial and its refusal are real work, and not the wait.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let (before, _) = task_cpu_and_state(&tid).expect("the dial thread's /proc/.../stat");
+    let started = Instant::now();
+    let mut sleeping = 0usize;
+    let mut alive = 0usize;
+    let mut states = String::new();
+    for _ in 0..CPU_SAMPLES {
+        std::thread::sleep(CPU_WINDOW / u32::try_from(CPU_SAMPLES).unwrap_or(1));
+        if let Some((_, state)) = task_cpu_and_state(&tid) {
+            alive += 1;
+            states.push(state);
+            if state == 'S' {
+                sleeping += 1;
+            }
+        }
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let (after, _) = task_cpu_and_state(&tid).expect("the dial thread vanished during the window");
+    let pct = 100.0 * (after - before) as f64 / CLK_TCK / elapsed;
+
+    // Stop it now rather than leave it dialling: with the fix this returns in
+    // about one `Block` timeout. Not asserted here — the test above is the one
+    // about the stop.
+    admin.shutdown(0);
+
+    assert_eq!(
+        alive, CPU_SAMPLES,
+        "the dial thread could not be read on every sample ({states}), so the \
+         figure below may be about a thread that had gone"
+    );
+    assert!(
+        pct < CPU_CEILING_PCT,
+        "the dial loop burned {pct:.2}% of a core over {elapsed:.2} s while \
+         waiting to reconnect, against a ceiling of {CPU_CEILING_PCT}% — it is \
+         spinning, and `standard` must give the core back (non-negotiable 4, \
+         ADR-0013). Found sleeping {sleeping} of {alive} reads ({states})"
+    );
+    assert!(
+        sleeping * 2 > alive,
+        "the dial thread was found sleeping in only {sleeping} of {alive} reads \
+         ({states}) — a thread mostly in R is spinning below the ceiling"
+    );
+    println!(
+        "dial reconnect wait: {pct:.2}% of a core over {elapsed:.2} s, found \
+         sleeping {sleeping}/{alive} ({states})"
+    );
+}

@@ -17,6 +17,26 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A TLS handshake that is refused is an event, and says which kind of ending it was.**
+  Four additions, all behind `--features tls` except the two that every transport and every
+  acceptor sees:
+  **`observe::EventKind::TlsHandshakeRefused { count: u64 }`**, raised under `ConnId::MAX` at most
+  once per turn by `serve_tls*` (every socket its pre-session stage let go for this reason) and
+  by `connect_and_serve_tls*` (`count: 1` per dial the venue refused);
+  **`transport::Transport::handshake_refused(&self) -> bool`**, defaulted to `false`, `true` on a
+  `tls::TlsTransport` whose handshake TLS refused;
+  **`presession::Progress::tls_refused: usize`**, such sockets counted apart from `gone`;
+  **`tls::Step::Refused`**, what `Handshake::pump` now returns when `rustls` reports an error,
+  where `Step::Failed` keeps meaning a socket that failed or a peer that left. Also
+  **`Engine::note_tls_refused(n)`**, beside `note_unframeable`, for a caller that drives its own
+  pre-session stage. **A peer that connects and leaves — a health check — is still `gone` and
+  raises nothing.** **Breaking for some callers:** `Progress` and `Step` are not
+  `#[non_exhaustive]`, so a struct literal or an exhaustive destructure of `Progress`, or an
+  exhaustive `match` on `Step`, no longer compiles until it names the new field or variant.
+  `EventKind` is `#[non_exhaustive]` and `Transport`'s new method has a default, so neither
+  breaks anyone. [ADR-0151](docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md); `crates/engine/tests/tls.rs`, `tls_wire.rs`,
+  `tls_initiator_wire.rs`.
+
 - **A secret is masked in the message log and never written to the journal.**
   **`fixbolt_engine::redact`** is a new public module: the constant **`MASKED`** names, in one
   place, every field the engine treats as a secret — `554` Password and `925` NewPassword
@@ -418,6 +438,23 @@ below describe what a first release would contain.
   answered as absent. `Durability::Fsync` and the default `SLOT_LEN = 512` were never affected.
   [ADR-0150](docs/decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md)
   decisions 1–3; `crates/engine/tests/journal.rs`.
+
+- **A TLS acceptor that refuses a handshake now tells the counterparty why.** With no cipher
+  suite in common, `rustls` queues a `handshake_failure` alert and returns the error; its
+  unbuffered API hands the alert out only on the next call, which this engine never made, so the
+  counterparty read a bare close (`EOF` in its log) and this end raised nothing. The handshake
+  driver now takes the queued alert (at most four more calls) and flushes it once, without
+  waiting; a `rustls` client reads `AlertReceived(HandshakeFailure)`
+  (`crates/engine/tests/tls.rs::a_client_with_no_suite_in_common_is_sent_a_handshake_failure_alert`).
+  The same applies on the initiator's side. [ADR-0151](docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md).
+
+- **`connect_and_serve` hears `Admin::shutdown` while it waits to reconnect.** The wait between a
+  lost or refused connection and the next dial skipped the engine's turn, which is where a
+  shutdown is noticed, so the stop was heard only when the reconnect timer fired —
+  `[measured 2026-09-23]` 26 s late with `ReconnectInterval=30`. The wait now goes round through
+  the turn on every wake of `Block`'s 100 ms timeout, and still sleeps: the stop returns within
+  about one timeout, and the waiting thread stays under a 20%-of-a-core ceiling and is found
+  sleeping (`crates/engine/tests/reconnect_wire.rs`, both asserted). Same for `connect_and_serve_tls`.
 
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
   a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;

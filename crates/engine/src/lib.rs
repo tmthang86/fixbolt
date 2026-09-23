@@ -822,6 +822,35 @@ where
         self.unframeable_prelogon = self.unframeable_prelogon.saturating_add(n);
     }
 
+    /// Tell this engine how many TLS handshakes were refused in front of it —
+    /// `presession::Progress::tls_refused` on an acceptor, `1` for a dial whose
+    /// handshake was refused on an initiator.
+    ///
+    /// `[2026-09-23]` [ADR-0151] decision 4. Raises
+    /// [`crate::observe::EventKind::TlsHandshakeRefused`] under [`ConnId::MAX`] when
+    /// `n > 0` and somebody has called [`Self::observer`]; otherwise it does
+    /// nothing, and `n == 0` — every turn of a healthy acceptor — reads no
+    /// clock. The event is one `Copy` value pushed into the fixed ring, so
+    /// this allocates nothing (non-negotiable 1).
+    ///
+    /// [ADR-0151]: ../../../docs/decisions/ADR-0151-a-tls-handshake-this-end-refuses-sends-its-alert-and-is-counted-and-a-peer-that-leaves-is-not.md
+    pub fn note_tls_refused(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let Some(shared) = self.observe.as_ref() else {
+            return;
+        };
+        let now = crate::clock::Clock::now_ms(&mut self.clock);
+        shared.emit(
+            ConnId::MAX,
+            now,
+            crate::observe::EventKind::TlsHandshakeRefused {
+                count: u64::try_from(n).unwrap_or(u64::MAX),
+            },
+        );
+    }
+
     /// A handle another thread reads this engine's state through.
     ///
     /// **Calling this is what makes the engine observable at all.** Until then
@@ -2605,14 +2634,17 @@ fn dial<
                     // to. A `Shutdown` reporting zero sessions is the truth
                     // here, not a placeholder.
                     crate::reconnect::Next::Stop => return Ok(Shutdown::default()),
-                    crate::reconnect::Next::At(_) => {
-                        // Nothing to wait on but the clock. The wait strategy's
-                        // own timeout bounds it — this does not sleep on a
-                        // deadline it chose, which is what non-negotiable 4 is
-                        // about.
-                        engine.idle_with(&[]);
-                        continue;
-                    }
+                    // **Not yet: fall through, do not `continue`.** The wait
+                    // is the third idle arm at the bottom of this loop, and
+                    // the way there passes `engine.turn()` — where a
+                    // shutdown is noticed — and `shutdown_finished()` — where
+                    // it is returned. A `continue` here skipped both, so
+                    // `Admin::shutdown` was heard only when the policy said
+                    // `Now` again: `[measured 2026-09-23]` +26 s with
+                    // `ReconnectInterval=30`. Plan
+                    // `2026-09-23-phase-3-found-defects` row D2;
+                    // `tests/reconnect_wire.rs::a_dial_waiting_to_reconnect_stops_when_asked_not_when_the_timer_fires`.
+                    crate::reconnect::Next::At(_) => {}
                     crate::reconnect::Next::Now => match connect(addr) {
                         Ok(t) => match wrap(t) {
                             Some(t) => handshaking = Some((t, now)),
@@ -2670,7 +2702,15 @@ fn dial<
                         policy.dropped(now);
                     }
                     Admission::Pending => handshaking = Some((t, since)),
-                    Admission::Failed => policy.dropped(now),
+                    Admission::Failed => {
+                        // ADR-0151 decision 4, the initiator's half: a venue
+                        // that refused the handshake is said, a venue that
+                        // vanished is not. Either way it is an ending.
+                        if t.handshake_refused() {
+                            engine.note_tls_refused(1);
+                        }
+                        policy.dropped(now);
+                    }
                 }
             }
         }
@@ -2710,6 +2750,17 @@ fn dial<
                     Some(source) => engine.idle_with(&[Interest::readable(source)]),
                     None => engine.idle(),
                 }
+            } else {
+                // **Nothing connected, nothing handshaking: the reconnect
+                // wait.** Nothing to wait on but the clock, and the wait
+                // strategy's own timeout bounds it — this does not sleep on a
+                // deadline it chose, which is what non-negotiable 4 is about.
+                // Each wake goes round through `turn()` above, so a shutdown is
+                // heard within one timeout rather than at the next dial.
+                //
+                // Deleting this arm is the reversal of
+                // `tests/reconnect_wire.rs::the_dial_loop_sleeps_rather_than_spins_while_it_waits_to_reconnect`.
+                engine.idle_with(&[]);
             }
         }
     }
@@ -3286,6 +3337,9 @@ fn pump<
         // The pre-session stage is in front of the engine and keeps its own
         // counts; this is the one line that lets an operator see this one.
         engine.note_unframeable(p.unframeable);
+        // ADR-0151 decision 4: a handshake TLS refused is an event, where a
+        // peer that left (`p.gone`) is not.
+        engine.note_tls_refused(p.tls_refused);
         moved |= p != presession::Progress::default();
         while let Some(i) = set.settled() {
             let Some(pending) = set.take(i) else { break };
