@@ -905,6 +905,13 @@ cho `cargo test`. Nên tách làm hai:
   (mới — bẫy: probe đúng về logic nhưng là syscall có thể ngủ; test đếm tự nhường chập chờn vì máy);
   ADR-0155 → *Accepted*.
 
+## Sửa 7 — 2026-09-24
+
+Test 2 của hàng P không đếm "≥ 10 000 lượt trong 50 ms" nữa: đếm lượt đo bộ lập lịch của máy
+(khoảng 8 400 khi máy rảnh, 8 khi máy đang build). Thay bằng: engine thread ở trạng thái chạy được
+(đọc `/proc/self/task/<tid>/schedstat`) ít nhất một nửa cửa sổ 50 ms khi có kết nối đang đỗ. Đảo
+ngược bằng `sleep(1 ms)` đọc 455 µs trên 50 ms, vẫn đỏ. Manager quyết theo mandate thường trực.
+
 ## Nhật ký giao hàng
 
 Điền vào mỗi khi đóng một phase: đã dựng gì, ở đâu, gate nào xanh, cái gì chưa làm và vì sao.
