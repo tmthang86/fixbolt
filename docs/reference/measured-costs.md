@@ -4388,7 +4388,7 @@ throughout. The ×1.68 step is gone. **But by the plan's own bound this is not f
 8.3 / 7.4 = **1.12**, and the plan and ADR-0096 decision 2 asked for ≤ 1.10; two points,
 8.3 (`k = 224`) and 8.2 (`k = 800`), sit above the line's band ceiling of 8.1. The residue is a
 spread of single-run points, not a step. The `one slot` line was **not** re-recorded (it reads
-7.4 against baseline 7.4 in all three `--strict` runs below), so the "not accepted, not
+7.4 / 7.6 / 7.4 against baseline 7.4, band [6.7, 8.1], in the three `--strict` runs below), so the "not accepted, not
 re-recorded" branch of decision 2 is what the line did; item 99 is closed on the cause, with the
 residual 1.12 left in *Not proven*.
 

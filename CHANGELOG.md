@@ -263,8 +263,8 @@ below describe what a first release would contain.
   (ADR-0096 decision 2, `STATUS.md` item 99).
 
 - **CI `gates` job** now runs `scripts/check-w2w-compare.sh` — the reversal of
-  `scripts/compare-w2w-procedures.sh`, which gained a 6 % FAIL / 4 % PASS case at each of p50,
-  p99 and p99.9 (ADR-0096 decision 4a).
+  `scripts/compare-w2w-procedures.sh` — which gained a 6 % FAIL / 4 % PASS case at each of p50,
+  p99 and p99.9 (ADR-0096 decision 4(a)); the comparator itself is unchanged.
 
 ### Changed
 
