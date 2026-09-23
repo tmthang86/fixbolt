@@ -4098,6 +4098,67 @@ all item 89 asks of them. Nothing was compiled to make D5 run, and its provenanc
 is a file's timestamp rather than a manifest line; that is weaker, and it is why the two boots'
 p50 figures are compared here as *tiers* rather than differenced.
 
+### Boot D, D5 — the admin gap, diffed
+
+`[analysed 2026-09-23, boot F step F4]` — no new measurement. The five D5 `perf record` files
+(`-e cycles -F 4999 -t <engine tid>`, 4 s, **no `-g`**) and the five `.stat` files above, read on
+the same desk with the same `w2w` binary (sha256 `1cbe3f0…`, re-checked at analysis time). Kernel
+symbols need root here (`kptr_restrict = 1`), so every command ran as
+`DEBUGINFOD_URLS= nice taskset -c 0-5 sudo -n env DEBUGINFOD_URLS= perf … -f`
+([the two perf traps](perf-report-hangs-on-debuginfod-and-refuses-a-root-owned-record.md)). The
+rule is [ADR-0095](../decisions/ADR-0095-a-drift-is-read-at-re-record-time-not-by-a-wider-band-a-segment-is-named-by-a-rule-and-the-desk-runs-strict-at-every-boot.md)
+decision 3, applied with `a` = N = 1 (`a-1` = `d5-n1-2`, `a-2` = `d5-n1-3`; the `n1-1` record was
+disqualified at the boot) and `b` = N = 16 (`b-1` = `d5-n16-1`, `b-2` = `d5-n16-2`; `d5-n16-3` run as
+two extra cross pairs). One pair, verbatim:
+
+```text
+DEBUGINFOD_URLS= nice taskset -c 0-5 sudo -n env DEBUGINFOD_URLS= perf diff -f -c delta-abs -s symbol -o 1 -t ';' d5-n1-2.data d5-n16-1.data
+```
+
+`Δns = share_b × p50_b − share_a × p50_a`, the p50 each record run printed. Σ Δns tracks
+`p50_b − p50_a` in every pair (+61.9 vs +61, +105.6 vs +130, +60.6 vs +101, +90.6 vs +90), and
+`perf diff`'s Δshare agrees with the two per-file `perf report`s to ≤ 0.02 pp. Unresolved
+addresses (≈ 5.3 % `[k]`, ≈ 0.3 % `[.]`, flat across runs) are pooled and never named.
+
+| cross pair | largest \|Δns\| | next rows |
+|---|---|---|
+| a-1 → b-1 | `native_queued_spin_lock_slowpath` **−425.6 ns** (−2.62 pp) | `inode_init_always_gfp` −44.9; `__sys_recvfrom` +44.4; `tcp_v4_rcv` +37.8; `tcp_recvmsg` +37.8 |
+| a-2 → b-2 | `native_queued_spin_lock_slowpath` **−400.4 ns** (−2.47 pp) | `arch_exit_to_user_mode_prepare` +56.4; `__memcg_slab_post_alloc_hook` +41.2; `_raw_spin_lock` −38.1 |
+| a-1 → b-2 | `native_queued_spin_lock_slowpath` **−427.2 ns** (−2.63 pp) | `__sys_recvfrom` +57.9; `fdget` +40.0; `Engine::turn` +36.3 |
+| a-2 → b-1 | `native_queued_spin_lock_slowpath` **−398.9 ns** (−2.46 pp) | `aa_inet_msg_perm` +50.8; `arch_exit_to_user_mode_prepare` +38.1; `tcp_v4_rcv` +36.3 |
+
+The two extra pairs against `d5-n16-3` lead with the same symbol (−435.3, −408.5 ns). The largest
+same-arm |Δshare| of that symbol is **0.16 pp** (`a-1 ↔ a-2`), against a smallest cross 2.46 pp.
+
+**What the rule returns, and why it is not the answer.** Mechanically, decision 3 names
+`native_queued_spin_lock_slowpath`: the largest |Δns| in all four cross pairs, one sign, 15× its
+same-arm noise. But that sign is **negative** in every pair while the gap is **positive**: a
+contended kernel spinlock that takes 2.66–2.82 % of the engine thread's samples at N = 1 takes
+0.13–0.19 % at N = 16. The symbol names what N = 16 *removes*, not what makes N = 16 slower, and
+the rule as written does not ask the named symbol's sign to match `turn_b − turn_a`. Looked for on
+the gap's own side, the largest **positive** Δns is a different symbol in 4 of the 6 cross pairs
+(`__sys_recvfrom`, `arch_exit_to_user_mode_prepare`, `aa_inet_msg_perm`, `fdget`), each ≤ +58 ns,
+the size of the largest same-arm move (+42 ns). So:
+
+**Item 89's +0.62 %: accept, unnamed.** IPC from the `.stat` files, N = 1 → N = 16:
+**0.7688 / 0.7689 / 0.7726 → 0.7902 / 0.7947** (`d5-n16-2`'s stat run was disqualified). The
+engine at N = 16 retires more instructions per cycle and spends the samples the spinlock gave up
+across the `recvfrom` and syscall-entry path — a spin loop spending its idle time elsewhere, which
+is a share and not a per-message cost (the *Boot B* caveat stands).
+
+Not settled by this, each for a stated reason:
+
+- **Who holds the spinlock.** The records have no callchains, so the caller of
+  `native_queued_spin_lock_slowpath` is unread.
+- **Why `accept4` is not thinned.** `do_accept` (0.74–1.00 %) and `inode_init_always_gfp`
+  (0.97–1.31 %) keep the same share at both N, where a 16× thinning would show. The candidate is
+  the reset of the countdown on every idle turn ([ADR-0069](../decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)
+  consequence 1, *Bad*) — a candidate, not measured here.
+- **Order.** The arms ran in sequence, all N = 1 then all N = 16, so a drift in time over
+  those 81 s (11:44:56 → 11:46:17) is not separated from N.
+
+Evidence: `target/boot-d-evidence/d5-analysis.txt` (gitignored, this desk only).
+
 ### What boot D did not settle
 
 - **The four remaining segments of item 93.** Only segment (3) has a cause. The `perf diff`
