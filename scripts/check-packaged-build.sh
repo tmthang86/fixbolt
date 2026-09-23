@@ -15,23 +15,24 @@
 # what a `.crate` upload would contain. **This must run after that dry run**;
 # see the check below.
 #
-# Two toolchains, because ADR-0160 decision 3's `rust-version = "1.88"` is
-# prose until something builds AT it (plan trap 7, reference page trap 3):
+# Two toolchains, because ADR-0160 decision 3's `rust-version` — raised from
+# "1.88" to "1.89" by ADR-0154 decision 1, for `File::try_lock` — is prose
+# until something builds AT it (plan trap 7, reference page trap 3):
 #
 #   - on the pinned default toolchain (`rust-toolchain.toml`, currently
 #     1.98.0): nine cases, each a single feature switched on beside the
 #     default, one crate at a time — "one crate turns every feature on"
 #     would hide a feature that is broken standing alone (plan trap "một
 #     crate tạm bật mọi feature che mất một feature hỏng khi đứng riêng").
-#   - on `+1.88.0`, the declared MSRV: the combined-everything build that
-#     reference page trap 4 already measured by hand
-#     (`cargo +1.88.0 check -p fixbolt --all-features` and `-p
+#   - on `+1.89.0`, the declared MSRV: the combined-everything build that
+#     reference page trap 4 already measured by hand on the then-declared
+#     `+1.88.0` (`cargo +1.88.0 check -p fixbolt --all-features` and `-p
 #     fixbolt-engine --all-features`, both finish on 1.88.0 and fail with
 #     E0658 on 1.85.0), plus `fixbolt --no-default-features` — the featureless
 #     build non-negotiable 6 requires, now proven on the floor toolchain too.
 #
-# WHAT IT CANNOT SEE: whether `+1.88.0` is installed (`rustup toolchain
-# install 1.88.0` is a step of the `package` CI job, run before this script;
+# WHAT IT CANNOT SEE: whether `+1.89.0` is installed (`rustup toolchain
+# install 1.89.0` is a step of the `package` CI job, run before this script;
 # locally, rustup normally fetches it on first use — read the output, not the
 # exit status, same as everywhere else in this repository); crates.io's own
 # server-side checks; a ninth optional dependency added to a manifest and
@@ -172,11 +173,12 @@ DEFAULT_CASES=(
   "fixbolt-codec-alone|fixbolt-codec|true|"
 )
 
-# The three on +1.88.0 (the declared rust-version): the combined-everything
-# build for the two crates that have more than one feature (the exact
-# combination reference page trap 4 measured by hand), and the featureless
-# build non-negotiable 6 requires, now proven on the floor toolchain.
-MSRV="1.88.0"
+# The three on +1.89.0 (the declared rust-version, ADR-0154 decision 1): the
+# combined-everything build for the two crates that have more than one
+# feature (the exact combination reference page trap 4 measured by hand on
+# the then-declared 1.88.0), and the featureless build non-negotiable 6
+# requires, now proven on the floor toolchain.
+MSRV="1.89.0"
 MSRV_CASES=(
   "fixbolt-all-features-msrv|fixbolt|true|standard,sbe"
   "fixbolt-engine-all-features-msrv|fixbolt-engine|true|standard,affinity,tls,fix50sp2"

@@ -3,7 +3,7 @@
 - **Status**: **Accepted — 2026-09-23** (manager, owner's standing mandate, with the packaging plan). Proposed 2026-09-23. Written by the architect (Opus) for phase 3 rows 6–8
   ([plan](../plans/2026-09-23-p3-packaging-and-first-release.md)). Accepted by the manager under
   the owner's standing mandate, or by the owner. It decides nothing ADR-0097 or ADR-0104 already
-  decided; it settles what building to them surfaced.
+  decided; it settles what building to them surfaced. **MSRV raised to 1.89 by ADR-0154.**
 - **Date**: 2026-09-23
 - **Deciders**: proposed by the architect; accepted by the manager or the owner.
 - **Related**: [ADR-0097](ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)

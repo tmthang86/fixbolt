@@ -986,16 +986,17 @@ jobs:
             echo "::error title=vendor/ is present::This job exists to prove the six crates package and build WITHOUT vendor/ (ADR-0160 decision 6). Something put a vendor/ directory on this runner before this step; find it and remove it rather than trusting this job's green." >&2
             exit 1
           fi
-      # ADR-0160 decision 3: `rust-version = "1.88"` is prose until something
-      # actually builds AT it. `check-packaged-build.sh` names `+1.88.0`
-      # explicitly (reference page trap 3's reversal: the same source built
-      # on 1.85.0 gives `error[E0658]` in fixbolt-codec's `src/template.rs`,
-      # its let chains). Installed here, as a named step, rather than left to
-      # rustup's on-demand fetch inside the check script — a missing
-      # toolchain is then this step failing, not a swallowed retry three
-      # steps later.
-      - name: install the declared MSRV (1.88.0) alongside the pinned default
-        run: rustup toolchain install 1.88.0 --profile minimal
+      # ADR-0160 decision 3: `rust-version` — raised from "1.88" to "1.89" by
+      # ADR-0154 decision 1, for `File::try_lock` — is prose until something
+      # actually builds AT it. `check-packaged-build.sh` names `+1.89.0`
+      # explicitly (reference page trap 3's reversal, measured on the
+      # then-declared 1.88.0: the same source built on 1.85.0 gives
+      # `error[E0658]` in fixbolt-codec's `src/template.rs`, its let chains).
+      # Installed here, as a named step, rather than left to rustup's
+      # on-demand fetch inside the check script — a missing toolchain is
+      # then this step failing, not a swallowed retry three steps later.
+      - name: install the declared MSRV (1.89.0) alongside the pinned default
+        run: rustup toolchain install 1.89.0 --profile minimal
       # `[measured 2026-09-23]` these scripts are new; nothing else in this
       # file's shellcheck step (lint-config job) names them, and that job is
       # out of scope for this plan step — checked here instead, once, rather
