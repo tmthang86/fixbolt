@@ -94,6 +94,19 @@ on the §9 desktop, `enp9s0` (Intel I211) cabled to a Mac mini, `hft` admin pace
 **EEE on added +14.6 µs to wire p50**, close to the ~16.5 µs 1000BASE-T wake
 time (raw pair is A/B only, never a figure). Check and fix it per [hft-playbook.md §4](hft-playbook.md).
 
+**Know what netfilter rules the engine host carries, and keep them off the session's path if
+you can.** `[measured 2026-09-23]` one A–B–A on the §9 desktop (Ryzen 7 3700X, mitigations on,
+`hft` settings of §9, loopback, `crates/engine/benches/payload.rs` `TCP loopback, 8 in 8 out`,
+5 runs per phase): with tailscaled's iptables-nft ruleset loaded the round trip read **12 829
+ns**, with the ruleset flushed **9 935 ns** — about **2.9 µs, 22.6 %** — and 12 819 ns once it
+was rebuilt. **One machine, one boot, one case**: an A/B, never a figure for your box. Every
+packet, loopback included, walks the hooks a VPN, a container runtime or a firewall installs,
+and on this desk that walk cost more than the engine's whole per-message user-space work. Read
+`nft list ruleset` on the host before you quote a latency, and if you remove rules to measure,
+restore them through the tool that owns them, not with `nft -f`
+([a-saved-iptables-nft-ruleset-does-not-load-back-through-nft](reference/a-saved-iptables-nft-ruleset-does-not-load-back-through-nft.md);
+figures in [measured-costs](reference/measured-costs.md) *Boot F, item 51*).
+
 ---
 
 ## 6. The resend ring in `hft` mode

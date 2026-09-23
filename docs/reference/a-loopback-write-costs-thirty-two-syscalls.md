@@ -73,10 +73,33 @@ connections take a ~3 µs slower path — a third procedure run without payload-
 read a tight 15 048–15 229 ns, matching the *fast* mode of the bimodal phases rather than the
 slow one.
 
-**Still untested:** the flush arm (`systemctl stop tailscaled` + `nft flush ruleset` for ten
+**Still untested** at the time (both since run — below and in *Item 51's last arm* of
+measured-costs): the flush arm (`systemctl stop tailscaled` + `nft flush ruleset` for ten
 minutes, separating *conntrack* from *chain traversal*) — skipped this boot, the owner was not at
 the desk — and suspect 2, the speculation mitigations, which needs a `mitigations=off` boot
 (the plan's boot C, `STATUS.md` open item 51).
+
+## The flush arm, tested — 2026-09-23: the host's netfilter rules are ~2.9 µs of it
+
+`[measured 2026-09-23]` boot F step F9 of
+[plans/2026-09-23-boot-f-closes-the-open-items-and-powers-off.md](../plans/2026-09-23-boot-f-closes-the-open-items-and-powers-off.md),
+§9 desktop, mitigations on, `check-machine.sh` `pass 17 fail 0 unknown 0`. A–B–A on the same
+`TCP loopback, 8 in 8 out` case, `taskset -c 6`, 5 runs per phase: medians **12 828.7 → 9 935.4
+→ 12 818.7 ns/op** — B is `systemctl stop tailscaled` plus `nft flush ruleset`, **−22.6 %,
+−2 893 ns**; A and A′ agree to 0.08 %. The whole ruleset was tailscaled's (iptables-nft tables
+`filter`, `nat`, `mangle` with `ts-*` chains; no Docker chain was loaded that boot), rebuilt
+identical modulo counters by restarting tailscaled
+([a-saved-iptables-nft-ruleset-does-not-load-back-through-nft](a-saved-iptables-nft-ruleset-does-not-load-back-through-nft.md)).
+Full table: [measured-costs.md](measured-costs.md), *Boot F, item 51*.
+
+So of the three suspects this page listed, all three are now measured on this desk, each on its
+own boot: conntrack on `lo` ~420 ns (3.3 %, boot B), the whole netfilter ruleset ~2.9 µs
+(22.6 %, boot F — whether conntrack still ran with no ruleset loaded was not read, so the two may overlap), the CPU mitigations 58.4 % (boot C, `mitigations=off`).
+They were never combined in one boot and are **not additive** — a mitigation's cost is paid
+partly inside the netfilter hooks. One machine, one boot per arm, one case, five runs per phase:
+an A/B, not a published figure. Item 51 closes at that tier
+([ADR-0096](../decisions/ADR-0096-a-figure-measured-elsewhere-meets-the-same-band-the-baseline-file-stays-out-of-the-heap-and-a-boot-may-rebuild-on-its-housekeeping-cores.md)
+decision 5); splitting the mitigation term per mitigation is decided, not measured.
 
 ## Why it was worth writing down anyway
 

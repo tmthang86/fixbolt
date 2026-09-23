@@ -134,3 +134,38 @@ write the answer down.
 `1.35` and an `n = 8` among neighbours that all said `1.10 / 20` — for sixteen days and four
 merged pull requests, and that is exactly why the boot that could finally re-measure it knew
 which single row to go after.
+
+## The second time, at run time
+
+`[measured 2026-09-23, boot F]` **ADR-0067 took the table out of the binary; it did not take the
+file's length out of the process.** Between two `--strict` runs of boot E the same pinned
+`journal` binary moved `one slot` from 7.4 to 12.4 ns (`STATUS.md` item 99), and the commit
+between the runs had lengthened `benches/baselines.tsv` by 671 bytes. Boot F tested that one
+variable on the old binary before any `perf record`: 12.4 on the 24 897-byte file, 7.4 on the
+24 226-byte one, 12.4 again after restoring it, and a sweep of the file padded by `k = 0 … 1024`
+bytes in steps of 16 that read **6.3 … 19.0 ns** — a band of 11.4 … 19.0 between 24 866 and
+25 026 bytes, 6.3 … 8.1 either side — while `walking` stayed 8.7 … 8.9 throughout. Tables:
+[measured-costs](measured-costs.md) *Boot F, item 99*.
+
+The mechanism is the one this page opened with, moved one layer: `harness.rs` read the file with
+`std::fs::read_to_string`, which sizes its buffer to the file, and that buffer is the one
+long-lived allocation made before the timed closure allocates its `Store` and its 191-byte
+message. The file's length set where the closure's data landed. **Fix** (`6b2833b`, ADR-0096
+decision 2): read into a fixed `String::with_capacity(1 << 20)`, so the block has one size
+whatever the file says; test `a_loaded_file_reads_into_a_fixed_one_mib_buffer` in
+`crates/codec/tests/bench_verdict.rs` asserts the capacity. The sweep is the desk regression,
+and on the new binary it read **7.4 … 8.3** — the step is gone, but max/min is **1.12**, over
+the 1.10 the plan asked for; two single points (8.2, 8.3) sit over the case's 8.1 ceiling.
+
+**And the fix moved a neighbour.** The same commit shifted `fixbolt-sbe`'s `walk nested group +
+varData` from 153.6 … 160.3 to 174.2 … 176.1 ns (same boot, interleaved A/B), with no change in
+`crates/sbe` and not through glibc's mmap threshold (`MALLOC_MMAP_THRESHOLD_=131072` read the
+same). Its line was re-recorded with that cause (`5576694`), and the question of how a bench's
+working set can be made independent of where the harness's own allocations end is `STATUS.md`
+item 101.
+
+What this adds to *The general shape*: **an input read at startup is part of the artifact for a
+case small enough to see its own addresses** — removing the expectation from the binary moved
+the self-reference from link time to run time, and each fix to a layout term is a new layout
+for every other case in the process. Point 1 above caught both: the gate was run after the
+change and allowed to go red.

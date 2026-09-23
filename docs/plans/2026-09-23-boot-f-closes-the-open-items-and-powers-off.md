@@ -426,3 +426,51 @@ review) · F6 10′ + 10′ rảnh · F7 15′ · F8 25′ · F9 10′ · F10 30
 ## Nhật ký giao hàng
 
 (điền khi đóng từng bước: F<k>, commit, gate quote, cái gì chưa làm và vì sao)
+
+Bằng chứng: `target/boot-f-evidence/` trên bàn (không commit). Máy: bàn §9 Ryzen 7 3700X, kernel
+7.0.0-31, dòng grub §9, mitigations bật; `check-machine.sh` `pass 17 fail 0 unknown 0` trước mỗi
+bước đo.
+
+- **F0** — `06172b6`: plan + ADR-0096 `Proposed`; PR nháp #95.
+- **F1** — item 99 trên binary cũ, trước mọi `perf record` (`f1-table.txt`): file 24 897 byte →
+  `one slot` 12.4 ×3; file 24 226 byte (`9374820`) → 7.7 / 7.4 / 7.4; khôi phục → 12.4. Quét k = 0…1024
+  bước 16: 6.3 … 19.0 ns, có một dải 11.4 … 19.0 ở 24 866 … 25 026 byte; `walking` đứng yên 8.7 … 8.9.
+  **H1 xác nhận.** `git diff` của `benches/` sạch sau bước.
+- **F2** — wakeup unpinned 20 lần, bỏ lần 1 (`f23.txt`): median epoll **5 089.0**, poll **4 939.0** ns;
+  **n = 19, thiếu một so với 20 plan ghi** (lần bỏ nằm trong 20 lần, không phải lần thứ 21).
+- **F3** — P1: p50 16 226 ns, 20/20 run hợp lệ.
+- **F4** — `8c66123`: item 89 *accept, unnamed*; luật ADR-0095 q.3 chọn ra một symbol ngược dấu với
+  khoảng chênh → ADR-0096 quyết định 6 (thêm điều kiện dấu), `2caadf4`.
+- **F5** — `6b2833b`: `Suite::figure`, buffer đọc cố định 1 MiB, hai dòng wakeup, comparator trong
+  job `gates`. Senior review sửa lời giải thích của ADR-0096 q.2 (brk, không phải `mmap`) — `2caadf4`.
+- **F6** — build lại một lần trên core 0–5 (`f6-build.txt`, 20 binary, `compiling=0`, alignment đọc
+  lại xanh); alloc 0 ở mọi case (`f6-alloc.txt`); P2 chạy 6 giây sau build: p50 16 256.
+- **F7** — ba record `--call-graph dwarf` cho item 96: giá bao gồm **≥ 7 021.6 ns** (children 8.49 %,
+  self 2.86 %, n = 3, khoảng 6 844.8–8 023.2 ns; 8.87 % của case), mất 0 mẫu, C1–C5 giữ; item 96 đóng.
+  Đọc được nhờ một cách vòng: unwinder libdw của perf 7.0.14 hỏng với PIE do LLD link (trang bẫy mới).
+  Lý do "≥" ghi trong ADR-0094 sai (tầng đầu không bị inline; vòng lặp `bad_group_count` mới bị
+  inline) — ghi chú cho architect, không sửa ADR-0094; F1c: sau một
+  `perf record -g`, `one slot` vẫn 12.4 ×3 → `perf` không phải nguyên nhân.
+- **F8** — P3 16 240 (header của chính nó đọc `pass 16 fail 1`, dòng máy yên 4 %); ba cặp so đều
+  `reproduced` (p50 lệch 0.19 / 0.09 / 0.10 %) → giả thuyết "ngay sau build" bị bác, item 85 đóng.
+  Quét trên binary mới: 7.4 … 8.3, **max/min 1.12 — không phẳng theo ngưỡng 1.10 của plan**; bậc ×1.68
+  đã mất; dòng `one slot` **không** ghi lại. `--strict` lần 1: exit 0, không case nào thiếu baseline.
+  Lần 2: đỏ đúng một case, `walk nested group + varData` 177.9 > 175.5. A/B trong cùng boot: binary
+  trước `6b2833b` 153.6 … 160.3, sau 174.2 … 176.1; `MALLOC_MMAP_THRESHOLD_` không đổi gì → ghi lại
+  dòng có nguyên nhân (`5576694`, 159.5 → 176.5, median 20 run); lần 3: exit 0, 0 / 0 / 0. Mở item 101.
+- **F9** — flush arm chạy (phiên điều khiển không đi qua Tailscale). Lần đầu hỏng hai chỗ: `awk
+  '{print $6}'` lấy nhầm chữ `out`, và `nft -f` không nạp lại được ruleset do iptables-nft dựng
+  (xt MASQUERADE); tailscaled khởi động lại đã dựng lại y hệt. Lần hai (`f9b.txt`): A 12 828.7 → B
+  9 935.4 (−22.6 %) → A′ 12 818.7 ns/op. Ruleset so lại giống hệt (bỏ qua bộ đếm).
+- **F10** — tài liệu: `STATUS.md` (*Start here* boot F, hàng 51, 85, 89, 96, 99, 100 đóng, hàng 101 mới), `measured-costs.md` *Boot F*, trang bẫy mới về iptables-nft, thêm đoạn ở
+  `recording-a-baseline-changed-the-baseline.md`, `a-loopback-write-costs-thirty-two-syscalls.md`,
+  `a-tight-spread-…md`, `DESIGN.md` §6 và §8, `best-practices-hft.md`. Commit đóng, CI run id, merge,
+  trả dòng grub desktop và tắt máy: manager ghi khi làm.
+
+**Chưa làm, nói thẳng:**
+- Hàng 76: plan ghi "76-b chờ chủ", nhưng hàng 76 đã đóng từ 2026-09-13 (PR #69) và
+  `CONFIGURATION.md` đã ghi "non-negative integer … zero means no heartbeats"; không có gì để chủ chọn,
+  nên không thêm dòng nào.
+- Tách từng mitigation của item 51: quyết định không đo (ADR-0096 q.5).
+- ADR-0068: không thêm câu, vì item 85 bị bác chứ không được xác nhận.
+- Quét item 99 sau sửa chưa đạt ngưỡng 1.10 — ghi trong *Not proven* và gắn với item 101.
