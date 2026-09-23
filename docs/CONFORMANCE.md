@@ -47,7 +47,13 @@ with no line of `crates/session/src` changed. Command: `cargo test -p fixbolt-co
 
 ## 2. Dictionary agreement with QuickFIX
 
-The generated tables were checked against QuickFIX's own generated C++ `[measured 2026-08-28]`:
+The generated tables were checked against QuickFIX's own generated C++ `[measured 2026-08-28]`.
+`[2026-09-23]` the generator's input moved from gitignored `vendor/quickfix/spec/` to
+`crates/dict/spec/`, shipped inside the crate under `NOTICE`
+([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md));
+the shipped files are byte-identical to the same pinned commit
+(`scripts/check-dict-spec-pin.sh`), and the tables generated from them hash identical to the
+pre-switch commit — the numbers below did not need re-measuring:
 
 | What | Result |
 |---|---|
@@ -680,14 +686,313 @@ command exited 0 — see
 
 ---
 
-## 10. FIXP spike against Artio `[measured 2026-09-23]`
+## 10. Interop against a real QuickFIX/J, both roles, plaintext and TLS
+
+ADR-0097 exit criterion 6, [ADR-0130](decisions/ADR-0130-a-jvm-enters-ci-as-a-second-oracle-quickfixj-by-pinned-jar-and-our-own-judge.md).
+§7 above is one independent opinion, `libquickfix` (C++), in plaintext only. This is a
+**second family entirely** — a JVM, a different codebase, a different reading of the same
+spec — and it is the FIX engine a stranger running fixbolt is likeliest to meet on the other
+side of a Java shop's gateway. It also closes the one thing §7 could not: TLS had no
+counterparty but this engine itself until this gate existed.
+
+```
+scripts/interop-qfj.sh
+```
+
+| Arm | fixbolt | QuickFIX/J (the judge) | Result |
+|---|---|---|---|
+| `qfj-acceptor-plain` | acceptor, `fixbolt::serve` | initiator | **7 / 7** |
+| `qfj-acceptor-tls` | acceptor, `serve_tls_requiring` | initiator, TLS 1.3 | **7 / 7**, `kernel` ok |
+| `qfj-initiator-plain` | initiator, `--role dial` → `connect_and_serve` | acceptor | **7 / 7** |
+| `qfj-initiator-tls` | initiator, `--role dial` → `connect_and_serve_tls` | acceptor, TLS 1.3 | **7 / 7**, `kernel` ok |
+
+Every arm also asserts `shutdown` (fixbolt returned through `Admin::shutdown`, not killed) and
+`clean` (no `35=3`, no `35=j` in either direction — a data-dictionary disagreement between QFJ
+and this engine is the likeliest cross-family surprise). Each TLS arm additionally asserts
+`kernel`: `TlsTxSw` and `TlsRxSw` in `/proc/net/tls_stat` each rose by at least 1, fixbolt
+printed **0** `TlsFellBackToUserspace` and **0** `EndedWithoutReason` events, and the settings
+file said `TlsRequireKernel=Y` — the kernel's own count is what an engine cannot write, so it is
+the evidence that TLS ran in the kernel rather than falling back to userspace and staying green
+by accident.
+
+**Why the initiator arms drive the engine's real door, not a pure session.** `libquickfix`'s
+initiator direction in §7 drives `Session<Initiator, 256>` by hand over a blocking socket — no
+TLS, and none possible, because the kTLS handover lives inside
+`fixbolt_engine::connect_and_serve_tls`. `tools/interop` gained a fourth role, `--role dial`
+(`tools/interop/src/dial.rs`), that reads a settings file and calls
+`fixbolt::connect_and_serve` / `fixbolt_engine::connect_and_serve_tls` with `desk::Desk` —
+the same production door a deployment uses — so that `qfj-initiator-plain` and
+`qfj-initiator-tls` are the same scenario with one settings line changed
+(`SocketUseSSL=Y`, `TlsRequireKernel=Y`), and a TLS-only red is attributable to TLS rather than
+to two different harnesses.
+
+**Mode: `standard` only**, at every arm, same as §7. `hft` is not exercised by this gate, as it
+is not by `libquickfix`'s; that stays in `STATUS.md` as not proven by interop.
+
+**Command, machine, versions** `[measured 2026-09-23]`: `scripts/interop-qfj.sh`, on the
+`DESIGN.md` §9 desk — AMD Ryzen 7 3700X, `tmt-B450-I-AORUS-PRO-WIFI`, Linux
+`7.0.0-31-generic`, Ubuntu 26.04.1 LTS, the desktop grub line, `standard` mode. QuickFIX/J
+`3.0.2`; `openjdk version "21.0.12.1" 2026-08-18` (Temurin-compatible OpenJDK, `mixed mode,
+sharing`). Three consecutive runs, all green; the summary line, unchanged across all three:
+
+```
+interop-qfj: 7 / 7 acceptor plain + 7 / 7 acceptor TLS + 7 / 7 initiator plain + 7 / 7 initiator TLS (+ shutdown 4 / 4, clean 4 / 4, kernel 2 / 2) against QuickFIX/J 3.0.2 on openjdk version "21.0.12.1" 2026-08-18
+```
+
+**CI run id: `<pending>`.** The blocking job `interop-qfj` (`.github/workflows/ci.yml`) has not
+yet run to a merge commit as this page is written; the manager fills the run id in the same
+commit that names it, per `CLAUDE.md` §9's last box — a desk run is not what closes this row.
+
+### The four transcripts, verbatim, from the desk run above
+
+Each is the arm's own section of the script's stdout, unedited (SLF4J's three warning lines are
+QuickFIX/J's own, printed on every JVM start with no provider on the classpath, and are kept
+rather than trimmed, because a "cleaned up" transcript is not the transcript that was read).
+
+```
+==> [qfj-acceptor-plain] fixbolt acceptor on 15660
+==> [qfj-acceptor-plain] QuickFIX/J initiator, judging
+SLF4J(W): No SLF4J providers were found.
+SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+qfj: event Session FIX.4.4:QFJINI->FIXBOLT schedule is daily, 00:00:00-UTC - 00:00:00-UTC
+qfj: event Created session: FIX.4.4:QFJINI->FIXBOLT
+qfj: event Configured socket addresses for session: [/127.0.0.1:15660]
+qfj: event MINA session created: local=/127.0.0.1:40362, class org.apache.mina.transport.socket.nio.NioSocketSession, remote=localhost/127.0.0.1:15660
+qfj: out  |8=FIX.4.4|9=73|35=A|34=1|49=QFJINI|52=20260923-15:41:05.698|56=FIXBOLT|98=0|108=2|141=Y|10=228|
+qfj: event Initiated logon request
+qfj: in  |8=FIX.4.4|9=73|35=A|34=1|49=FIXBOLT|52=20260923-15:41:05.707|56=QFJINI|98=0|108=2|141=Y|10=219|
+qfj: in  |8=FIX.4.4|9=106|35=B|34=2|49=FIXBOLT|52=20260923-15:41:05.707|56=QFJINI|33=1|58=fixbolt desk is up|148=fixbolt desk is up|10=208|
+qfj: event Logon contains ResetSeqNumFlag=Y, resetting sequence numbers to 1
+qfj: event Received logon
+qfj: in  |8=FIX.4.4|9=108|35=B|34=3|49=FIXBOLT|52=20260923-15:41:05.707|56=QFJINI|33=1|58=and open for orders|148=and open for orders|10=137|
+qfj-acceptor-plain: logon       ok    35=A 49=FIXBOLT 56=QFJINI 141=Y 108=2
+qfj: out  |8=FIX.4.4|9=123|35=D|34=2|49=QFJINI|52=20260923-15:41:05.721|56=FIXBOLT|11=QFJ-ORD-1|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:05|10=086|
+qfj: out  |8=FIX.4.4|9=123|35=D|34=3|49=QFJINI|52=20260923-15:41:05.721|56=FIXBOLT|11=QFJ-ORD-2|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:05|10=088|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=4|49=FIXBOLT|52=20260923-15:41:05.721|56=QFJINI|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=238|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=5|49=FIXBOLT|52=20260923-15:41:05.734|56=QFJINI|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=246|
+qfj-acceptor-plain: order       ok    35=8 at 34=[4, 5], 11= matched
+qfj: in  |8=FIX.4.4|9=56|35=0|34=6|49=FIXBOLT|52=20260923-15:41:07.816|56=QFJINI|10=190|
+qfj: out  |8=FIX.4.4|9=56|35=0|34=4|49=QFJINI|52=20260923-15:41:07.817|56=FIXBOLT|10=189|
+qfj-acceptor-plain: heartbeat   ok    35=0 without 112= within 5 s
+qfj: out  |8=FIX.4.4|9=69|35=1|34=5|49=QFJINI|52=20260923-15:41:07.821|56=FIXBOLT|112=QFJ-TR-1|10=162|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=7|49=FIXBOLT|52=20260923-15:41:07.821|56=QFJINI|112=QFJ-TR-1|10=163|
+qfj-acceptor-plain: testrequest ok    35=0 with 112=QFJ-TR-1: true
+qfj: out  |8=FIX.4.4|9=65|35=2|34=6|49=QFJINI|52=20260923-15:41:07.832|56=FIXBOLT|7=4|16=5|10=065|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=4|43=Y|49=FIXBOLT|52=20260923-15:41:07.832|56=QFJINI|122=20260923-15:41:05.721|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=249|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=5|43=Y|49=FIXBOLT|52=20260923-15:41:07.832|56=QFJINI|122=20260923-15:41:05.734|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=001|
+qfj-acceptor-plain: resend      ok    35=8 43=Y replayed at 34=[4, 5], wanted [4, 5]
+qfj: out  |8=FIX.4.4|9=70|35=1|34=10|49=QFJINI|52=20260923-15:41:07.842|56=FIXBOLT|112=QFJ-TR-2|10=202|
+qfj: in  |8=FIX.4.4|9=65|35=2|34=8|49=FIXBOLT|52=20260923-15:41:07.843|56=QFJINI|7=7|16=0|10=067|
+qfj: event Received ResendRequest FROM: 7 TO: infinity
+qfj: out  |8=FIX.4.4|9=99|35=4|34=7|43=Y|49=QFJINI|52=20260923-15:41:07.844|56=FIXBOLT|122=20260923-15:41:07.844|36=11|123=Y|10=011|
+qfj: event Sent SequenceReset TO: 11
+qfj: out  |8=FIX.4.4|9=70|35=1|34=11|49=QFJINI|52=20260923-15:41:07.853|56=FIXBOLT|112=QFJ-TR-3|10=206|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=9|49=FIXBOLT|52=20260923-15:41:07.853|56=QFJINI|112=QFJ-TR-3|10=172|
+qfj-acceptor-plain: gapfill     ok    35=2 in: yes, gap fill sent: yes, then 35=0 112=QFJ-TR-3: yes
+qfj: out  |8=FIX.4.4|9=77|35=5|34=12|49=QFJINI|52=20260923-15:41:07.866|56=FIXBOLT|58=interop-qfj done|10=216|
+qfj: in  |8=FIX.4.4|9=57|35=5|34=10|49=FIXBOLT|52=20260923-15:41:07.866|56=QFJINI|10=244|
+qfj: event Received logout request
+qfj: out  |8=FIX.4.4|9=57|35=5|34=13|49=QFJINI|52=20260923-15:41:07.867|56=FIXBOLT|10=248|
+qfj: event Sent logout response
+qfj: event Disconnecting: Received logout request
+qfj-acceptor-plain: logout      ok    35=5 from fixbolt: true
+qfj-acceptor-plain: PASS 7/7
+qfj-acceptor-plain: shutdown     ok    interop: acceptor stopped: Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+qfj-acceptor-plain: clean        ok    no 35=3, no 35=j
+```
+
+```
+==> [qfj-acceptor-tls] fixbolt acceptor on 15662
+==> [qfj-acceptor-tls] QuickFIX/J initiator, judging
+SLF4J(W): No SLF4J providers were found.
+SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+qfj: event Session FIX.4.4:QFJINI->FIXBOLT schedule is daily, 00:00:00-UTC - 00:00:00-UTC
+qfj: event Created session: FIX.4.4:QFJINI->FIXBOLT
+qfj: event Configured socket addresses for session: [/127.0.0.1:15662]
+qfj: event MINA session created: local=/127.0.0.1:56338, class org.apache.mina.transport.socket.nio.NioSocketSession, remote=localhost/127.0.0.1:15662
+qfj: out  |8=FIX.4.4|9=73|35=A|34=1|49=QFJINI|52=20260923-15:41:09.800|56=FIXBOLT|98=0|108=2|141=Y|10=217|
+qfj: event Initiated logon request
+qfj: in  |8=FIX.4.4|9=73|35=A|34=1|49=FIXBOLT|52=20260923-15:41:09.808|56=QFJINI|98=0|108=2|141=Y|10=225|
+qfj: in  |8=FIX.4.4|9=106|35=B|34=2|49=FIXBOLT|52=20260923-15:41:09.808|56=QFJINI|33=1|58=fixbolt desk is up|148=fixbolt desk is up|10=214|
+qfj: event Logon contains ResetSeqNumFlag=Y, resetting sequence numbers to 1
+qfj: event Received logon
+qfj: in  |8=FIX.4.4|9=108|35=B|34=3|49=FIXBOLT|52=20260923-15:41:09.808|56=QFJINI|33=1|58=and open for orders|148=and open for orders|10=143|
+qfj-acceptor-tls: logon       ok    35=A 49=FIXBOLT 56=QFJINI 141=Y 108=2
+qfj: out  |8=FIX.4.4|9=123|35=D|34=2|49=QFJINI|52=20260923-15:41:09.819|56=FIXBOLT|11=QFJ-ORD-1|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:09|10=102|
+qfj: out  |8=FIX.4.4|9=123|35=D|34=3|49=QFJINI|52=20260923-15:41:09.820|56=FIXBOLT|11=QFJ-ORD-2|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:09|10=096|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=4|49=FIXBOLT|52=20260923-15:41:09.820|56=QFJINI|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=242|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=5|49=FIXBOLT|52=20260923-15:41:09.834|56=QFJINI|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=251|
+qfj-acceptor-tls: order       ok    35=8 at 34=[4, 5], 11= matched
+qfj: in  |8=FIX.4.4|9=56|35=0|34=6|49=FIXBOLT|52=20260923-15:41:11.916|56=QFJINI|10=186|
+qfj: out  |8=FIX.4.4|9=56|35=0|34=4|49=QFJINI|52=20260923-15:41:11.917|56=FIXBOLT|10=185|
+qfj-acceptor-tls: heartbeat   ok    35=0 without 112= within 5 s
+qfj: out  |8=FIX.4.4|9=69|35=1|34=5|49=QFJINI|52=20260923-15:41:11.927|56=FIXBOLT|112=QFJ-TR-1|10=164|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=7|49=FIXBOLT|52=20260923-15:41:11.928|56=QFJINI|112=QFJ-TR-1|10=166|
+qfj-acceptor-tls: testrequest ok    35=0 with 112=QFJ-TR-1: true
+qfj: out  |8=FIX.4.4|9=65|35=2|34=6|49=QFJINI|52=20260923-15:41:11.939|56=FIXBOLT|7=4|16=5|10=068|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=4|43=Y|49=FIXBOLT|52=20260923-15:41:11.939|56=QFJINI|122=20260923-15:41:09.820|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=000|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=5|43=Y|49=FIXBOLT|52=20260923-15:41:11.939|56=QFJINI|122=20260923-15:41:09.834|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=009|
+qfj-acceptor-tls: resend      ok    35=8 43=Y replayed at 34=[4, 5], wanted [4, 5]
+qfj: out  |8=FIX.4.4|9=70|35=1|34=10|49=QFJINI|52=20260923-15:41:11.950|56=FIXBOLT|112=QFJ-TR-2|10=197|
+qfj: in  |8=FIX.4.4|9=65|35=2|34=8|49=FIXBOLT|52=20260923-15:41:11.950|56=QFJINI|7=7|16=0|10=061|
+qfj: event Received ResendRequest FROM: 7 TO: infinity
+qfj: out  |8=FIX.4.4|9=99|35=4|34=7|43=Y|49=QFJINI|52=20260923-15:41:11.952|56=FIXBOLT|122=20260923-15:41:11.952|36=11|123=Y|10=001|
+qfj: event Sent SequenceReset TO: 11
+qfj: out  |8=FIX.4.4|9=70|35=1|34=11|49=QFJINI|52=20260923-15:41:11.960|56=FIXBOLT|112=QFJ-TR-3|10=200|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=9|49=FIXBOLT|52=20260923-15:41:11.961|56=QFJINI|112=QFJ-TR-3|10=167|
+qfj-acceptor-tls: gapfill     ok    35=2 in: yes, gap fill sent: yes, then 35=0 112=QFJ-TR-3: yes
+qfj: out  |8=FIX.4.4|9=77|35=5|34=12|49=QFJINI|52=20260923-15:41:11.973|56=FIXBOLT|58=interop-qfj done|10=210|
+qfj: in  |8=FIX.4.4|9=57|35=5|34=10|49=FIXBOLT|52=20260923-15:41:11.973|56=QFJINI|10=238|
+qfj: event Received logout request
+qfj: out  |8=FIX.4.4|9=57|35=5|34=13|49=QFJINI|52=20260923-15:41:11.974|56=FIXBOLT|10=242|
+qfj: event Sent logout response
+qfj: event Disconnecting: Received logout request
+qfj-acceptor-tls: logout      ok    35=5 from fixbolt: true
+qfj-acceptor-tls: PASS 7/7
+qfj-acceptor-tls: shutdown     ok    interop: acceptor stopped: Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+qfj-acceptor-tls: clean        ok    no 35=3, no 35=j
+qfj-acceptor-tls: kernel       ok    TlsTxSw +1, TlsRxSw +1, 0 TlsFellBackToUserspace, 0 EndedWithoutReason, events lost 0, TlsRequireKernel=Y
+```
+
+```
+==> [qfj-initiator-plain] QuickFIX/J acceptor on 15661
+==> [qfj-initiator-plain] fixbolt --role dial
+SLF4J(W): No SLF4J providers were found.
+SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+qfj: event Session FIX.4.4:QFJACC->FIXBOLT schedule is daily, 00:00:00-UTC - 00:00:00-UTC
+qfj: event Created session: FIX.4.4:QFJACC->FIXBOLT
+interop-qfj: ready
+qfj: in  |8=FIX.4.4|9=67|35=A|34=1|49=FIXBOLT|52=20260923-15:41:12.700|56=QFJACC|98=0|108=2|10=143|
+qfj: event Accepting session FIX.4.4:QFJACC->FIXBOLT from /127.0.0.1:54634
+qfj: event Acceptor heartbeat set to 2 seconds
+qfj: event Received logon
+qfj: event Responding to Logon request
+qfj: out  |8=FIX.4.4|9=67|35=A|34=1|49=QFJACC|52=20260923-15:41:12.735|56=FIXBOLT|98=0|108=2|10=151|
+qfj: in  |8=FIX.4.4|9=106|35=B|34=2|49=FIXBOLT|52=20260923-15:41:12.737|56=QFJACC|33=1|58=fixbolt desk is up|148=fixbolt desk is up|10=184|
+qfj: in  |8=FIX.4.4|9=108|35=B|34=3|49=FIXBOLT|52=20260923-15:41:12.737|56=QFJACC|33=1|58=and open for orders|148=and open for orders|10=113|
+qfj-initiator-plain: logon       ok    35=A 49=FIXBOLT 56=QFJACC 141=null 108=2
+qfj: out  |8=FIX.4.4|9=123|35=D|34=2|49=QFJACC|52=20260923-15:41:12.743|56=FIXBOLT|11=QFJ-ORD-1|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:12|10=061|
+qfj: out  |8=FIX.4.4|9=123|35=D|34=3|49=QFJACC|52=20260923-15:41:12.743|56=FIXBOLT|11=QFJ-ORD-2|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:12|10=063|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=4|49=FIXBOLT|52=20260923-15:41:12.743|56=QFJACC|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=215|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=5|49=FIXBOLT|52=20260923-15:41:12.756|56=QFJACC|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=223|
+qfj-initiator-plain: order       ok    35=8 at 34=[4, 5], 11= matched
+qfj: in  |8=FIX.4.4|9=56|35=0|34=6|49=FIXBOLT|52=20260923-15:41:14.838|56=QFJACC|10=167|
+qfj: out  |8=FIX.4.4|9=56|35=0|34=4|49=QFJACC|52=20260923-15:41:14.839|56=FIXBOLT|10=166|
+qfj-initiator-plain: heartbeat   ok    35=0 without 112= within 5 s
+qfj: out  |8=FIX.4.4|9=69|35=1|34=5|49=QFJACC|52=20260923-15:41:14.842|56=FIXBOLT|112=QFJ-TR-1|10=138|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=7|49=FIXBOLT|52=20260923-15:41:14.842|56=QFJACC|112=QFJ-TR-1|10=139|
+qfj-initiator-plain: testrequest ok    35=0 with 112=QFJ-TR-1: true
+qfj: out  |8=FIX.4.4|9=65|35=2|34=6|49=QFJACC|52=20260923-15:41:14.853|56=FIXBOLT|7=4|16=5|10=041|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=4|43=Y|49=FIXBOLT|52=20260923-15:41:14.853|56=QFJACC|122=20260923-15:41:12.743|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=227|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=5|43=Y|49=FIXBOLT|52=20260923-15:41:14.853|56=QFJACC|122=20260923-15:41:12.756|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=235|
+qfj-initiator-plain: resend      ok    35=8 43=Y replayed at 34=[4, 5], wanted [4, 5]
+qfj: out  |8=FIX.4.4|9=70|35=1|34=10|49=QFJACC|52=20260923-15:41:14.864|56=FIXBOLT|112=QFJ-TR-2|10=179|
+qfj: in  |8=FIX.4.4|9=65|35=2|34=8|49=FIXBOLT|52=20260923-15:41:14.865|56=QFJACC|7=7|16=0|10=044|
+qfj: event Received ResendRequest FROM: 7 TO: infinity
+qfj: out  |8=FIX.4.4|9=99|35=4|34=7|43=Y|49=QFJACC|52=20260923-15:41:14.867|56=FIXBOLT|122=20260923-15:41:14.867|36=11|123=Y|10=248|
+qfj: event Sent SequenceReset TO: 11
+qfj: out  |8=FIX.4.4|9=70|35=1|34=11|49=QFJACC|52=20260923-15:41:14.875|56=FIXBOLT|112=QFJ-TR-3|10=183|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=9|49=FIXBOLT|52=20260923-15:41:14.875|56=QFJACC|112=QFJ-TR-3|10=149|
+qfj-initiator-plain: gapfill     ok    35=2 in: yes, gap fill sent: yes, then 35=0 112=QFJ-TR-3: yes
+qfj: out  |8=FIX.4.4|9=77|35=5|34=12|49=QFJACC|52=20260923-15:41:14.888|56=FIXBOLT|58=interop-qfj done|10=193|
+qfj: in  |8=FIX.4.4|9=57|35=5|34=10|49=FIXBOLT|52=20260923-15:41:14.888|56=QFJACC|10=221|
+qfj: event Received logout request
+qfj: out  |8=FIX.4.4|9=57|35=5|34=13|49=QFJACC|52=20260923-15:41:14.889|56=FIXBOLT|10=225|
+qfj: event Sent logout response
+qfj: event Disconnecting: Received logout request
+qfj-initiator-plain: logout      ok    35=5 from fixbolt: true
+qfj-initiator-plain: PASS 7/7
+qfj-initiator-plain: shutdown     ok    interop: dial stopped: Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+qfj-initiator-plain: clean        ok    no 35=3, no 35=j
+```
+
+```
+==> [qfj-initiator-tls] QuickFIX/J acceptor on 15663
+==> [qfj-initiator-tls] fixbolt --role dial
+SLF4J(W): No SLF4J providers were found.
+SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+qfj: event Session FIX.4.4:QFJACC->FIXBOLT schedule is daily, 00:00:00-UTC - 00:00:00-UTC
+qfj: event Created session: FIX.4.4:QFJACC->FIXBOLT
+interop-qfj: ready
+qfj: in  |8=FIX.4.4|9=67|35=A|34=1|49=FIXBOLT|52=20260923-15:41:45.705|56=QFJACC|98=0|108=2|10=154|
+qfj: event Accepting session FIX.4.4:QFJACC->FIXBOLT from localhost/127.0.0.1:39594
+qfj: event Acceptor heartbeat set to 2 seconds
+qfj: event Received logon
+qfj: event Responding to Logon request
+qfj: out  |8=FIX.4.4|9=67|35=A|34=1|49=QFJACC|52=20260923-15:41:45.752|56=FIXBOLT|98=0|108=2|10=156|
+qfj-initiator-tls: logon       ok    35=A 49=FIXBOLT 56=QFJACC 141=null 108=2
+qfj: out  |8=FIX.4.4|9=123|35=D|34=2|49=QFJACC|52=20260923-15:41:45.758|56=FIXBOLT|11=QFJ-ORD-1|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:45|10=079|
+qfj: out  |8=FIX.4.4|9=123|35=D|34=3|49=QFJACC|52=20260923-15:41:45.759|56=FIXBOLT|11=QFJ-ORD-2|21=1|38=100|40=1|54=1|55=EUR/USD|60=20260923-15:41:45|10=082|
+qfj: in  |8=FIX.4.4|9=106|35=B|34=2|49=FIXBOLT|52=20260923-15:41:45.759|56=QFJACC|33=1|58=fixbolt desk is up|148=fixbolt desk is up|10=194|
+qfj: in  |8=FIX.4.4|9=108|35=B|34=3|49=FIXBOLT|52=20260923-15:41:45.759|56=QFJACC|33=1|58=and open for orders|148=and open for orders|10=123|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=4|49=FIXBOLT|52=20260923-15:41:45.759|56=QFJACC|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=228|
+qfj: in  |8=FIX.4.4|9=131|35=8|34=5|49=FIXBOLT|52=20260923-15:41:45.760|56=QFJACC|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=224|
+qfj-initiator-tls: order       ok    35=8 at 34=[4, 5], 11= matched
+qfj: in  |8=FIX.4.4|9=56|35=0|34=6|49=FIXBOLT|52=20260923-15:41:47.842|56=QFJACC|10=168|
+qfj: out  |8=FIX.4.4|9=56|35=0|34=4|49=QFJACC|52=20260923-15:41:47.843|56=FIXBOLT|10=167|
+qfj-initiator-tls: heartbeat   ok    35=0 without 112= within 5 s
+qfj: out  |8=FIX.4.4|9=69|35=1|34=5|49=QFJACC|52=20260923-15:41:47.851|56=FIXBOLT|112=QFJ-TR-1|10=144|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=7|49=FIXBOLT|52=20260923-15:41:47.851|56=QFJACC|112=QFJ-TR-1|10=145|
+qfj-initiator-tls: testrequest ok    35=0 with 112=QFJ-TR-1: true
+qfj: out  |8=FIX.4.4|9=65|35=2|34=6|49=QFJACC|52=20260923-15:41:47.862|56=FIXBOLT|7=4|16=5|10=047|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=4|43=Y|49=FIXBOLT|52=20260923-15:41:47.862|56=QFJACC|122=20260923-15:41:45.759|6=0|11=QFJ-ORD-1|14=0|17=ORD-1|37=ORD-1|39=0|54=1|55=EUR/USD|150=0|151=100|10=246|
+qfj: in  |8=FIX.4.4|9=162|35=8|34=5|43=Y|49=FIXBOLT|52=20260923-15:41:47.862|56=QFJACC|122=20260923-15:41:45.760|6=0|11=QFJ-ORD-2|14=0|17=ORD-2|37=ORD-2|39=0|54=1|55=EUR/USD|150=0|151=100|10=242|
+qfj-initiator-tls: resend      ok    35=8 43=Y replayed at 34=[4, 5], wanted [4, 5]
+qfj: out  |8=FIX.4.4|9=70|35=1|34=10|49=QFJACC|52=20260923-15:41:47.873|56=FIXBOLT|112=QFJ-TR-2|10=185|
+qfj: in  |8=FIX.4.4|9=65|35=2|34=8|49=FIXBOLT|52=20260923-15:41:47.873|56=QFJACC|7=7|16=0|10=049|
+qfj: event Received ResendRequest FROM: 7 TO: infinity
+qfj: out  |8=FIX.4.4|9=99|35=4|34=7|43=Y|49=QFJACC|52=20260923-15:41:47.874|56=FIXBOLT|122=20260923-15:41:47.874|36=11|123=Y|10=000|
+qfj: event Sent SequenceReset TO: 11
+qfj: out  |8=FIX.4.4|9=70|35=1|34=11|49=QFJACC|52=20260923-15:41:47.883|56=FIXBOLT|112=QFJ-TR-3|10=188|
+qfj: in  |8=FIX.4.4|9=69|35=0|34=9|49=FIXBOLT|52=20260923-15:41:47.884|56=QFJACC|112=QFJ-TR-3|10=155|
+qfj-initiator-tls: gapfill     ok    35=2 in: yes, gap fill sent: yes, then 35=0 112=QFJ-TR-3: yes
+qfj: out  |8=FIX.4.4|9=77|35=5|34=12|49=QFJACC|52=20260923-15:41:47.896|56=FIXBOLT|58=interop-qfj done|10=198|
+qfj: in  |8=FIX.4.4|9=57|35=5|34=10|49=FIXBOLT|52=20260923-15:41:47.896|56=QFJACC|10=226|
+qfj: event Received logout request
+qfj: out  |8=FIX.4.4|9=57|35=5|34=13|49=QFJACC|52=20260923-15:41:47.897|56=FIXBOLT|10=230|
+qfj: event Sent logout response
+qfj: event Disconnecting: Received logout request
+qfj-initiator-tls: logout      ok    35=5 from fixbolt: true
+qfj-initiator-tls: PASS 7/7
+qfj-initiator-tls: shutdown     ok    interop: dial stopped: Shutdown { sessions: 0, said_goodbye: 0, acked: 0, timed_out: 0 }
+qfj-initiator-tls: clean        ok    no 35=3, no 35=j
+qfj-initiator-tls: kernel       ok    TlsTxSw +1, TlsRxSw +1, 0 TlsFellBackToUserspace, 0 EndedWithoutReason, events lost 0, TlsRequireKernel=Y
+```
+
+### What is not proven here
+
+- **`hft` is not exercised.** Same limit as §7's `libquickfix` gate, for the same reason: a
+  shared runner is the wrong place to spin a core at 100%.
+- **QuickFIX/J is QuickFIX's sibling, not a stranger** (ADR-0130 *Consequences*). Its reading
+  of FIX descends from the same project as `libquickfix`; a misreading the two share stays
+  green in both. This gate is a second family, not a third.
+- **The initiator's `ResendRequest` and `TestRequest` are exercised by the judge's script, not
+  by the engine's own initiative** — what `desk::Desk` and the session send unprompted is
+  narrower than what a hostile or slow counterparty could provoke.
+- **No client certificate (mTLS), no cipher suite or TLS version beyond the one pin, no FIXT
+  1.1 / FIX 5.0 SP2 with QuickFIX/J.** Out of scope by the plan, not yet measured.
+- **A TLS handshake with no cipher suite in common closes with no alert and no observable
+  event** on fixbolt's acceptor side — an engine observability gap found while building this
+  gate, not fixed here. [a-tls-handshake-with-no-common-suite-closes-without-a-word](reference/a-tls-handshake-with-no-common-suite-closes-without-a-word.md).
+- **The `tls_stat` counters this gate reads are machine-wide**, not per-process: necessary
+  evidence that the kernel took keys during the arm, never sufficient proof that it took *this*
+  arm's keys, on a machine running anything else that also sets up kTLS at the same moment. On
+  the CI runner and on a desk otherwise idle for the run, nothing else is expected to move them.
+
+---
+
+## 11. FIXP spike against Artio `[measured 2026-09-23]`
 
 Phase 3 row 9 (`docs/plans/2026-09-23-p3-fixp-spike.md`), ADR-0140. **Not a session, and not
 against the venue.** This is the first check anywhere in this repository of `fixbolt-sbe`'s
 encoder and decoder against a Binary EntryPoint codec Real Logic's own `sbe-tool` generated from
 a real venue schema, over a real socket — the SBE interop check `PRD.md` §2 still lists as
 unbuilt. `fixbolt-sbe` and `fixbolt-sbe-gen` are otherwise unchanged by this row except for the
-one generator fix section 10 below cites; nothing in `crates/` or `tools/` depends on the probe
+one generator fix section 11 below cites; nothing in `crates/` or `tools/` depends on the probe
 or the referee this section is about.
 
 **Command:**

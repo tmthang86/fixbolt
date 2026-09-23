@@ -30,6 +30,32 @@ pub fn read(rel: &str) -> String {
     })
 }
 
+/// The three dictionaries this crate ships, byte-identical to QuickFIX under a
+/// pin (`crates/dict/spec/`, ADR-0104). Never `vendor/`: since the switch,
+/// `crates/dict/spec/` is what `build.rs` reads and what a user downloading
+/// this crate from crates.io gets, so it is what these tests must check —
+/// `scripts/check-dict-spec-pin.sh` is the separate proof that this and
+/// `vendor/quickfix/spec/` still agree.
+pub fn dict_spec_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("spec")
+}
+
+/// Read one of the three shipped dictionaries, or explain exactly how to get
+/// one back.
+pub fn read_spec(rel: &str) -> String {
+    let path = dict_spec_dir().join(rel);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read {}: {e}\n\n\
+             This file should ship inside the fixbolt-dict crate itself\n\
+             (docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-\n\
+             with-a-notice.md) — a missing copy means a broken checkout, not something\n\
+             to fetch.",
+            path.display()
+        )
+    })
+}
+
 /// `FixFieldNumbers.h`: every field name QuickFIX knows, to its tag number.
 /// Every FIX version, not only 4.4 — which is what makes it a negative oracle
 /// as well as a positive one.
@@ -115,7 +141,7 @@ pub fn quickfix_msg_types() -> BTreeSet<String> {
 /// The **same input the generator reads**, so it is a name list and nothing
 /// more. Every claim about a number is settled against QuickFIX, not this.
 pub fn xml_field_names() -> BTreeMap<String, u32> {
-    let text = read("spec/FIX44.xml");
+    let text = read_spec("FIX44.xml");
     let mut out = BTreeMap::new();
     for chunk in text.split("<field ").skip(1) {
         let head = chunk.split('>').next().unwrap_or_default();
@@ -132,7 +158,7 @@ pub fn xml_field_names() -> BTreeMap<String, u32> {
 
 /// `spec/FIX44.xml`: field name to the XML's own type name.
 pub fn xml_field_types() -> BTreeMap<String, String> {
-    let text = read("spec/FIX44.xml");
+    let text = read_spec("FIX44.xml");
     let mut out = BTreeMap::new();
     for chunk in text.split("<field ").skip(1) {
         let head = chunk.split('>').next().unwrap_or_default();
@@ -184,7 +210,7 @@ pub fn quickfix_message_fields() -> BTreeMap<String, BTreeSet<u32>> {
 
 /// `spec/FIX44.xml`: the tags of one top-level section, descending into groups.
 pub fn xml_section_tags(section: &str) -> BTreeSet<u32> {
-    let text = read("spec/FIX44.xml");
+    let text = read_spec("FIX44.xml");
     let names = xml_field_names();
     let open = format!("<{section}>");
     let close = format!("</{section}>");

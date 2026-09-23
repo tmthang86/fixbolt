@@ -6,7 +6,7 @@ The FIXP spike (`scripts/fixp-spike.sh`, `spikes/fixp-probe/`, ADR-0140) is `fix
 conversation with a Real-Logic-generated Binary EntryPoint decoder over a real socket. This page
 is two things: what the protocol and Artio's 0.184 implementation of it actually do — each fact
 paired with the arm or check that stands behind it, or a plain statement that nothing does — and
-the traps this repository paid for while wiring it up. `docs/CONFORMANCE.md` §10 is the result;
+the traps this repository paid for while wiring it up. `docs/CONFORMANCE.md` §11 is the result;
 this page is why each part of it reads the way it does.
 
 ## The protocol, as Artio speaks it
@@ -32,7 +32,7 @@ This is a **manual reversal**, run once and restored (docs/plans/2026-09-23-p3-f
 The referee decodes `binary_entrypoint.xml` (`id="1" version="5" semanticVersion="5.6"`) — the
 copy Artio ships inside `artio-binary-entrypoint-codecs-0.184.jar`, dated 2022-08-24. B3 currently
 publishes `b3-entrypoint-messages-8.4.2.xml` (`version="6" semanticVersion="8.4.2"`). A green spike
-says fixbolt speaks **Artio's** dialect, not B3's production one; `docs/CONFORMANCE.md` §10 states
+says fixbolt speaks **Artio's** dialect, not B3's production one; `docs/CONFORMANCE.md` §11 states
 this plainly rather than letting the spike's summary line imply more.
 
 **Guarded by:** the schema's own SHA-256 pin in `scripts/fixp-spike.sh`
@@ -129,7 +129,7 @@ a locale-dependent collation order breaking that diff would either hide a real l
 
 **Guarded by:** both the `sort` in the `BEFORE`/`AFTER` snapshot and the `comm -13` that diffs them
 are run under `LC_ALL=C` explicitly (`scripts/fixp-spike.sh`, the snapshot lines and the comment
-directly above the diff). The three runs quoted in `docs/CONFORMANCE.md` §10 each printed
+directly above the diff). The three runs quoted in `docs/CONFORMANCE.md` §11 each printed
 `the run added nothing git can see`.
 
 ### 8. The two refusal arms are refused at different speeds, for different reasons

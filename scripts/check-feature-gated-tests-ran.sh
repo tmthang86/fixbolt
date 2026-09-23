@@ -89,10 +89,20 @@
 #            scope, not at the workspace's — see
 #            docs/reference/feature-flags-unify-across-a-workspace.md. This
 #            script deliberately has no --all / --workspace mode.
-#   FEATURE  the --features argument, e.g. tls.
+#   FEATURE  the --features argument, e.g. tls. **`-` means the default
+#            feature set** — no `--features` flag is passed at all. This is
+#            for a crate whose oracle tests are not behind a feature gate at
+#            all (fixbolt-dict's interop_quickfix_*.rs, gated only on
+#            vendor/ being present) but must still be PROVEN to have run,
+#            the same shape STATUS.md item 62 and this script's own header
+#            found for a feature-gated one. Spelled `-` rather than
+#            "default", so it cannot be confused with a feature actually
+#            named `default`.
 #   LOG      path to a file holding the stdout+stderr of
 #            `cargo test -p PACKAGE --tests --features FEATURE --no-fail-fast`
-#            (or a log that reads the same way — see the reversals below).
+#            (`cargo test -p PACKAGE --tests --no-fail-fast`, with no
+#            `--features` flag, when FEATURE is `-`) — or a log that reads
+#            the same way; see the reversals below.
 #
 # Needs: cargo, and jq (for the artifact JSON).
 #
@@ -114,6 +124,18 @@ package="$1"
 feature="$2"
 log_file="$3"
 
+# `-` = the default feature set: no `--features` flag at all. `feature_args`
+# is what actually reaches cargo; `feature_desc` is what messages print, so a
+# FAIL line reads "(default features)" rather than the confusing
+# "--features -".
+if [ "${feature}" = "-" ]; then
+  feature_args=()
+  feature_desc="(default features)"
+else
+  feature_args=(--features "${feature}")
+  feature_desc="--features ${feature}"
+fi
+
 if [ ! -f "${log_file}" ]; then
   echo "FAIL — log file not found: ${log_file}" >&2
   exit 2
@@ -126,10 +148,10 @@ cd "${root}" || exit 2
 # here depends on the order of two streams, because nothing here reads
 # cargo's human output at all: every line that is not a JSON object is
 # dropped by `fromjson?`, so cargo's stderr cannot be mistaken for data.
-build_out="$(cargo test -p "${package}" --tests --features "${feature}" --no-run --message-format=json 2>&1)"
+build_out="$(cargo test -p "${package}" --tests "${feature_args[@]}" --no-run --message-format=json 2>&1)"
 build_status=$?
 if [ "${build_status}" -ne 0 ]; then
-  echo "FAIL — cargo could not build the tests for -p ${package} --features ${feature}:" >&2
+  echo "FAIL — cargo could not build the tests for -p ${package} ${feature_desc}:" >&2
   echo "${build_out}" >&2
   exit 2
 fi
@@ -146,7 +168,7 @@ mapfile -t artifacts < <(
 
 binaries="${#artifacts[@]}"
 if [ "${binaries}" -eq 0 ]; then
-  echo "FAIL C0 — cargo reported no test binaries for -p ${package} --tests --features ${feature}. A count of zero from a tool that enumerates is a broken invocation, not a clean build." >&2
+  echo "FAIL C0 — cargo reported no test binaries for -p ${package} --tests ${feature_desc}. A count of zero from a tool that enumerates is a broken invocation, not a clean build." >&2
   exit 1
 fi
 
@@ -204,7 +226,7 @@ for entry in "${artifacts[@]}"; do
 done
 
 if [ "${listed_count}" -eq 0 ]; then
-  echo "FAIL C0 — listed nothing: ${binaries} test binaries for -p ${package} --features ${feature} and not one test in them. This is STATUS.md item 62 one layer up." >&2
+  echo "FAIL C0 — listed nothing: ${binaries} test binaries for -p ${package} ${feature_desc} and not one test in them. This is STATUS.md item 62 one layer up." >&2
   exit 1
 fi
 
@@ -265,7 +287,7 @@ for name in "${!listed_n[@]}"; do
     accounted=$((accounted + want))
   else
     accounted=$((accounted + got))
-    echo "FAIL R1 — ${name} is in the ${feature} build (listed by ${listed_by[${name}]}, ${want}×) and the log records it running ${got}×" >&2
+    echo "FAIL R1 — ${name} is in the ${package} ${feature_desc} build (listed by ${listed_by[${name}]}, ${want}×) and the log records it running ${got}×" >&2
     fail=1
   fi
 done
@@ -273,7 +295,7 @@ done
 # R2 — exactly the binaries the build produced, no more and no fewer.
 for base in "${!build_exe[@]}"; do
   if [ -z "${log_exe[${base}]+x}" ]; then
-    echo "FAIL R2 — ${build_exe[${base}]} (${base}) was built for --features ${feature} and no 'Running' line in the log names it" >&2
+    echo "FAIL R2 — ${build_exe[${base}]} (${base}) was built for -p ${package} ${feature_desc} and no 'Running' line in the log names it" >&2
     fail=1
   fi
 done
@@ -289,7 +311,7 @@ for name in "${!listed_n[@]}"; do
   n="${log_ignored[${name}]:-0}"
   if [ "${n}" -gt 0 ]; then
     ignored_count=$((ignored_count + n))
-    echo "FAIL R3 — ${name} is in the ${feature} build (listed by ${listed_by[${name}]}) and the log records it as ignored ${n}×" >&2
+    echo "FAIL R3 — ${name} is in the ${package} ${feature_desc} build (listed by ${listed_by[${name}]}) and the log records it as ignored ${n}×" >&2
   fi
 done
 if [ "${ignored_count}" -gt "${IGNORED_CEILING}" ]; then
@@ -297,7 +319,7 @@ if [ "${ignored_count}" -gt "${IGNORED_CEILING}" ]; then
   fail=1
 fi
 
-summary="${package} --features ${feature}: ${binaries} binaries, ${running_lines} Running lines, ${listed_count} listed, ${accounted} accounted for, ${ignored_count} ignored (ceiling ${IGNORED_CEILING})"
+summary="${package} ${feature_desc}: ${binaries} binaries, ${running_lines} Running lines, ${listed_count} listed, ${accounted} accounted for, ${ignored_count} ignored (ceiling ${IGNORED_CEILING})"
 
 if [ "${fail}" -ne 0 ]; then
   echo "check-feature-gated-tests-ran: FAIL — ${summary}" >&2

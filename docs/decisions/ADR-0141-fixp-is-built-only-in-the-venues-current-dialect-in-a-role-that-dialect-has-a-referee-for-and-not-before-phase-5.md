@@ -17,7 +17,7 @@
   decision 4 (`Session<Sbe<S>>` is rejected by design); [ADR-0042](ADR-0042-a-second-implementation-is-the-only-independent-opinion.md);
   [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
   decision 7 (no FIXP session build in phase 4); `DESIGN.md` D1, D3, D16; `CLAUDE.md` §2
-  non-negotiable 3; `docs/CONFORMANCE.md` §10;
+  non-negotiable 3; `docs/CONFORMANCE.md` §11;
   [b3-binary-entrypoint-facts](../reference/b3-binary-entrypoint-facts.md);
   [sbe-valueref-on-a-composite-member](../reference/sbe-valueref-on-a-composite-member.md).
 
@@ -38,7 +38,7 @@ a loopback socket, both directions checked field by field (Artio's decoder read 
 Negotiate fields including four `varData`; ours read NegotiateResponse, EstablishAck and
 Terminate), and Artio refused the two arms it had to. **What that settles:** the SBE stack
 interoperates with a Real-Logic-generated codec on a real venue schema, and a FIXP referee runs
-headless in a script and a CI job. **What it does not settle** (`docs/CONFORMANCE.md` §10 *What
+headless in a script and a CI job. **What it does not settle** (`docs/CONFORMANCE.md` §11 *What
 is not proven here*): any session behaviour; B3's own dialect; the acceptor role;
 `EstablishAck.nextSeqNo`, which Artio echoes from the client's Establish rather than tracks.
 
@@ -162,7 +162,7 @@ The plan's row 5 names them (i)–(vii); decisions 1–7 below answer them in th
    this repository of `fixbolt-sbe` against a decoder `sbe-tool` generated from a real venue
    schema, and that stays true whatever happens to FIXP. It keeps speaking Artio's 5.6 — a codec
    check needs a codec peer, not a dialect — and is retired only by a later ADR that names what
-   replaces it. `docs/CONFORMANCE.md` §10's run id is filled from its first run on a merged
+   replaces it. `docs/CONFORMANCE.md` §11's run id is filled from its first run on a merged
    commit.
 7. **(vii) A FIXP session is not phase 3 and not phase 4; phase 5 at the earliest, and only if the
    owner opens it.** Phase 3 ends with this ADR (ADR-0097 decision 5); ADR-0098 decision 7 keeps
