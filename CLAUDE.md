@@ -65,8 +65,10 @@ hand. Each names the decision it enforces.
    separately by `indexing_slicing = "deny"` and its debt ratchet. (D6)
 8. **`unsafe` needs a plan and a comment naming what proves it sound** — a Miri run, a fuzz
    target, a test. `unsafe_code = "warn"` is on at the workspace level.
-9. **No QuickFIX source is copied.** Its XML and `.def` files are data and a test oracle, fetched
-   into gitignored `vendor/`. If that ever changes, `NOTICE` becomes mandatory. (ADR-0001)
+9. **No QuickFIX source is copied, and exactly three QuickFIX files ship.**
+   `crates/dict/spec/FIX44.xml`, `FIXT11.xml` and `FIX50SP2.xml` are committed byte-identical to
+   the pin in `scripts/fetch-quickfix-assets.sh`, under `NOTICE`; the `.def` corpus, the
+   generated C++ and all source stay a test oracle in gitignored `vendor/`. (ADR-0001, ADR-0104)
 10. **No performance number without the committed benchmark that produced it, the machine it ran
     on, and the §9 settings in force.** A number missing any of the three is someone else's claim
     and is labelled as such.
@@ -84,6 +86,7 @@ the list. Each script's header states what it cannot see; read it before trustin
 | 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop), `scripts/check-no-kernel-sleep-by-ctxt.sh` (`hft` voluntary-context-switch count, tracer-free, [ADR-0072](docs/decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md)) | each script must also be tripped by the wrong mode; `hft` under TLS is unchecked |
 | 6 | `no-default-features` CI job **and** `scripts/check-no-optional-deps.sh`, per crate | cargo unifies features across one invocation — [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
 | 7 | `scripts/check-lint-config.sh` (lints deny, proven by reversal); `scripts/check-indexing-debt.sh` (ratchet: the count may only go down); `scripts/check-no-crate-root-allow.sh` (no crate-root `allow`/`expect`, no `warn` lowering a denied lint); `scripts/check-scratch-fixtures.sh` (a scratch crate outside the tree gets the pinned toolchain) | known gaps of the scratch-fixture gate are open by decision, ADR-0061 |
+| 9 | `scripts/check-dict-spec-pin.sh`: the three shipped files match their pinned sha256, the pin matches `fetch-quickfix-assets.sh`'s `PINNED_SHA`, and the two `NOTICE` copies are identical | it cannot see a QuickFIX file committed under another name or path — `git add` is still the control |
 
 ## 3. Read before you touch the code
 
@@ -216,8 +219,9 @@ Widening scope means **naming more cases**, never "run everything because it fee
   no CI. **Open the pull request as a draft at the first commit of a branch.**
 - A push cancels the in-progress run for the same branch: wait for the closing commit's run to
   finish before pushing a handoff commit.
-- `vendor/` is gitignored. **Never commit its contents** — that pulls QuickFIX's attribution clause
-  into this repository.
+- `vendor/` is gitignored. **Never commit its contents.** The only QuickFIX files in the tree are
+  the three under `crates/dict/spec/`, held to the pinned bytes by
+  `scripts/check-dict-spec-pin.sh`; committing any other needs a new ADR first (ADR-0104).
 
 ## 9. Definition of Done
 

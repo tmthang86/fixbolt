@@ -2,11 +2,20 @@
 name = "fixbolt-dict"
 version = "0.0.0"
 edition.workspace = true
-license.workspace = true
+# Not `license.workspace = true`: this is the only crate in the workspace
+# that ships QuickFIX-derived data (crates/dict/spec/, under NOTICE), so it
+# is the only crate whose licence expression differs from the workspace's
+# plain `MIT OR Apache-2.0`. `AND` rather than `OR`: a user may pick MIT or
+# Apache for fixbolt's own code, but the QuickFIX licence on the shipped
+# dictionaries applies regardless of that choice (ADR-0104 decision 6).
+# `LicenseRef-QuickFIX-1.0` has no SPDX identifier of its own; crates.io's
+# parser accepts a `LicenseRef-…` id, unproven until the first publish — the
+# documented fallback is `license-file = "NOTICE"` if it is ever refused.
+license = "(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0"
 repository.workspace = true
 rust-version.workspace = true
 publish = false
-description = "FIX 4.4 tables generated from the QuickFIX XML dictionary at build time"
+description = "FIX 4.4 tables generated from QuickFIX's XML dictionary, shipped under NOTICE (ADR-0104)"
 
 # `fix50sp2` adds **no dependency**: `roxmltree` is already an unconditional
 # build-dependency and the feature only decides whether `build.rs` reads a

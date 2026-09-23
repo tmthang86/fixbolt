@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Fetch the QuickFIX assets fixbolt uses as data and as a test oracle.
 #
-# These land in vendor/, which is gitignored. They are NEVER committed: doing so would
-# pull the QuickFIX Software License's attribution clause into this repository.
+# These land in vendor/, which is gitignored. They are NEVER committed —
+# except spec/FIX44.xml, spec/FIXT11.xml and spec/FIX50SP2.xml, which are
+# also shipped byte-identical under crates/dict/spec/, under NOTICE
+# (docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md).
+# Everything else here — the .def corpus, the generated C++, all source —
+# stays a test oracle in gitignored vendor/ and is never committed.
 # See docs/decisions/ADR-0001-relationship-to-quickfix.md.
 set -euo pipefail
 

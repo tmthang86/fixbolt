@@ -31,12 +31,12 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{read, xml_field_names};
+use common::{read, read_spec, xml_field_names};
 use fixbolt_dict::Fix44;
 
 /// `name -> the values FIX44.xml allows`.
 fn xml_enums() -> BTreeMap<String, BTreeSet<String>> {
-    let text = read("spec/FIX44.xml");
+    let text = read_spec("FIX44.xml");
     let mut out = BTreeMap::new();
     for chunk in text.split("<field ").skip(1) {
         let head = chunk.split('>').next().unwrap_or_default();
