@@ -17,6 +17,20 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A connection's journal is retired when it leaves, and its writer is awaited after serving.**
+  **`fixbolt_session::journal::Journal::retire(&mut self)`**, defaulted to a no-op, is called by
+  the engine when a connection is dropped; `FileJournal` under `Async` answers by telling its
+  writer to finish and detaching it, without a syscall or a wait. **`fixbolt_engine::journal::
+  wait_for_retired_writers(timeout: Duration) -> bool`** waits for every writer retired so far —
+  a count shared by the whole process — and says whether they all finished. Every `serve*`,
+  `connect_and_serve*` and sharded serve function calls it after its loop; **a caller driving
+  `Engine` directly must call it before exiting**, or a clean exit can lose what an `Async`
+  writer had not reached (`docs/GUIDE.md` §6b). **`fixbolt_engine::journal::writers_retired() ->
+  usize`** counts every writer retired in the process, ever, and only rises. **Breaking for some callers:** `Connection`
+  now has a `Drop`, so a field can no longer be moved out of one, and `Connection` and `Engine`
+  now bound their journal parameter `J: Journal` on the struct itself (their methods already
+  did). [ADR-0153](docs/decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md); `crates/engine/tests/retire.rs`.
+
 - **A TLS handshake that is refused is an event, and says which kind of ending it was.**
   Four additions, all behind `--features tls` except the two that every transport and every
   acceptor sees:
@@ -431,6 +445,13 @@ below describe what a first release would contain.
   `STATUS.md` item 75.
 
 ### Fixed
+
+- **A session with a `FileJournal` ending no longer makes the engine thread wait.** Removing a
+  finished connection dropped its journal on the engine thread, and the drop joined the `Async`
+  writer: a `futex` wait mid-serving — rule 4 broken in `hft`, a stall of every other session
+  in `standard`, up to the writer's 1 ms idle sleep each time. The journal is now retired and
+  its writer awaited after the serving loop.
+  [ADR-0153](docs/decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md); `crates/engine/tests/retire.rs`.
 
 - **The `Async` journal's writer thread and `FileLog`'s writer thread no longer burn a core
   while idle.** On an empty ring the first spun (`spin_loop`) and the second `yield_now`ed, in

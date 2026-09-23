@@ -143,7 +143,7 @@ pub struct Engine<
     D,
     C,
     W,
-    J,
+    J: SessionJournal,
     const N: usize,
     const RX: usize,
     const TX: usize,
@@ -1024,6 +1024,13 @@ where
     /// `wanted` and the command queue make, and
     /// `crates/engine/tests/shutdown.rs::an_engine_nobody_stopped_pays_one_load`
     /// is what keeps it falsifiable rather than asserted.
+    /// The grace an `Admin::shutdown` asked for, if one was asked. What the
+    /// serve functions give [`journal::wait_for_retired_writers`] after their
+    /// loop, ADR-0153 decision 4.
+    fn stop_grace_ms(&self) -> Option<u64> {
+        self.observe.as_ref().and_then(|s| s.stop_asked())
+    }
+
     fn begin_shutdown_if_asked(&mut self, now: u64) {
         if self.stopping.is_some() {
             return;
@@ -2599,8 +2606,39 @@ fn dial<
 >(
     addr: &str,
     cfg: Config,
-    mut wrap: F,
+    wrap: F,
     mut engine: InitiatorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    policy: crate::reconnect::Policy,
+    recovery: V,
+) -> Result<Shutdown, ServeError> {
+    let done = dial_loop(addr, cfg, wrap, &mut engine, policy, recovery);
+    let grace = engine.stop_grace_ms();
+    // Whatever the loop left is retired here, before the wait, not after it.
+    drop(engine);
+    after_serving(grace);
+    done
+}
+
+/// [`dial`]'s loop. It borrows the engine so that [`dial`] can drop it — and
+/// retire every journal it still holds — before waiting for their writers.
+#[cfg(all(feature = "standard", unix))]
+fn dial_loop<
+    T: Dialled,
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    W: Waiting,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+    F: FnMut(TcpTransport) -> Option<T>,
+>(
+    addr: &str,
+    cfg: Config,
+    mut wrap: F,
+    engine: &mut InitiatorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
     mut policy: crate::reconnect::Policy,
     mut recovery: V,
 ) -> Result<Shutdown, ServeError> {
@@ -3296,8 +3334,62 @@ fn pump<
     F: FnMut(TcpTransport) -> Option<T>,
 >(
     acceptor: Acceptor,
-    mut wrap: F,
+    wrap: F,
     mut engine: AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    table: presession::Table,
+    limits: presession::Limits,
+    recovery: V,
+) -> Result<Shutdown, ServeError> {
+    let done = pump_loop(acceptor, wrap, &mut engine, table, limits, recovery);
+    let grace = engine.stop_grace_ms();
+    // Whatever the loop left is retired here, before the wait, not after it.
+    drop(engine);
+    after_serving(grace);
+    done
+}
+
+/// The least [`after_serving`] waits for retired journal writers, whatever
+/// grace the shutdown was asked with.
+///
+/// `Admin::shutdown(0)` asks for the **counterparties** to be cut off at once;
+/// it does not ask for this process's own journal to be cut short, which is the
+/// loss ADR-0153 rejected as *"detach with no barrier"*. The wait returns as
+/// soon as the writers are done, so the floor costs nothing when they are
+/// quick. `[unmeasured]` how long a writer takes to drain a full 1 MiB ring;
+/// one second is a bound on a page-cache write, not a measurement.
+const RETIRED_WRITERS_FLOOR_MS: u64 = 1_000;
+
+/// After a serving loop has returned and its engine has been dropped — every
+/// journal in it retired — wait for their writers. ADR-0153 decision 4.
+///
+/// **Teardown, not serving**: this sleeps, which ADR-0152 decision 1 allows
+/// once the loop has returned. The timeout is the shutdown's grace, never less
+/// than [`RETIRED_WRITERS_FLOOR_MS`]. A writer still running when it passes is
+/// left to the process's exit; the serve function's result does not change,
+/// because what it reports is the sessions, and they have already ended.
+pub(crate) fn after_serving(grace_ms: Option<u64>) {
+    let ms = grace_ms.unwrap_or(0).max(RETIRED_WRITERS_FLOOR_MS);
+    let _ = journal::wait_for_retired_writers(std::time::Duration::from_millis(ms));
+}
+
+/// [`pump`]'s loop. It borrows the engine so that [`pump`] can drop it — and
+/// retire every journal it still holds — before waiting for their writers.
+fn pump_loop<
+    T: crate::transport::Transport,
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    A: Application,
+    W: Waiting,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+    F: FnMut(TcpTransport) -> Option<T>,
+>(
+    acceptor: Acceptor,
+    mut wrap: F,
+    engine: &mut AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
     table: presession::Table,
     limits: presession::Limits,
     mut recovery: V,

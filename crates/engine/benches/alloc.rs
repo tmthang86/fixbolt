@@ -1487,6 +1487,52 @@ fn main() {
          and the file"
     );
 
+    // ---- retire: a departing connection's journal, ADR-0153 ---------------
+    //
+    // `Connection`'s `Drop` calls `Journal::retire` on the engine thread in the
+    // middle of serving, so it may not allocate. Opened outside the window
+    // (`open` allocates the writer's buffer and waits for it), one message put
+    // outside it too, so the writer has something to finish; `retire()` alone
+    // is inside. **The path is live** when the process-wide retired count rose
+    // by one: a no-op `retire` (the trait's default) leaves it where it was,
+    // and its zero would be about nothing.
+    let retire_at = std::env::temp_dir().join(format!(
+        "fixbolt-alloc-bench-retire-{}.log",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&retire_at);
+    let mut retire_journal: fixbolt_engine::journal::FileJournal<64, 512> =
+        fixbolt_engine::journal::FileJournal::open(
+            &retire_at,
+            fixbolt_engine::journal::Durability::Async,
+        )
+        .expect("open the retire journal");
+    assert!(
+        fixbolt_session::journal::Journal::put(
+            &mut retire_journal,
+            1,
+            &wire("35=D\x0134=1\x0111=r\x0155=X\x0154=1\x01")
+        ),
+        "the retire journal kept its one message"
+    );
+    let retired_before = fixbolt_engine::journal::writers_retired();
+    let retire_allocs = count(|| {
+        fixbolt_session::journal::Journal::retire(std::hint::black_box(&mut retire_journal));
+    });
+    let retired_after = fixbolt_engine::journal::writers_retired();
+    assert_eq!(
+        retired_after,
+        retired_before + 1,
+        "retire() did not retire a writer, so its zero is about a path that \
+         did not run"
+    );
+    drop(retire_journal);
+    assert!(
+        fixbolt_engine::journal::wait_for_retired_writers(std::time::Duration::from_secs(5)),
+        "the retired writer finished"
+    );
+    let _ = std::fs::remove_file(&retire_at);
+
     // ---- redact-mask / redact-scan: ADR-0110's two functions --------------
     //
     // `mask` runs on the message log's writer and `carries_secret` on the
@@ -1545,7 +1591,8 @@ fn main() {
          log-busy {log_busy_allocs} origin-idle {origin_idle_allocs} \
          origin-busy {origin_busy_allocs} adopt-idle {adopt_idle_allocs} \
          logon-first {logon_first_allocs} \
-         redact-mask {redact_mask_allocs} redact-scan {redact_scan_allocs}"
+         redact-mask {redact_mask_allocs} redact-scan {redact_scan_allocs} \
+         retire {retire_allocs}"
     );
     assert_eq!(
         [
@@ -1581,9 +1628,10 @@ fn main() {
             mark_file_allocs,
             journal_async_busy_allocs,
             redact_mask_allocs,
-            redact_scan_allocs
+            redact_scan_allocs,
+            retire_allocs
         ],
-        [0; 33],
+        [0; 34],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }

@@ -122,6 +122,25 @@ pub trait Journal {
         None
     }
 
+    /// This journal's connection has ended: finish on your own time, and do
+    /// not make the caller wait.
+    ///
+    /// **A default no-op**, like [`Self::mark_active`]: a journal with nothing
+    /// running beside it has nothing to finish. It makes no syscall, reads no
+    /// clock and allocates nothing, so the session layer stays pure
+    /// (non-negotiable 2) — the session never calls it; the engine does.
+    ///
+    /// The engine calls it on the engine thread when a connection is dropped,
+    /// **in the middle of serving other sessions**, so an implementation must
+    /// not block, sleep or spin there. A journal whose writes are finished by a
+    /// thread of its own tells that thread to stop and lets it go; whoever
+    /// runs the engine waits for such threads only once serving has ended.
+    /// `fixbolt_engine::journal::FileJournal` is the one that does;
+    /// [ADR-0153](../../../docs/decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md).
+    ///
+    /// Nothing is called on a journal after this except its `Drop`.
+    fn retire(&mut self) {}
+
     /// The highest inbound sequence number this journal has been told about, or
     /// `None` if it has been told about none.
     ///

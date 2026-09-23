@@ -197,7 +197,8 @@
 //! file-async` and `--log file` writers to drain. [`pump`] marks that window
 //! with two lookups of paths that do not exist, `/fixbolt-w2w-serve-open`
 //! right before the loop and `/fixbolt-w2w-serve-close` right after it
-//! returns, then drops the engine explicitly. `pump` is the one loop every
+//! returns, then drops the engine explicitly and waits for the journal
+//! writers that drop retired (ADR-0153). `pump` is the one loop every
 //! `--mode`, `--tls` arm, `--path` and half runs, so every engine thread is
 //! marked. `scripts/check-no-kernel-sleep.sh` finds the two paths in its trace
 //! on the engine tid, judges only what lies between, and fails if either is
@@ -3004,14 +3005,20 @@ fn pump<
     if UNTIL_CLOSED {
         ARMED.store(false, Ordering::Relaxed);
     }
-    // The window closes here, **before anything is dropped**: dropping the
-    // engine drops its journal and message log, whose `close()` joins their
-    // writer threads — a futex wait the rule allows at teardown and requires
-    // for durability (ADR-0152 decision 1). The explicit drops below keep
-    // that teardown after this line rather than leaving it to scope order.
+    // The window closes here, **before anything is dropped**. Dropping the
+    // engine drops its message log, whose `close()` joins its writer — a futex
+    // wait the rule allows at teardown (ADR-0152 decision 1). A journal is
+    // different: every connection already retired its own when it left, and
+    // the engine's drop retires any still held, **without** joining the
+    // writer (ADR-0153). So this driver of `Engine` does what `GUIDE.md` §6b
+    // tells every such driver to: wait for the retired writers after the
+    // drop, before the process can exit with a journal half written.
     mark_serving_window(SERVE_CLOSE);
     drop(engine);
     drop(journals);
+    if !fixbolt_engine::journal::wait_for_retired_writers(std::time::Duration::from_secs(5)) {
+        eprintln!("w2w: a retired journal writer was still running after 5 s");
+    }
 }
 
 /// The path [`pump`]'s engine thread looks up right before its serving loop.

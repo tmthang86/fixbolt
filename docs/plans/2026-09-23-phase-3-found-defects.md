@@ -684,6 +684,12 @@ ADR-0153 *Context* §3.
 **Thứ tự đóng:** W **chỉ đóng sau J** — gate 10/10 của W là gate của J. D5 vẫn đóng sau W. Hàng C
 chạy lại mọi script chế độ với `W2W_EXTRA` trên commit cuối.
 
+## Sửa 4 — 2026-09-23
+
+- Sau vòng phục vụ, engine chờ các thread ghi journal đã cho nghỉ, tối đa bằng thời gian ân hạn lúc tắt nhưng **không dưới 1 giây** (`RETIRED_WRITERS_FLOOR_MS`, `crates/engine/src/lib.rs`).
+- Lý do: `Admin::shutdown(0)` chỉ muốn cắt phía đối tác ngay, chứ không muốn journal của chính mình bị cắt ngang. Shard và các đường thoát vì lỗi thì không có thời gian ân hạn nào. Chờ 0 giây sẽ mất dữ liệu `Async` khi thoát sạch — đúng cái ADR-0153 đã loại.
+- Hàm chờ trả về ngay khi các thread ghi xong, nên mức sàn không tốn gì khi chúng nhanh. Con số 1 giây chưa đo (`[unmeasured]`); manager chấp nhận ngày 2026-09-24.
+
 ## Nhật ký giao hàng
 
 Điền vào mỗi khi đóng một phase: đã dựng gì, ở đâu, gate nào xanh, cái gì chưa làm và vì sao.

@@ -49,7 +49,7 @@ pub enum Turn {
 pub struct Connection<
     T,
     R: Role,
-    J,
+    J: SessionJournal,
     const N: usize,
     const RX: usize,
     const TX: usize,
@@ -112,6 +112,28 @@ pub struct Connection<
 /// The bound is [`Session`]'s own, repeated: `Encoding` gives four operations
 /// and the session layer needs more than four, so the equalities that pin its
 /// view, its scratch and its skeleton travel with every type that holds one.
+/// **Every way a connection is dropped retires its journal first** —
+/// `Engine::turn`'s `swap_remove`, the `clear` at the end of a shutdown, the
+/// engine's own drop — so none of them can wait for a journal writer on the
+/// engine thread, and there is no call site to forget. That is why `J` is
+/// bounded on the struct itself: a `Drop` may not ask for more than the type
+/// does. ADR-0153 decision 2; `crates/engine/tests/retire.rs`.
+impl<
+    T,
+    R: Role,
+    J: SessionJournal,
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    E: Encoding,
+> Drop for Connection<T, R, J, N, RX, TX, APP, E>
+{
+    fn drop(&mut self) {
+        self.journal.retire();
+    }
+}
+
 /// See the impl on `Session` in `crates/session/src/lib.rs` for what each one
 /// buys. Nothing here reads a field or writes a template itself — this file
 /// moves bytes between a socket and a session — so the bound is here only to

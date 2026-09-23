@@ -15,7 +15,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `transport.rs` | `Transport`, `TcpTransport`, `Loopback`, `Waiting`, the `Io` result type |
 | `frame.rs` | `Framer` — cutting a byte stream into messages by `9=`, nothing parsed |
 | `presession.rs` | `Identity`, `PendingSet`, `Registry`, `Table` — who owns a socket before a session exists |
-| `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes |
+| `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes; its `Drop` retires the journal (ADR-0153, `tests/retire.rs`) |
 | `backpressure.rs` | The queue a connection uses when the counterparty stops reading (D10) |
 | `dispatch.rs`, `ring.rs` | `InlineDispatch`, `RingDispatch` over an `AtomicU8` SPSC ring (D4) |
 | `journal.rs` | `MemJournal`, `FileJournal`, `Reader`, `Store` — the resend store |

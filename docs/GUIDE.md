@@ -1072,6 +1072,22 @@ restart still gets it back, `43=Y` and all. Guarded by
 ([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md);
 [SESSION-BEHAVIOUR.md §4](SESSION-BEHAVIOUR.md)).
 
+**`[2026-09-24]` A session that ends does not make the engine wait for its journal's writer —
+and if you drive `Engine` yourself, you do the waiting.** When a connection leaves, the engine
+*retires* its journal (`Journal::retire`): a `FileJournal` under `Async` tells its writer thread
+to finish and lets it go, without joining it, because a join is a `futex` wait on the engine
+thread in the middle of serving everyone else. The writer finishes on its own time. **Every
+`serve*`, `connect_and_serve*` and sharded serve function waits for those writers after its loop
+has returned**, before it returns to you. **If you call `Engine::turn` or `Engine::run` yourself
+instead, call `fixbolt_engine::journal::wait_for_retired_writers(timeout)` after your loop and
+before the process exits** — otherwise a clean exit can lose what a writer had not yet written,
+the loss `Async` accepts on a crash and not on a clean stop. It returns `false` if the timeout
+passed first. Dropping the `Engine` retires every journal it still holds, so drop it *before*
+the wait. The compiler cannot hold this line; nothing but this paragraph and the rustdoc does.
+A `FileJournal` you own and close yourself (`close()`, or dropping one nobody retired) still
+joins its writer, as before
+([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md); `crates/engine/tests/retire.rs`).
+
 ### 6c. The message log: both directions, refusals included
 
 The journal answers *"what did we send, by sequence number"*. It cannot answer *"what did we

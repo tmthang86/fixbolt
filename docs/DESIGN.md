@@ -435,6 +435,21 @@ reaches the file up to 1 ms later
 [the trap](reference/an-async-journal-record-longer-than-its-writers-buffer-stopped-the-writer.md),
 [the idle writer](reference/a-writer-thread-no-gate-watched-spun-a-core.md)).
 
+**A departing connection's journal is retired, not closed, and its writer is awaited only after
+serving.** `Connection` has a `Drop` that calls `Journal::retire` (a defaulted no-op in
+`fixbolt_session`, so the session stays pure), so every way a connection leaves — `turn`'s
+`swap_remove`, a shutdown's `clear`, the engine's own drop — retires first. `FileJournal::retire`
+makes no syscall and never spins: it pushes `STOP` once (or, if the ring is full, tells the writer
+to stop when the ring runs dry), detaches the writer, and counts it among the process's retired
+writers; the writer uncounts itself as its last act. `journal::wait_for_retired_writers(timeout)`
+sleeps on that count, and every `serve*`, `connect_and_serve*` and sharded serve loop calls it
+**after** its loop has returned, with the shutdown grace (never under 1 s) as the timeout. A
+caller driving `Engine` directly must call it before exiting ([GUIDE.md §6b](GUIDE.md)).
+`[2026-09-23]` before this the drop joined the writer on the engine thread mid-serving — a
+`futex` wait in `hft`, a stall of every other session in `standard`
+([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md),
+[the trap](reference/a-connection-end-joined-its-journal-writer-on-the-engine-thread.md); `crates/engine/tests/retire.rs`).
+
 **The file is appended, not memory-mapped**: `mmap` means a dependency or `unsafe`, and the
 engine plan authorised neither ([ADR-0008](decisions/ADR-0008-journal-is-a-trait.md)). A
 record carries its own length, `seq(4) || len(4) || bytes`, and from format version 1 a CRC32,
@@ -557,6 +572,13 @@ runs the binary a second time in `standard` mode requiring that run to trip the 
 `scripts/check-standard-gives-the-core-back.sh` asserts four things at once, because CPU near
 zero is passable by three different broken engines (§6). `[measured 2026-08-30]` the 59
 definitions pass in `standard` too, with the engine blocking between steps.
+
+**Rule 4 holds when a session ends, not only while it runs.** A connection leaving mid-serving
+retires its journal instead of joining its writer (D7), so neither mode waits for a writer on the
+engine thread; the wait is teardown, after the serving loop, which ADR-0152 decision 1 allows.
+`crates/engine/tests/retire.rs` counts the engine thread's voluntary context switches while 20
+sessions with a `FileJournal` end: 0 in `hft`, no more than with a `MemJournal` in `standard`
+([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md)).
 
 ### D9 — Outbound messages are templates: a pre-sorted parts list, patched, not built
 

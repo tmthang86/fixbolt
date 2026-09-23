@@ -316,7 +316,7 @@ impl<const PRE: usize, J> Shards<PRE, J> {
                     }
 
                     let mut engine = make(i);
-                    loop {
+                    'serving: loop {
                         let mut moved = false;
                         loop {
                             match rx.try_recv() {
@@ -343,7 +343,7 @@ impl<const PRE: usize, J> Shards<PRE, J> {
                                 }
                                 Err(TryRecvError::Empty) => break,
                                 // The runtime was dropped. Shutdown.
-                                Err(TryRecvError::Disconnected) => return,
+                                Err(TryRecvError::Disconnected) => break 'serving,
                             }
                         }
                         moved |= engine.turn();
@@ -351,6 +351,13 @@ impl<const PRE: usize, J> Shards<PRE, J> {
                             engine.idle();
                         }
                     }
+                    // **Teardown, after the loop**: the engine is dropped —
+                    // every journal it still holds retired, none waited for —
+                    // and only then are their writers awaited. ADR-0153
+                    // decision 4. No shutdown grace reaches a shard, so the
+                    // floor is the timeout.
+                    drop(engine);
+                    crate::after_serving(None);
                 })?;
             threads.push(handle);
         }
