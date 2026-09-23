@@ -189,6 +189,20 @@
 //! allocated would fail that assertion loudly rather than quietly publish a
 //! number about `malloc`.
 //!
+//! # The serving window, marked for a syscall trace
+//!
+//! `[2026-09-23]` ADR-0152. Non-negotiable 4 governs the engine thread from
+//! the start of its serving loop to that loop's return — not setup before it,
+//! and not teardown after it, which **must** wait for the `--journal
+//! file-async` and `--log file` writers to drain. [`pump`] marks that window
+//! with two lookups of paths that do not exist, `/fixbolt-w2w-serve-open`
+//! right before the loop and `/fixbolt-w2w-serve-close` right after it
+//! returns, then drops the engine explicitly. `pump` is the one loop every
+//! `--mode`, `--tls` arm, `--path` and half runs, so every engine thread is
+//! marked. `scripts/check-no-kernel-sleep.sh` finds the two paths in its trace
+//! on the engine tid, judges only what lies between, and fails if either is
+//! missing or appears twice. A lookup is one syscall and allocates nothing.
+//!
 //! # Wire timestamps: NIC in to NIC out, on one clock
 //!
 //! `[2026-09-14]` step A3b of the same plan. `--wire-timestamps --nic <ifname>
@@ -2935,6 +2949,11 @@ fn pump<
     let extra: &[Interest] = listener.as_slice();
     let mut first: Option<ConnId> = None;
     let mut cadence = ListenerCadence::new(listener_every);
+    // ADR-0152 decision 2: the serving window opens here, after the engine is
+    // built and before its first turn — see the module note "The serving
+    // window". Nothing after this line and before `SERVE_CLOSE` may sleep in
+    // the kernel in `hft` mode; `scripts/check-no-kernel-sleep.sh` judges it.
+    mark_serving_window(SERVE_OPEN);
     while !stop.load(Ordering::Relaxed) {
         if cadence.poll_now() {
             while let Some(t) = acceptor.accept() {
@@ -2985,6 +3004,35 @@ fn pump<
     if UNTIL_CLOSED {
         ARMED.store(false, Ordering::Relaxed);
     }
+    // The window closes here, **before anything is dropped**: dropping the
+    // engine drops its journal and message log, whose `close()` joins their
+    // writer threads — a futex wait the rule allows at teardown and requires
+    // for durability (ADR-0152 decision 1). The explicit drops below keep
+    // that teardown after this line rather than leaving it to scope order.
+    mark_serving_window(SERVE_CLOSE);
+    drop(engine);
+    drop(journals);
+}
+
+/// The path [`pump`]'s engine thread looks up right before its serving loop.
+/// It does not exist; only the lookup is wanted. `scripts/check-no-kernel-sleep.sh`
+/// matches this string in a syscall trace — change both or neither.
+const SERVE_OPEN: &str = "/fixbolt-w2w-serve-open";
+
+/// The path looked up right after the serving loop returns. See [`SERVE_OPEN`].
+const SERVE_CLOSE: &str = "/fixbolt-w2w-serve-close";
+
+/// One metadata lookup of `path` — `statx` or `newfstatat`, whichever the libc
+/// makes — as a marker in a syscall trace, and nothing else: the result is
+/// discarded. `std` puts a path this short into a stack buffer and returns
+/// `ENOENT` as an OS error code, so the call allocates nothing
+/// (`benches/alloc.rs` does not see it; the combined run's `allocs 0` over the
+/// timed window, which lies inside the serving window, does not either).
+/// `[measured 2026-09-23]` on glibc the first such lookup in the process is
+/// followed by `std`'s one-time `statx(0, NULL, …) = -EFAULT` probe, so one
+/// bare `statx` sits just inside the window: not a sleeper, not a socket call.
+fn mark_serving_window(path: &str) {
+    let _ = std::fs::metadata(path);
 }
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
