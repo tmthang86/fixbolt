@@ -184,10 +184,14 @@ offset inside it.
 
 Proven by the layout-free counter, not by timing ([ADR-0102](../decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md)):
 the two binaries retire **the same instructions to 0.032 %**, and the new one retires fewer. The
-walk case is still +10 % slower in `cycles:u`, and moving the stack with ASLR off and an
-environment sweep moves neither arm ([measured-costs](measured-costs.md) *Desk-free, 2026-09-23*).
+walk case is still about +10 % slower in its own ns/op. The process as a whole takes ~+8.7 % more
+`cycles:u` (1.384 → 1.504 G at the low ends; `cycles:u` is per process, only ns/op is per case).
+Moving the stack with ASLR off and an environment sweep moves neither arm ([measured-costs](measured-costs.md) *Desk-free, 2026-09-23*).
 The same session closed the second time's open residue. With ASLR off, the bench's own sequence of
-allocation sizes and addresses is identical at every padding `k` on this harness, and moves by the
+allocation sizes and addresses is identical at all eight padding `k` on this harness (one md5
+over the list). The first k = 640 recording differed only because the bench panicked on an
+`OVER BASELINE` line; it was re-run with `FIXBOLT_BENCH_COUNT_ONLY=1`, which cannot panic. The
+sequence moves by the
 padding on `6b2833b^`, so the 1.12 was single-run dispersion, not a staircase.
 
 What this adds to *The general shape*: **the harness is code in every case's binary, and one

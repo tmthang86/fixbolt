@@ -4567,15 +4567,17 @@ sudo -n perf record -e 'probe_libc:*' -o cur-<k>.data -- setarch x86_64 -R tasks
 ```
 
 Each recording holds three processes — `setarch`, `taskset`, and the bench (`journal-0d5a61a`),
-56 probe events (entries and returns) of the bench's own at every `k` but one. **Read by process, the bench's own sequence of
-requested sizes *and returned addresses* is byte-identical at k = 0, 16, 624, 784, 800, 816 and
-1024** — ASLR-off addresses (`0x5555555be010` …; the two 1 MiB buffers at `0x7ffff7e6c010`, `mmap`ed
+56 probe events (entries and returns) of the bench's own. **Read by process, the bench's own sequence of
+requested sizes *and returned addresses* is byte-identical at all eight `k`** — one md5,
+`3a9f5ccf44aefd22af6b83895609b03c`, over the filtered (event, size, address) list — ASLR-off addresses (`0x5555555be010` …; the two 1 MiB buffers at `0x7ffff7e6c010`, `mmap`ed
 and freed, and `0x5555555bed50`, from brk, as ADR-0096 decision 2's revision says; the 2 MiB
-blocks at `0x7ffff79f7010` and `0x5555556bee30`). At k = 640 the sequence carries
-18 more events — nine allocations, between two cases and at exit (sizes 0x46 → 0x8c, a `String`
-doubling, then 0x60; six small ones at exit) — the shape of the comparator's report path after a timed case, i.e. that run read a case
-outside its band on the unisolated line, and every event it shares with k = 0 has the same
-address. **The reversal** (`6b2833b^`): the bench's own sequence differs where the file is read,
+blocks at `0x7ffff79f7010` and `0x5555556bee30`). **The first k = 640 recording was an invalid
+run**: it carried 18 more events, nine allocations between two cases and at exit, which the senior
+review traced to `format_inner` and `__rust_start_panic`. On the unisolated line a case read over
+its band, and the harness's `OVER BASELINE` panic formatted its message and unwound. The eight `k`
+were re-recorded with `FIXBOLT_BENCH_COUNT_ONLY=1` (the harness prints each case and skips the
+baseline comparison, so it cannot panic; `39f7c2b`). The md5 above is from that re-run, and all
+eight agree. **The reversal** (`6b2833b^`): the bench's own sequence differs where the file is read,
 `size=0x6141` (24 897 bytes) at k = 0 against `size=0x6548` (25 928 = 24 897 + 1024 + 7 bytes of
 `# pad ` and newline) at k = 1024, and the next heap addresses move by 0x400 (`0x5555555c5ea0` →
 `0x5555555c62a0`). So the claim ADR-0096 decision 2 needed — the heap after the read buffer does
@@ -4584,10 +4586,17 @@ case's single-run dispersion, not a function of `k` (ADR-0102 decision 5).
 
 ### PR B's step — one commit adds the work, a later one takes part of it back
 
-The default-feature `validate` bench (the four FIX 4.4 cases) built with the bench alignment flag
-at thirteen commits, `scripts/bench-instructions.sh -n 3` against each commit's first parent
-(`p3-table.txt`, `p3-all-pairs.txt`; two of the thirteen binaries reused from `fb-boot-d` (`wa`)
-and `fb-s9e` (`b1`) after their cargo fingerprints matched):
+The default-feature `validate` bench (the four FIX 4.4 cases) was built with the bench alignment
+flag at thirteen commits; two of the thirteen binaries were reused from `fb-boot-d` (`wa`) and
+`fb-s9e` (`b1`) after their cargo fingerprints matched. **The verdicts were first classified by
+hand** from three `perf stat` runs per binary (`p3-perf/*.csv`, `p3-table.txt`; the table below).
+They were then **re-derived by the fixed `scripts/bench-instructions.sh -n 3`**, parent against
+child for all 13 pairs (`p3-all-pairs-v2.txt`), and every verdict came out identical. The
+re-derivation reads every arm about 19.1 M instructions lower (`6fbe851` 38 631 922 381 against
+38 650 979 914, `179ab51` 41 794 553 969 against 41 813 724 604). That offset is nearly constant
+across arms and its source is not isolated; the differences between arms agree within 0.5 %
+(`179ab51` +3 396 692 337, `e673e8f` vs `29be3bd` +1 928 881 061 = +1 368.0 per iteration, 74.0 % of
+the target).
 
 | commit | `instructions:u` (min of 3) | ΔI vs first parent | ΔI per iteration | verdict |
 |---|---|---|---|---|
@@ -4603,8 +4612,12 @@ and `fb-s9e` (`b1`) after their cargo fingerprints matched):
 
 ΔI per iteration is ΔI / 1 410 000 (every case runs 10 000 + 7 × 200 000 calls) summed over the
 four cases. The rule (ADR-0102 decision 6): boot E's `wa → b1` step is 163.8 ns per iteration
-summed; × 3.6 GHz × `wa`'s IPC 3.134065 (`38 650 979 914 / 12 332 539 113`) = **1 848.10
-instructions**; carries at ≥ 924.05, layout at ≤ 184.81. **`179ab51` carries the step** (+2 409.01,
+summed; × 3.6 GHz × `wa`'s IPC 3.134065 = **1 848.10 instructions**; carries at ≥ 924.05, layout at
+≤ 184.81. `IPC_wa` is the run with the fewest instructions divided by *that run's* cycles
+(`38 650 979 914 / 12 332 539 113`). Using the mean of the three runs' cycles instead gives
+3.046, a target of 1 796.2 and a bar of 898.1. `179ab51` clears 50 % either way: at IPC 3.134 it
+still would at any clock up to 9.39 GHz (the senior review's bound). `cycles:u` is per process;
+only ns/op is per case. **`179ab51` carries the step** (+2 409.01,
 130.4 % of the target). `d7be83d` takes back −875.01 (−47.4 %, opposite sign). The whole span
 `wa → b1` is +1 362.07 per iteration, **73.7 %** of the target: most of item 95's step is work
 the session layer does since `179ab51`, not layout. The remaining ~26 % is not attributed; the 3.6

@@ -47,9 +47,9 @@ values of `k` already known to be equivalent, and the first reading was "`perf r
 randomised (`0x5c84b835c010` at one `k`, `0x5b6908acb010` at the next). `taskset` and the bench are
 `exec`'d after the personality is set, and their addresses are the ASLR-off ones
 (`0x55555555c010`, `0x5555555be010`), identical from run to run. Filtered to the bench's own
-`comm`, the sequence of sizes *and* returned addresses was byte-identical at seven of eight `k`.
-The eighth carried nine extra allocations from a reporting path, and every allocation it shared
-with the others had the same address ([measured-costs](measured-costs.md) *Desk-free,
+`comm`, the sequence of sizes *and* returned addresses was byte-identical at all eight `k`. The
+first k = 640 recording carried nine extra allocations, which were the bench's own `OVER BASELINE`
+panic; re-run with `FIXBOLT_BENCH_COUNT_ONLY=1`, it matches the other seven ([measured-costs](measured-costs.md) *Desk-free,
 2026-09-23 … Item 99's residue*).
 
 **The rule:** split a `perf script` of a wrapped command by `comm` (or pid) before comparing

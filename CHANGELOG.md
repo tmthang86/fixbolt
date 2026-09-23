@@ -45,7 +45,13 @@ below describe what a first release would contain.
   `unstable`. It tells a timed line moved by code layout from one moved by added work, which the
   timing band cannot. It reads `perf` as `${PERF:-perf}` and holds no `sudo`. It refuses a missing,
   zero or `<not counted>` counter and a workload that exits non-zero. Its verdict logic is tested
-  by `scripts/check-bench-instructions.sh` with a stub `perf`, in the `gates` job.
+  by `scripts/check-bench-instructions.sh` with a stub `perf`, in the `gates` job. It requires
+  `-n ≥ 2`, runs under `LC_ALL=C`, and refuses `<not supported>`, uncounted, empty or multiplexed
+  counts.
+- **`FIXBOLT_BENCH_COUNT_ONLY=1`** — a bench-harness switch (`crates/codec/benches/harness.rs`,
+  read once per process). Every case runs and prints its ns/op, but none is compared against
+  `benches/baselines.tsv`, so a binary whose case is `OVER` its line runs to the end instead of
+  panicking. `scripts/bench-instructions.sh` sets it for both arms. Unset, nothing changes.
   [ADR-0102](docs/decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md).
 - **Recovery reaches the sharded runtime.**
   **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and

@@ -639,7 +639,7 @@ jobs:
       # check-w2w-compare.sh does just above: the rule that decides whether a
       # re-record's cause is named *layout* is exactly as load-bearing as
       # `cargo test` and clippy.
-      - name: The instruction-count verdict rule, and its own reversal
+      - name: The instruction-count verdict rule, its stub self-test
         run: scripts/check-bench-instructions.sh
 
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a

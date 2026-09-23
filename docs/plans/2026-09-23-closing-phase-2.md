@@ -289,8 +289,10 @@ dưới đây là chẩn đoán, không phải con số công bố; số lệnh 
   trên `malloc`/`calloc`/`realloc` của libc. Cách đọc đầu tiên nói "`perf record` phá
   `setarch -R`". Senior developer ở P5 đọc lại theo cột `comm`: địa chỉ ngẫu nhiên là của chính
   tiến trình `setarch` (nó cấp phát trước khi tắt ASLR); còn tiến trình bench có kích thước **và
-  địa chỉ** giống hệt ở 7/8 giá trị `k`. Ở `k = 640` có thêm 9 lần cấp phát từ đường báo cáo;
-  mọi lần cấp phát chung có cùng địa chỉ. Bản đảo ngược `6b2833b^`: `0x6141` → `0x6548`, heap
+  địa chỉ** giống hệt ở 7/8 giá trị `k`. Senior review tìm ra lần chạy `k = 640` đầu tiên
+  không hợp lệ: bench panic ở một dòng `OVER BASELINE`, sinh thêm 9 lần cấp phát. Chạy lại cả
+  tám `k` với `FIXBOLT_BENCH_COUNT_ONLY=1` (`39f7c2b`) thì cả tám cho cùng một md5
+  `3a9f5ccf…`. Bản đảo ngược `6b2833b^`: `0x6141` → `0x6548`, heap
   phía sau dời 0x400. Hai bẫy ghi ở
   [tracing-a-rust-binarys-allocations](../reference/tracing-a-rust-binarys-allocations-ltrace-sees-nothing-and-perf-records-the-wrapper-too.md).
 - **P5 — xong (docs, chưa commit).** Ghi *Outcome* vào ADR-0102; `measured-costs.md` có mục mới

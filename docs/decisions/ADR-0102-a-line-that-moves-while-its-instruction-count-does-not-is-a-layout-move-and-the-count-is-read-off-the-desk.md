@@ -1,10 +1,11 @@
 # ADR-0102 — A timed line that moves while its instruction count does not is a layout move, and the count is read off the §9 line
 
-- **Status**: Accepted — 2026-09-23 (by the manager under the owner's standing mandate, at P6 of the closing-phase-2 plan). Proposed 2026-09-23. Written for
-  [closing-phase-2](../plans/2026-09-23-closing-phase-2.md); becomes *Accepted* at that plan's
-  merge under the owner's standing mandate (2026-09-18), and one word from the owner reverses it.
-  Decisions 1–5 state their verdict rules **before** the plan's rows run; the outcomes are
-  appended under *Outcome* by the plan's step P5 and change no rule above them.
+- **Status**: Accepted — 2026-09-23 (manager, standing mandate, P6). Proposed the same day for
+  [closing-phase-2](../plans/2026-09-23-closing-phase-2.md); accepted by the manager at that plan's
+  step P6 under the owner's standing mandate of 2026-09-18, and one word from the owner reverses
+  it. Decisions 1–6 state their verdict rules **before** the plan's rows run. The outcomes are
+  appended under *Outcome* by the plan's step P5, together with what changed after the first run
+  and why.
 - **Date**: 2026-09-23
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus) from `STATUS.md` item 101, the
   boot F *Not proven* list, `docs/reference/measured-costs.md` *Boot F, item 99* and *Boot F,
@@ -303,8 +304,19 @@ bought back is not this ADR's question; it is a plan of its own, as item 95's cl
 ## Outcome
 
 `[2026-09-23, plan rows P1–P4, desk on the desktop grub line; the tables are in
-[measured-costs](../reference/measured-costs.md) *Desk-free, 2026-09-23*]` The rules above were
-applied as written. None was changed after its run.
+[measured-costs](../reference/measured-costs.md) *Desk-free, 2026-09-23*]` The verdict rules were
+applied as written, and no threshold or bar changed after a run. **What did change after the
+first runs, and why:** the senior review of PR #101 found two things. First, a bench binary
+exits 101 when one of its cases reads `OVER BASELINE`, so `bench-instructions.sh` refused 12 of
+P3's 13 pairs, and the first k = 640 trace of P4 was a run that panicked. Second, the script
+accepted `<not supported>` and multiplexed counts. The fixes are in `39f7c2b`:
+`FIXBOLT_BENCH_COUNT_ONLY=1` in `crates/codec/benches/harness.rs` makes every case run and print
+without being compared (the default is unchanged and tested), and the script sets it for both
+arms, refuses unsupported, uncounted, empty, zero or multiplexed counts, requires `-n ≥ 2` and
+runs under `LC_ALL=C`. P3 was re-derived through the fixed script and P4's eight `k` were
+re-recorded with the switch. **The switch is itself an edit to the harness** — decision 4's
+point — so the bench binaries built after `39f7c2b` are a new layout for every case. No line was
+re-recorded for it, and the next `--strict` is read under decision 2.
 
 - **Decision 1 (the instrument).** `scripts/bench-instructions.sh` and its stub self-test
   `scripts/check-bench-instructions.sh` are committed (`5507238`) and run in CI's `gates` job. The
@@ -312,6 +324,9 @@ applied as written. None was changed after its run.
   `work-changed case: verdict line`, and restoring the threshold made it green again. One bug was
   found and fixed while building it: `PERF="sudo -n perf"` had been taken as one token, and the
   self-test now has a regression case for it.
+- **Decision 2 (in practice).** `bench-instructions.sh` sets `FIXBOLT_BENCH_COUNT_ONLY=1`, so it
+  runs on exactly the binary decision 2 sends it: one whose case is `OVER` its line, which
+  without the switch would panic before the count is complete.
 - **Decision 3 — item 101: closed, *layout*.** Five interleaved pairs: `instructions:u`
   4 408 882 961 … 4 408 883 746 (pre-`6b2833b`) against 4 407 487 868 … 4 407 559 228 (post).
   The script reads **0.031643 %, `same-work`**. `walk nested group + varData` read 152.2 … 161.0
@@ -320,10 +335,12 @@ applied as written. None was changed after its run.
   off read 152.9 … 160.8 (pre) and 174.2 … 181.3 (post) at every `k`. **Verdict: the binary's own
   layout, moved by `6b2833b`'s outlining of `Suite::figure`; not the heap, the mmap threshold or
   the stack.** No line moved.
-- **Decision 5 — item 99's residue: closed, the decision stands.** With ASLR off, the bench
-  process's own allocation sizes **and returned addresses** are byte-identical at k = 0, 16, 624,
-  784, 800, 816 and 1024. At k = 640 there are nine extra allocations from a reporting path, and
-  every allocation that run shares with the others has the same address. The reversal at
+- **Decision 5 — item 99's residue: closed, the decision stands.** The first k = 640 recording was
+  **invalid**: its nine extra allocations were the bench's own `OVER BASELINE` panic
+  (`format_inner`, `__rust_start_panic`) on the unisolated line. All eight `k` were re-recorded
+  with `FIXBOLT_BENCH_COUNT_ONLY=1`. With ASLR off, the bench process's own allocation sizes
+  **and returned addresses** are byte-identical at **all eight** `k` — one md5,
+  `3a9f5ccf44aefd22af6b83895609b03c`, over the filtered list. The reversal at
   `6b2833b^` requests `0x6141` (24 897 bytes) at k = 0 and `0x6548` (25 928 bytes) at k = 1024,
   and the heap after it moves by 0x400. **Verdict: the heap after the read buffer does not depend
   on the file's length, so F8's 1.12 is single-run dispersion.** Two traps cost the step an
@@ -332,7 +349,11 @@ applied as written. None was changed after its run.
   `setarch -R`". Both are in
   [tracing-a-rust-binarys-allocations](../reference/tracing-a-rust-binarys-allocations-ltrace-sees-nothing-and-perf-records-the-wrapper-too.md).
 - **Decision 6 — item 95's commit: named.** The target was 163.8 ns × 3.6 GHz × IPC_wa 3.134065 =
-  1 848.10 instructions per iteration, with bars at 924.05 and 184.81. **Verdict: `179ab51` (*a
+  1 848.10 instructions per iteration, with bars at 924.05 and 184.81. `IPC_wa` is the run with
+  the fewest instructions over that run's cycles. Taking the mean of the three runs' cycles gives
+  3.046 and a bar of 898.1, and the verdict is the same: at IPC 3.134, `179ab51` clears 50 % at
+  any clock up to 9.39 GHz. The verdicts were classified by hand first, then re-derived for all
+  13 pairs by the fixed script (`p3-all-pairs-v2.txt`), with identical results. **Verdict: `179ab51` (*a
   group member's value is asked after the count*) carries the step: +2 409.01 instructions per
   iteration, 130.4 % of the target.** `d7be83d` takes back −875.01 (−47.4 %, opposite sign).
   `31507b5`, the merge that brought PR B's first five commits onto `wa`, adds −165.93 (−9.0 %).

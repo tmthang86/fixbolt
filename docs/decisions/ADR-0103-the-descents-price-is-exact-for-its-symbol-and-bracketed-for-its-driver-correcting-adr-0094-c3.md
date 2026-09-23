@@ -1,9 +1,9 @@
 # ADR-0103 — The descent's price is exact for its symbol and bracketed for the loop that drives it; ADR-0094's reason for "≥" was wrong
 
-- **Status**: Accepted — 2026-09-23 (by the manager under the owner's standing mandate, at P6 of the closing-phase-2 plan). Proposed 2026-09-23. Written for
-  [closing-phase-2](../plans/2026-09-23-closing-phase-2.md); becomes *Accepted* at that plan's
-  merge under the owner's standing mandate (2026-09-18), and one word from the owner reverses it.
-  It **amends [ADR-0094](ADR-0094-the-descent-is-priced-by-attribution-inside-one-binary-not-by-a-second-binary.md)
+- **Status**: Accepted — 2026-09-23 (manager, standing mandate, P6). Proposed the same day for
+  [closing-phase-2](../plans/2026-09-23-closing-phase-2.md); accepted by the manager at that plan's
+  step P6 under the owner's standing mandate of 2026-09-18, and one word from the owner reverses
+  it. It **amends [ADR-0094](ADR-0094-the-descent-is-priced-by-attribution-inside-one-binary-not-by-a-second-binary.md)
   decision 2, condition C3**; ADR-0094 is Accepted and its substance is not edited (`CLAUDE.md`
   §5) — at acceptance its status block gains one line pointing here, as ADR-0095's did for
   ADR-0096 decision 6. Nothing new was measured: every number below is read from boot F's
