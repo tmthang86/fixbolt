@@ -38,25 +38,24 @@ places use the same bytes for three different reasons; none of them is "the corp
    for `exponent <= 0`, which is exactly why. Guarded by
    `a_positive_exponent_reads_back_as_its_integer`, which names the reason in its own text.
 
-3. **A zero mantissa with a positive exponent has two rules that conflict, and one was chosen
-   without a test.** Decision 4 says both "no leading zero other than a single `0`" and, for
-   `exponent > 0`, "that many `0`s and no point" — for `Decimal::new(0, e)` with `e > 0` those
-   disagree (`0` vs `000…0`). `Decimal::format`'s rustdoc resolves it explicitly: a zero mantissa
-   is always written `0`, whatever the exponent, since the all-zeros form would break the
-   leading-zero rule. **No table test in `tests/decimal.rs` exercises `Decimal::new(0, e)` for
-   `e > 0`** — the resolution is currently proven only by reading the source and the rustdoc
-   beside it, not by a red-then-green reversal.
+3. **A zero mantissa with a positive exponent has two rules that conflict.** Decision 4 says
+   both "no leading zero other than a single `0`" and, for `exponent > 0`, "that many `0`s and
+   no point". For `Decimal::new(0, e)` with `e > 0` those two disagree (`0` against `000…0`).
+   `Decimal::format` resolves it the way its rustdoc says: a zero mantissa is always written
+   `0`, whatever the exponent, because the all-zeros form would break the leading-zero rule.
+   Guarded by `a_zero_mantissa_formats_as_zero_whatever_the_exponent` (`e` = 0, 1, 3, 18,
+   127). Proven by reversal: with the `mantissa != 0` guard removed, it fails on
+   `(0, 1) formats as a single 0`, with `left: "00"`.
 
 ## Guarded by
 
 - `crates/codec/tests/decimal.rs`: `every_float_value_in_the_corpus_parses`,
   `negative_zero_parses_to_zero`, `non_canonical_inputs_format_canonically`,
   `a_positive_exponent_reads_back_as_its_integer`, `canonical_strings_round_trip_byte_identical`,
-  `every_non_positive_exponent_round_trips`.
+  `every_non_positive_exponent_round_trips`, `a_zero_mantissa_formats_as_zero_whatever_the_exponent`.
 - `fuzz/fuzz_targets/decimal.rs`: decision 5b over arbitrary bytes, on every value `as_decimal`
-  accepts (`exponent <= 0` always holds for those, so it cannot see gap 3 above).
-- **Not guarded**: `Decimal::new(0, e)` for `e > 0` — gap 3 is open; a future table-test row is
-  the fix, not a code change (the rustdoc already states the intended behaviour).
+  accepts. Every such value has `exponent <= 0`, so the fuzzer cannot reach gap 3 above; the
+  table test named there does.
 
 ## Sources
 

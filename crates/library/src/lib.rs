@@ -16,6 +16,35 @@ pub use fixbolt_codec::{
     GroupData, GroupEntryData, GroupIter, MessageView, as_char, as_i64, as_u32,
 };
 
+/// Why `as_i64`, `as_u32`, `as_char` or `as_decimal` could not read a value.
+/// Re-exported so a caller can match on it without depending on
+/// `fixbolt-codec` itself.
+pub use fixbolt_codec::ConvertError;
+
+/// Reading a price, a quantity or any FIX float, and writing one back
+/// (ADR-0120, `docs/decisions/`).
+///
+/// Read with `as_decimal(view.get(44)?)`, the way `as_i64` reads an integer.
+/// Equality is structural — `1.5 != 1.50` — and a value that did not arrive in
+/// canonical form writes back canonically: echo `view.get(tag)` when the
+/// counterparty's exact bytes matter.
+///
+/// ```
+/// use fixbolt::{ConvertError, Decimal, as_decimal};
+///
+/// let price = as_decimal(b"12345.6789").unwrap();
+/// assert_eq!((price.mantissa(), price.exponent()), (123_456_789, -4));
+///
+/// let mut out = [0u8; Decimal::MAX_LEN];
+/// assert_eq!(price.format(&mut out), b"12345.6789");
+/// assert_eq!(as_decimal(b"002000.00").unwrap().format(&mut out), b"2000.00");
+/// // FIX floats carry a minus or nothing; a `+` is not a number.
+/// assert_eq!(as_decimal(b"+200.00"), Err(ConvertError::NotANumber));
+/// ```
+pub use fixbolt_codec::Decimal;
+/// Read a FIX float as a [`Decimal`]; the grammar is the session's own.
+pub use fixbolt_codec::as_decimal;
+
 /// Who this acceptor serves, when, and under what numbers.
 pub use fixbolt_session::{
     Application, Config, DictionaryChecks, Link, ResetPolicy, Role,

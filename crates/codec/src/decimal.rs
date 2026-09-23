@@ -5,8 +5,21 @@
 //! unchanged, and a price is read as `as_decimal(view.get(44)?)` exactly the
 //! way an integer is read with `as_i64`.
 //!
-//! No `unsafe`, no allocation, no panicking index — `benches/alloc.rs` case
-//! `decimal` proves the second, clippy `indexing_slicing = "deny"` the third.
+//! No `unsafe`, no allocation, no panic. `benches/alloc.rs` case `decimal`
+//! proves the second. The third is proven in three parts, because no single
+//! one of them covers it:
+//! * clippy `indexing_slicing = "deny"` stops `a[i]` and `a[i..j]`. It does
+//!   **not** see a method call such as `split_at`, which panics just as surely
+//!   (`docs/reference/split-at-panics-where-no-lint-looks.md`). So `format`
+//!   uses `split_at_checked` and slice `get`, which cannot panic, and that
+//!   choice is held by review, not by any lint.
+//! * Tests drive every split position and both ends of the range:
+//!   `format_places_the_point_at_every_position`,
+//!   `the_longest_output_is_max_len` and
+//!   `a_zero_mantissa_formats_as_zero_whatever_the_exponent` in
+//!   `tests/decimal.rs`.
+//! * `fuzz/fuzz_targets/decimal.rs` runs arbitrary bytes through
+//!   `as_decimal` and every accepted value through `format`.
 
 use crate::index::ConvertError;
 

@@ -402,11 +402,13 @@ The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbo
 **`fixbolt_codec::Decimal::MAX_LEN = 147`** is not a key, but is a user-visible constant: the
 size the buffer passed to `Decimal::format` must be, `[u8; Decimal::MAX_LEN]`. It is the longest
 canonical form `format` can write — a `-`, 19 digits of `i64::MIN`, and 127 zeros for the largest
-positive exponent (`the_longest_output_is_max_len`, `crates/codec/tests/decimal.rs`). `as_decimal`
-accepts an exponent of `-128..=127` on the way in, but refuses (`Overflow`) more than 128 digits
-after the point when parsing — FIX floats needing more than 128 fraction digits do not occur in
-practice ([ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)
-decision 3).
+positive exponent (`the_longest_output_is_max_len`, `crates/codec/tests/decimal.rs`). The
+exponent has two ranges. `as_decimal` produces only `-128..=0`: it refuses more than 128 digits
+after the point with `Overflow` (`a_fraction_over_128_digits_overflows`), and a FIX float has no
+exponent notation, so its exponent is never positive. `-128..=127`, the whole of `i8`, is the
+range `Decimal::new` takes, for example from an SBE mantissa/exponent pair
+([ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)
+decisions 1, 3 and 7).
 
 ---
 

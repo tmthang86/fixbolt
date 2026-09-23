@@ -22,8 +22,11 @@ below describe what a first release would contain.
   Decimal::MAX_LEN]) -> &[u8]` writes it back in canonical form. Equality is structural —
   `1.5 != 1.50` — and a positive exponent (reachable only through `Decimal::new`, for an SBE
   mantissa/exponent pair) does not round-trip byte-for-byte through `format`. `Decimal::MAX_LEN`
-  (`147`) is the longest buffer `format` can write. No method was added to `MessageView`; no
-  arithmetic, ordering or rounding is offered. [ADR-0120](docs/decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md).
+  (`147`) is the longest buffer `format` can write. Both are re-exported from the `fixbolt`
+  facade beside `as_i64`, as `fixbolt::Decimal` and `fixbolt::as_decimal`, together with
+  `fixbolt::ConvertError`, the error type of `as_i64`, `as_u32`, `as_char` and `as_decimal`,
+  which the facade had not exported before. No method was added
+  to `MessageView`; no arithmetic, ordering or rounding is offered. [ADR-0120](docs/decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md).
 
 - **Recovery reaches the sharded runtime.**
   **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and

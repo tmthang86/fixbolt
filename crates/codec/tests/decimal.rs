@@ -5,9 +5,11 @@
 //! `cargo test -p fixbolt-codec decimal` matches `decimal::<name>` here rather
 //! than matching nothing and exiting 0.
 //!
-//! No `proptest`: `codec` takes no dependency, dev-dependencies included. The
-//! generated cases come from a hand-written xorshift with fixed seeds, so every
-//! run tests the same strings and a red is reproducible.
+//! No `proptest`: `codec` has no runtime dependency, and its only
+//! dev-dependencies are this workspace's own `fixbolt-dict` and
+//! `fixbolt-conformance` — this file adds none. The generated cases come from a
+//! hand-written xorshift with fixed seeds, so every run tests the same strings
+//! and a red is reproducible.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -250,6 +252,50 @@ mod decimal {
                 "({m}, {e}) formats canonically"
             );
         }
+    }
+
+    #[test]
+    fn a_zero_mantissa_formats_as_zero_whatever_the_exponent() {
+        // ADR-0120 decision 4 has two rules that meet here: "that many `0`s"
+        // for a positive exponent, and "no leading zero other than a single
+        // `0`". `0000` would break the second, so a zero is written `0`. A
+        // non-positive exponent keeps its fraction digits: `(0, -2)` is `0.00`.
+        for e in [0i8, 1, 3, 18, 127] {
+            assert_eq!(
+                show(&fmt(Decimal::new(0, e))),
+                "0",
+                "(0, {e}) formats as a single 0"
+            );
+        }
+    }
+
+    #[test]
+    fn format_places_the_point_at_every_position() {
+        // Every split `format` can make of 19 digits, against a string built
+        // here by hand: the point after 18, 17, … 1 integer digits, then with
+        // no integer digit (`0.` and exactly 19 digits), then with zeros
+        // between the point and the digits, out to 128 fraction digits. The
+        // integer part never takes all the digits — a negative exponent always
+        // leaves at least one after the point — so the largest split is 18.
+        let digits = b"9223372036854775807";
+        for frac in 1..=128usize {
+            let want = if frac < digits.len() {
+                let (whole, tail) = digits.split_at(digits.len() - frac);
+                cat(&[whole, b".", tail])
+            } else {
+                cat(&[b"0.", &zeros(frac - digits.len()), digits])
+            };
+            let e = -i8::try_from(frac - 1).unwrap() - 1;
+            for (m, sign) in [(i64::MAX, &b""[..]), (-i64::MAX, &b"-"[..])] {
+                assert_eq!(
+                    show(&fmt(Decimal::new(m, e))),
+                    show(&cat(&[sign, &want])),
+                    "({m}, {e})"
+                );
+            }
+        }
+        assert_eq!(show(&fmt(Decimal::new(15, -1))), "1.5", "one integer digit");
+        assert_eq!(show(&fmt(Decimal::new(5, -1))), "0.5", "no integer digit");
     }
 
     #[test]

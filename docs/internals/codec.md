@@ -35,7 +35,7 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 
 ## Tests that guard it
 
-- `tests/decimal.rs` (28 tests) — `as_decimal` grammar and overflow, `Decimal::format`'s
+- `tests/decimal.rs` (30 tests) — `as_decimal` grammar and overflow, `Decimal::format`'s
   canonical form, and the two round-trip halves of ADR-0120 decision 5; `benches/decimal.rs` —
   two timing cases, `NO BASELINE` until plan step 7 records one on the §9 machine; the alloc
   case `decimal` in `benches/alloc.rs` (below) is the non-negotiable-1 proof for this path

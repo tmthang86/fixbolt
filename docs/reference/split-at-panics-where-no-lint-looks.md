@@ -28,7 +28,13 @@ path. No lint enforces choosing the checked form over the panicking one; only th
 `clippy::indexing_slicing = "deny"` label at the crate root and this page make the reason
 explicit for the next `split_at`-shaped call.
 
-**Guarded by**: nothing machine-checks that this specific call stays `split_at_checked` — it is
-read by eye per `CLAUDE.md` §2 rule 7's "hand check" clause. `crates/codec/tests/decimal.rs`'s
-`a_fraction_of_128_digits_parses` and `the_longest_output_is_max_len` exercise the boundary
-`mid` values (`whole == 0`, `whole == len`) that would have panicked under `split_at`.
+**Guarded by**: no machine check keeps this call as `split_at_checked`. It is read by eye, as
+`CLAUDE.md` §2 rule 7's hand-check clause says. What the tests prove is that every split
+`format` can make gives the right bytes. In `crates/codec/tests/decimal.rs`,
+`format_places_the_point_at_every_position` formats `±i64::MAX` at every fraction width from 1
+to 128 and compares each result with a string built by hand. That covers every integer-digit
+count `whole` from 18 down to 1, then `whole == 0` (`len == frac`), then more fraction digits
+than there are digits (`frac > len`, out to 128). `whole == len` cannot happen: a negative
+exponent always leaves at least one digit after the point, so the largest `whole` is `len - 1`.
+Proven by reversal: with the filter changed to `whole > 1`, the test fails on
+`(9223372036854775807, -18)`, with `left: "0.9223372036854775807"`.
