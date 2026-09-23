@@ -234,9 +234,56 @@ The three of ADR-0097 decision 4, plus two variants of (a):
 
 ## Result
 
-*(Empty until the spike runs. The spike's command, commit, the counts per dimension, the
-gate-visible and quiet totals, the outcome read off decision 3, and the path of the committed
-divergence table under `docs/reference/` are written here — and nothing above is edited.)*
+**Outcome C — written 2026-09-23.** `[measured 2026-09-23]` `python3 scripts/dict-diff.py`
+at commit `4eaeb53` (branch `plan/p3-dictionary-source`), on the owner's desktop (a count, not a
+timing, so no §9 settings apply). Inputs: QuickFIX `vendor/quickfix/spec/FIX44.xml` at pin
+`386ce46e`, sha256 `a82655b5…3358425`; Orchestra `vendor/orchestra/OrchestraFIX44.xml` at
+`cd24169a`, sha256 `a36262895e90…67a9f86`. The spike's own proofs passed first:
+`--self-check` reproduced 912 / 93 / 12 524 / 1 708 / 731 / 30 / 16 with 0 rows (red first,
+with group flattening stubbed); `--mutation-check` found exactly the 2 planted rows.
+
+| Dim | QuickFIX count | Orchestra count | Rows | Gate-visible | Quiet |
+|---|---|---|---|---|---|
+| T tag ↔ name | 912 | 912 | 1 | 0 | 1 |
+| Y field type | 912 | 912 | 2 | 0 | 2 |
+| M message types | 93 | 93 | 0 | 0 | 0 |
+| P body pairs | 12 524 | 12 527 | 3 | 0 | 3 |
+| R required pairs | — | — | 15 | 0 | 15 |
+| E enum (tag, value) | 1 708 | 2 371 | 663 | 94 | 569 |
+| H header / trailer | 30 | 30 | 0 | 0 | 0 |
+| L DATA → length | 16 | 16 | 0 | 0 | 0 |
+| G groups (exact sequence) | 731 | 731 | 3 | 3 | 0 |
+| **total** | | | **687** | **97** | **590** |
+
+Read off decision 3: **not A** (97 gate-visible rows, A needs 0); **not B** (687 rows, B needs
+≤ 150). **Outcome C.**
+
+**The unit, stated rather than re-argued.** Decision 1 counts E per (tag, value) pair, and that
+is how the rule was applied. 660 of the 663 E rows are **29 fields that QuickFIX gives no enum
+list at all** while Orchestra points them at a code set — 93 of the gate-visible rows are one
+field, `RefMsgType(372)`, which the corpus sends. Counted per field, E would be 32 rows and
+the whole table **56 rows, 5 gate-visible** (`RefMsgType(372)`, `OrdStatus(39)`, the three G
+rows). That count was noted and **not** applied: the rule was fixed before the measurement, and
+re-counting after seeing the result is the tuning decision 3 exists to prevent. Even per field,
+A fails (5 gate-visible rows) and B would hinge on the FIX 4.4 document settling all 5 — the
+unit changes the margin, not the fact that the gate-visible rows exist.
+
+What the rows are (full table and the three traps:
+[`docs/reference/orchestra-fix44-vs-quickfix-fix44.md`](../reference/orchestra-fix44-vs-quickfix-fix44.md)):
+every E row is a value Orchestra has and QuickFIX lacks — Orchestra is a strict superset;
+G is three members QuickFIX lacks (`ClearingFeeIndicator(635)` in `35=AE` `NoSides`,
+`OrigOrdModTime(586)` in `35=s` and `35=t` `NoSides`), the same three as P; T is tag 327
+named `HaltReasonChar` by QuickFIX and `HaltReason` by Orchestra; Y is 532 and 674, `STRING`
+in QuickFIX and `int` in Orchestra; 14 of the 15 R rows come from QuickFIX wrapping a group in a
+component while Orchestra puts `presence` on the `groupRef` itself.
+
+**The owner's choice (2026-09-23, in conversation, per the C row):** ship **QuickFIX's**
+`FIX44.xml`-derived dictionary in the published crate, **with a `NOTICE`** — not Orchestra,
+not user-supplied. That decision, what it ships and what it costs, is
+[ADR-0104](ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md). This
+ADR's decisions 4–6 (the Orchestra build, the Orchestra referee, `fix50sp2` as
+bring-your-own) are therefore **not taken**; decisions 1–3 stand as the record of how the choice
+was made.
 
 ## Sources
 

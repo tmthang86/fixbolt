@@ -1,6 +1,9 @@
 # ADR-0001 — Relationship to QuickFIX C++: take the data, not the code
 
-- **Status**: Accepted — 2026-08-27
+- **Status**: Accepted — 2026-08-27. **Decision 1's clause *"not redistributed inside this
+  repository"* is superseded, for `FIX44.xml`, `FIXT11.xml` and `FIX50SP2.xml` only, by
+  [ADR-0104](ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+  (Proposed 2026-09-23)**, which carries out decision 5; decisions 2–5 stand.
 - **Date**: 2026-08-27
 - **Deciders**: Tran Manh Thang
 

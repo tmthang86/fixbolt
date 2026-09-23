@@ -1,9 +1,18 @@
 # Phase 3, bước 1–2: từ điển cho crate đã publish — đo Orchestra trước, rồi mới đổi build
 
-> **Loại:** Plan · **Ngày:** 2026-09-23 · **Trạng thái:** Đã duyệt (manager, 2026-09-23, theo mandate thường trực của owner)
+> **Loại:** Plan · **Ngày:** 2026-09-23 · **Trạng thái:** Đã duyệt lại — *Sửa 1* (manager, 2026-09-23, theo lựa chọn C của owner và mandate thường trực)
 > **Phạm vi:** phase 3, hàng 1 và hàng 2 của *Chia việc* trong
 > [2026-09-23-phase-3-scope.md](2026-09-23-phase-3-scope.md). Quyết định và lý lẽ nằm ở
-> [ADR-0101](../decisions/ADR-0101-the-shipped-dictionary-is-chosen-by-a-rule-written-before-the-orchestra-diff-is-measured.md).
+> [ADR-0101](../decisions/ADR-0101-the-shipped-dictionary-is-chosen-by-a-rule-written-before-the-orchestra-diff-is-measured.md)
+> (luật chọn nguồn, và kết quả đo) và
+> [ADR-0104](../decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+> (ship XML của QuickFIX kèm `NOTICE`).
+
+> **Sửa 1 (2026-09-23).** Bản đầu được manager duyệt cùng ngày. Hàng 1 đã chạy (commit
+> `4eaeb53`) và ra **kết quả C**; anh chọn nhánh C là **ship XML của QuickFIX kèm `NOTICE`**.
+> Vì vậy hàng 2 của bản đầu (ship Orchestra) **bỏ**, thay bằng hàng 2a–2e dưới đây. Hàng 1
+> giữ nguyên để làm hồ sơ. Plan cần duyệt lại vì hàng 2 đổi hẳn nội dung, và vì nó đề xuất sửa
+> hai câu trong `CLAUDE.md` (mục *Câu thay trong `CLAUDE.md`*).
 
 ## Bối cảnh
 
@@ -11,19 +20,14 @@ Hôm nay `crates/dict/build.rs` sinh bảng từ điển FIX 4.4 từ file XML c
 `vendor/` — thư mục bị gitignore. Ai tải `fixbolt-dict` từ crates.io sẽ không có `vendor/`, nên
 build hỏng, kéo theo mọi crate phía trên. Không sửa chỗ này thì không publish được gì.
 
-Anh đã chọn (ADR-0097, câu Q2): dùng file `OrchestraFIX44.xml` của FIX Trading Community (giấy
-phép Apache-2.0) làm nguồn kèm theo crate, giữ XML của QuickFIX làm **trọng tài** — nhưng **chỉ
-chốt sau khi đo** hai file lệch nhau bao nhiêu.
+Anh đã chọn (ADR-0097, câu Q2): thử file Orchestra (Apache-2.0) trước, giữ XML của QuickFIX làm
+trọng tài, và **chỉ chốt sau khi đo**. Đã đo: hai file lệch **687 chỗ, 97 chỗ đụng tới gate**
+(kể cả ba group lệch thứ tự thành viên) — theo luật viết sẵn là kết quả C. Anh chọn: **đưa ba
+file XML của QuickFIX vào crate, kèm `NOTICE`**.
 
-Plan này làm đúng thứ tự đó:
-
-1. **Đo trước** (hàng 1): một chương trình nhỏ đọc cả hai file, so trên chín mặt, in ra bảng
-   chỗ lệch. Không đụng `build.rs`, không đụng crate nào. File Orchestra chỉ được tải vào
-   `vendor/`, chưa commit.
-2. **Luật quyết định viết sẵn từ bây giờ** (ADR-0101 quyết định 3), trước khi có số — để không
-   ai chỉnh luật cho vừa kết quả.
-3. **Rồi mới xây** (hàng 2), và chỉ xây nếu luật ra kết quả A hoặc B. Ra C thì dừng, quay lại
-   hỏi anh.
+Hàng 2 bây giờ đơn giản hơn nhiều so với bản đầu: bảng sinh ra **không đổi một byte** — chỉ đổi
+chỗ `build.rs` đọc file (từ `vendor/` sang `crates/dict/spec/` trong crate), cộng phần giấy phép
+đi kèm.
 
 ## Những gì đã biết chắc
 
@@ -72,6 +76,26 @@ Kiến trúc sư đã **đếm thẳng các phần tử** trong file Orchestra (
 group, 247 codeSet, 1 728 code) để thiết kế bộ đọc — nhưng **chưa so với QuickFIX**, có chủ ý:
 luật ở dưới phải được viết khi chưa ai biết kết quả.
 
+Thêm sau khi hàng 1 chạy (2026-09-23 — nguồn đầy đủ ở ADR-0101 *Result* và ADR-0104 *Research*):
+
+- **Kết quả spike** (`python3 scripts/dict-diff.py`, commit `4eaeb53`): 687 dòng lệch, 97
+  gate-visible, 590 quiet → **C**. Chi tiết và ba cái bẫy:
+  [reference/orchestra-fix44-vs-quickfix-fix44.md](../reference/orchestra-fix44-vs-quickfix-fix44.md).
+- **Ba file sẽ ship**, ở pin `386ce46e` mà `scripts/fetch-quickfix-assets.sh` đã dùng:
+  `FIX44.xml` 315 399 byte, `FIXT11.xml` 11 927 byte, `FIX50SP2.xml` 1 471 310 byte — tổng
+  1,8 MB, nén còn khoảng 196 KB, tức ~2 % giới hạn 10 MB của crates.io.
+- **Giấy phép QuickFIX** (bản ở pin giống hệt `master`): năm điều kiện. Phân phối source phải giữ
+  dòng bản quyền, danh sách điều kiện và phần miễn trừ (1); phân phối binary phải in lại chúng
+  trong tài liệu kèm theo (2); tài liệu cho người dùng cuối phải có câu *"This product includes
+  software developed by quickfixengine.org (http://www.quickfixengine.org/)."* — hoặc câu đó
+  nằm trong chính phần mềm (3); không dùng tên "QuickFIX" để quảng bá (4) hay đặt tên sản phẩm
+  (5).
+- **Không có mã SPDX cho giấy phép QuickFIX.** crates.io đọc trường `license` bằng crate `spdx`,
+  crate này chấp nhận `LicenseRef-…` — đọc từ mã nguồn, **chưa chứng minh bằng một lần publish**.
+- **Người khác đã làm vậy**: QuickFIX/J và QuickFIX/Go đều ship các file XML này; crate
+  `quickfix-msg44` trên crates.io ship `FIX44.xml` với `license = "MIT OR Apache-1.1"`; `fefix`
+  0.7.0 ship chúng mà **không** kèm giấy phép QuickFIX.
+
 ## Cách làm
 
 **Hàng 1 — đo, không xây.**
@@ -107,146 +131,176 @@ xuất hiện trong 59 file `.def`, hoặc là một trong bảy message session
 Một dòng overlay **không được** có lý do "vì QuickFIX nói vậy" — đó là dữ liệu lấy từ QuickFIX,
 sẽ kéo theo `NOTICE` (ADR-0001 quyết định 5). Chỉ văn bản đặc tả FIX mới được làm lý do.
 
-**Hàng 2 — xây, chỉ khi A hoặc B.**
+**Kết quả hàng 1:** C. Hàng 2 của bản đầu (ship Orchestra, overlay, `fix50sp2` do người dùng tự
+đưa XML) **không làm**. Thay bằng dưới đây.
 
-- File đi kèm crate: `crates/dict/spec/OrchestraFIX44.xml` (giữ nguyên từng byte),
-  `crates/dict/spec/LICENSE-orchestrations` (bản `LICENSE` gốc), `crates/dict/spec/README.md`
-  (nguồn, commit, sha256, "không sửa"). `.gitattributes` đánh dấu file XML là `-text` để git
-  không đổi đuôi dòng. Một bước CI kiểm sha256.
-- `crates/dict/Cargo.toml`: `license = "(MIT OR Apache-2.0) AND Apache-2.0"`.
-- `crates/dict/build.rs`: trước hết tách phần *đọc từ điển* ra khỏi phần *sinh bảng* qua một
-  mô hình trung gian (message → field / component / group, kèm bắt buộc hay không), chứng minh
-  bằng file sinh ra **giống từng byte** trước và sau. Sau đó thêm bộ đọc Orchestra vào mô hình
-  đó, và đổi nguồn FIX 4.4 mặc định sang file trong `spec/`. `NANOFIX_FIX44_XML` vẫn ghi đè
-  được; phần tử gốc của file (`fixr:repository` hay `fix`) quyết định dùng bộ đọc nào. Không
-  thêm dependency nào.
-- Trọng tài: bốn test có sẵn giữ nguyên chỗ đọc `vendor/quickfix/`, mỗi test thêm danh sách
-  miễn trừ kiểm hai chiều (miễn trừ mà không còn lệch thì đỏ). Test mới
-  `crates/dict/tests/referee_quickfix_xml.rs` phủ ba mặt các test cũ chưa phủ: cặp bắt buộc,
-  header / trailer, DATA → length. Cả bộ này là "test so khớp" mà tiêu chí thoát 2 của ADR-0097
-  gọi tên.
-- CI: một job **không có `vendor/`** chạy `cargo build -p fixbolt-dict` và
-  `cargo build -p fixbolt --no-default-features`, và khẳng định `--features fix50sp2` hỏng với
-  thông báo gọi tên `NANOFIX_FIXT11_XML` và `NANOFIX_FIX50SP2_XML`. Script
-  `check-feature-gated-tests-ran.sh` nhận thêm `-` nghĩa là "feature mặc định", để job có
-  `vendor/` chứng minh mọi test trọng tài của `fixbolt-dict` đã thật sự chạy.
-- `fix50sp2` trên crates.io: **người dùng tự đưa XML** (không có Orchestra SP2). Crate `fixbolt`
-  không mở feature này nên `cargo add fixbolt` không bị ảnh hưởng.
+**Hàng 2 — nhánh C: ship XML của QuickFIX kèm `NOTICE`** (ADR-0104).
+
+- **Ba file** `FIX44.xml`, `FIXT11.xml`, `FIX50SP2.xml` chép **nguyên từng byte** từ
+  `vendor/quickfix/spec/` ở pin `386ce46e` vào `crates/dict/spec/`. `.gitattributes` đánh dấu
+  `-text` để git không đổi đuôi dòng. Không file QuickFIX nào khác vào repo.
+- **`scripts/check-dict-spec-pin.sh`** (mới) kiểm: sha256 của ba file đúng giá trị ghi trong
+  script; pin trong script trùng `PINNED_SHA` của `fetch-quickfix-assets.sh`; hai bản `NOTICE`
+  giống hệt nhau; và khi có `vendor/` thì `cmp` từng file với `vendor/quickfix/spec/`.
+- **`NOTICE`** ở gốc repo và `crates/dict/NOTICE` (chỉ file trong thư mục crate mới vào gói
+  `.crate`), cùng một nội dung — văn bản ở ADR-0104 quyết định 4: ba file nào, lấy từ commit
+  nào, câu ghi công bắt buộc, "fixbolt không phải QuickFIX", rồi nguyên văn giấy phép QuickFIX
+  ở pin.
+- **`build.rs`** đổi ba đường dẫn mặc định sang `spec/…` (tính từ thư mục crate). Không mạng,
+  không toolchain ngoài. Ba biến `NANOFIX_*_XML` vẫn ghi đè được. Phần sinh bảng **không đổi**.
+- **`crates/dict/Cargo.toml`**: `license = "(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0"`.
+  Crate khác giữ `MIT OR Apache-2.0` (không chứa dữ liệu QuickFIX).
+- **API**: `fixbolt_dict::NOTICE` (`include_str!("../NOTICE")`), re-export `fixbolt::NOTICE` — để
+  ứng dụng in được câu ghi công "trong chính phần mềm" (điều kiện 3).
+- **Trọng tài bây giờ là gì.** XML ship và XML trong `vendor/` giờ là cùng một file, nên "so với
+  XML của QuickFIX" thành so một file với chính nó. Còn lại ba lớp:
+  (i) script pin — byte ship ra đúng là byte của QuickFIX;
+  (ii) ở commit chuyển nguồn: hash của `fix44.rs` và `fixt11_fix50sp2.rs` sinh ra **trùng**
+  commit cha — bảng không đổi;
+  (iii) các test so bảng với **C++ do QuickFIX tự sinh** (`interop_quickfix_fields.rs`,
+  `interop_quickfix_messages.rs`, `interop_quickfix_order.rs`, `fixt_order.rs`, nửa `FixValues.h`
+  của `enums.rs`) — chương trình khác, vẫn đọc `vendor/quickfix/src/C++`. Chỗ nào các test đọc
+  XML thì chuyển sang đọc `crates/dict/spec/`, để test kiểm đúng thứ được ship. Thiếu `vendor/`
+  vẫn là đỏ, không bỏ qua. CI chứng minh các test này thật sự chạy bằng
+  `check-feature-gated-tests-ran.sh fixbolt-dict - LOG`.
+- **CI**: một job **không có `vendor/`** build `fixbolt-dict` (có và không `fix50sp2`),
+  `fixbolt --no-default-features`, `fixbolt-engine --features fix50sp2`, và chạy script pin.
+- `scripts/dict-diff.py` và `fetch-orchestra-assets.sh` ở lại trong repo như công cụ đã tạo ra
+  kết quả của ADR-0101, **không** là gate.
 
 ## Bất biến bị đụng tới
 
-- **3 (59 / 59)**: đổi nguồn FIX 4.4 đổi bảng mà session dùng. Hàng 2c chạy lại 59 / 59 trong
-  process và qua socket, FIXT 179 / 180 (`docs/CONFORMANCE.md` §9), không sửa một dòng nào của
-  `crates/session/src`.
-- **5 (thứ tự field từ bảng sinh)**: mặt G của spike và `interop_quickfix_order.rs` canh; bảng
-  vẫn sinh ở build time, không call site nào tự xếp field.
-- **6 (feature flag, build.rs không gọi toolchain ngoài)**: `build.rs` chỉ đọc file trong crate,
-  không mạng, không toolchain; `fix50sp2` vẫn gate `mod` như cũ. Job không `vendor/` là bằng
-  chứng.
-- **7 (không panic trong crate thư viện)**: `build.rs` không phải `src/`, giữ lối `die()` hiện
-  có; `crates/dict/src` không đổi ngoài bảng sinh.
-- **9 (không copy QuickFIX)**: file QuickFIX vẫn chỉ ở `vendor/`. Overlay chỉ được lấy lý do từ
-  văn bản FIX. Nếu outcome C thì bất biến này buộc `NOTICE` — và đó là lúc hỏi anh.
-- **1, 2, 4, 8, 10**: không đụng. Bảng sinh ở build time; hot path không đổi. Hàng 2c vẫn chạy
-  lại `benches/alloc.rs` của codec vì codec đọc bảng group.
-- **§6 Dependencies**: không thêm dependency; `roxmltree` đã có.
+- **3 (59 / 59)**: bảng sinh ra không đổi (hash chứng minh), nhưng vẫn chạy lại 59 / 59 trong
+  process và qua socket, FIXT theo `docs/CONFORMANCE.md` §9 — vì đây là commit đổi nguồn của bảng
+  mà session dùng.
+- **5 (thứ tự field từ bảng sinh)**: generator không đổi; `interop_quickfix_order.rs` và
+  `fixt_order.rs` vẫn so với C++ của QuickFIX.
+- **6 (build.rs không gọi toolchain ngoài)**: `build.rs` chỉ đọc file trong crate. Job không
+  `vendor/` là bằng chứng. `fix50sp2` vẫn gate `mod` như cũ.
+- **7 (không panic trong crate thư viện)**: `NOTICE` là một `const &str`; `build.rs` giữ lối
+  `die()`.
+- **9 (không copy QuickFIX)**: **bị đổi có chủ ý** — ba file dữ liệu vào repo, kèm `NOTICE`
+  (ADR-0001 quyết định 5, ADR-0104). Không dòng source QuickFIX nào vào. Câu chữ của bất biến 9
+  phải sửa — xem *Câu thay trong `CLAUDE.md`*.
+- **1, 2, 4, 8, 10**: không đụng — bảng sinh ở build time, không đổi; không hot path nào đổi.
+- **§6 Dependencies**: không thêm dependency.
 
 ## Chia việc
 
-Hàng 1 là một pull request. Hàng 2 là pull request thứ hai, **chỉ mở khi ADR-0101 ra A hoặc B**.
-Không bước nào được commit — manager chạy lại gate và commit.
+Hàng 1 là một pull request (đã build 1a, 1b; 1c viết trong *Sửa 1*). Hàng 2 là pull request
+thứ hai. Không bước nào tự commit — manager chạy lại gate và commit. Cuối PR 2: một senior review
+(opus), đọc riêng phần nghĩa vụ giấy phép và đi lại danh sách §2.
 
 | Bước | Kết quả | Người làm | File được sửa / **không** được sửa | Gate — xong khi | Test đỏ trước | Phụ thuộc |
 |---|---|---|---|---|---|---|
-| 1a | Script tải Orchestra ghim commit + sha256 | developer (sonnet) | Sửa: `scripts/fetch-orchestra-assets.sh` (mới). **Không**: `crates/`, `.gitignore`, `.github/`, `scripts/fetch-quickfix-assets.sh` | `shellcheck -S info scripts/fetch-orchestra-assets.sh` sạch; chạy hai lần liền đều exit 0; `sha256sum vendor/orchestra/OrchestraFIX44.xml` đúng giá trị ghim; `git status --short` không có gì dưới `vendor/` | sửa tạm sha256 mong đợi → script exit khác 0, in câu `sha256 mismatch` (viết câu này ra trước khi chạy), rồi trả lại | plan duyệt |
-| 1b | Chương trình so chín mặt + tự kiểm + kết luận theo luật | **senior developer (opus)** — logic trải phẳng phải khớp `build.rs`, sai là quyết định sai | Sửa: `scripts/dict-diff.py` (mới). **Không**: `crates/` (kể cả `build.rs`), `docs/` | `python3 scripts/dict-diff.py --self-check` in 0 dòng lệch và đúng 912 / 93 / 12 524 / 1 708 / 731 / 30 / 16; `--mutation-check` in đúng 2 dòng (G, E); `python3 scripts/dict-diff.py` ra `target/dict-diff/report.{md,json}` và một dòng `OUTCOME:` | `--self-check` chạy trước khi viết phần trải phẳng group phải đỏ vì thiếu 731; ghi output đỏ | 1a |
-| 1c | Ghi kết quả vào ADR-0101 *Result*; bảng lệch vào `docs/reference/orchestra-fix44-vs-quickfix-fix44.md`; với B, tra trang văn bản FIX 4.4 Errata cho từng dòng gate-visible | architect (opus) | Sửa: ADR-0101 mục *Result* (chỉ mục đó), `docs/reference/orchestra-fix44-vs-quickfix-fix44.md` (mới). **Không**: `crates/`, `scripts/`, mọi mục khác của ADR | `python3 scripts/check-links.py` sạch; outcome ghi trong ADR trùng dòng `OUTCOME:` của 1b | — | 1b |
-| 2a | `build.rs` tách "đọc" khỏi "sinh bảng" qua mô hình trung gian, vẫn đọc QuickFIX | **senior developer (opus)** — generator mà cả session dựa vào | Sửa: `crates/dict/build.rs`. **Không**: `crates/dict/src/`, `crates/dict/tests/`, crate khác | sha256 của `fix44.rs` và (với `--features fix50sp2`) `fixt11_fix50sp2.rs` trong `OUT_DIR` **trùng từng byte** trước/sau; `cargo test -p fixbolt-dict`; `cargo test -p fixbolt-dict --features fix50sp2`; `cargo clippy -p fixbolt-dict --all-targets -- -D warnings` | là refactor: bằng chứng là hai hash trước/sau; đảo ngược: đổi thứ tự hai thành viên trong mô hình → hash khác và `interop_quickfix_order.rs` đỏ | ADR-0101 = A/B |
-| 2b | File Orchestra đi kèm crate, giấy phép, kiểm sha256 | developer (sonnet) | Sửa: `crates/dict/spec/OrchestraFIX44.xml`, `crates/dict/spec/LICENSE-orchestrations`, `crates/dict/spec/README.md` (đều mới), `crates/dict/Cargo.toml` (chỉ dòng `license`), `.gitattributes`, `scripts/check-orchestra-pin.sh` (mới), `.github/workflows/ci.yml` (một bước). **Không**: `build.rs`, `publish = false`, crate khác | `scripts/check-orchestra-pin.sh` exit 0; `cmp crates/dict/spec/OrchestraFIX44.xml vendor/orchestra/OrchestraFIX44.xml` im lặng; `cargo metadata` đọc được `license` mới | sửa một byte của file trong bản tạm → script đỏ với câu viết sẵn, rồi trả lại | 2a (song song được, file khác nhau) |
-| 2c | Bộ đọc Orchestra; nguồn FIX 4.4 mặc định chuyển sang `spec/`; miễn trừ có tên; overlay (nếu B); `referee_quickfix_xml.rs` | **senior developer (opus)** — đụng bảng của session, bất biến 3 và 5 | Sửa: `crates/dict/build.rs`, `crates/dict/tests/*.rs`, `crates/dict/tests/common/mod.rs`. **Không**: `crates/session/`, `crates/codec/src/`, `crates/engine/`, file `.def` | `cargo test -p fixbolt-dict`; `cargo test -p fixbolt-session --test score` 59 / 59; `cargo test -p fixbolt-engine --test wire` 59 / 59; `cargo test -p fixbolt-session --features fix50sp2 --test score_fixt` đúng con số của `CONFORMANCE.md` §9; `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt`; `cargo test -p fixbolt-codec --test group_roundtrip`; `cargo bench -p fixbolt-codec --bench alloc`; `cargo test --all` và `cargo test --no-default-features`; clippy `-D warnings` | `referee_quickfix_xml.rs` viết trước, xanh trên bảng QuickFIX; đổi nguồn sang Orchestra trước khi thêm miễn trừ → đỏ, và **danh sách đỏ phải trùng bảng của spike** (hai chương trình độc lập khớp nhau) | 2a, 2b |
-| 2d | Job CI không `vendor/`; chứng minh trọng tài đã chạy | developer (sonnet) | Sửa: `.github/workflows/ci.yml`, `scripts/check-feature-gated-tests-ran.sh` (nhận `-`). **Không**: `crates/` | job mới xanh trên PR: hai lệnh build exit 0 trên checkout không có `vendor/`, `fix50sp2` hỏng với thông báo gọi tên hai biến; `check-feature-gated-tests-ran.sh fixbolt-dict - LOG` exit 0; `shellcheck` sạch | chạy test với `--skip referee` → script đỏ ở R1, ghi câu FAIL trước khi chạy | 2c |
-| 2e | Tài liệu theo `CLAUDE.md` §4 | developer (sonnet) | Sửa: `docs/DESIGN.md` §4 D3 (một đoạn về nguồn), `docs/internals/dict.md`, `docs/CONFORMANCE.md` §2, `docs/CONFIGURATION.md` (`NANOFIX_FIX44_XML` nhận hai định dạng), `docs/GUIDE.md` (`fix50sp2` phải tự đưa XML), `docs/reference/fix44-dictionary-traps.md`, `CHANGELOG.md`. **Không**: `STATUS.md` (manager viết), `crates/` | `python3 scripts/check-links.py` sạch; mọi con số trích có lệnh và commit | — | 2c, 2d |
-
-Nếu ADR-0101 ra **C**: hàng 2 ở trên **không chạy**. Manager báo anh, và phương án (b) cần một
-plan riêng.
+| 1a | **Xong — `4eaeb53`.** Script tải Orchestra ghim commit + sha256 | developer (sonnet) | Sửa: `scripts/fetch-orchestra-assets.sh` (mới). **Không**: `crates/`, `.gitignore`, `.github/`, `scripts/fetch-quickfix-assets.sh` | `shellcheck -S info scripts/fetch-orchestra-assets.sh` sạch; chạy hai lần liền đều exit 0; `sha256sum vendor/orchestra/OrchestraFIX44.xml` đúng giá trị ghim; `git status --short` không có gì dưới `vendor/` | sửa tạm sha256 mong đợi → script exit khác 0, in câu `sha256 mismatch` (viết câu này ra trước khi chạy), rồi trả lại | plan duyệt |
+| 1b | **Xong — `4eaeb53`, kết quả C.** Chương trình so chín mặt + tự kiểm + kết luận theo luật | **senior developer (opus)** — logic trải phẳng phải khớp `build.rs`, sai là quyết định sai | Sửa: `scripts/dict-diff.py` (mới). **Không**: `crates/` (kể cả `build.rs`), `docs/` | `python3 scripts/dict-diff.py --self-check` in 0 dòng lệch và đúng 912 / 93 / 12 524 / 1 708 / 731 / 30 / 16; `--mutation-check` in đúng 2 dòng (G, E); `python3 scripts/dict-diff.py` ra `target/dict-diff/report.{md,json}` và một dòng `OUTCOME:` | `--self-check` chạy trước khi viết phần trải phẳng group phải đỏ vì thiếu 731; ghi output đỏ | 1a |
+| 1c | **Xong — *Sửa 1*.** Ghi kết quả vào ADR-0101 *Result*; bảng lệch vào `docs/reference/orchestra-fix44-vs-quickfix-fix44.md`; với B, tra trang văn bản FIX 4.4 Errata cho từng dòng gate-visible | architect (opus) | Sửa: ADR-0101 mục *Result* (chỉ mục đó), `docs/reference/orchestra-fix44-vs-quickfix-fix44.md` (mới). **Không**: `crates/`, `scripts/`, mọi mục khác của ADR | `python3 scripts/check-links.py` sạch; outcome ghi trong ADR trùng dòng `OUTCOME:` của 1b | — | 1b |
+| 2a | Ba file XML vào `crates/dict/spec/`, hai bản `NOTICE`, script pin, bước CI | developer (sonnet) | Sửa: `crates/dict/spec/FIX44.xml`, `FIXT11.xml`, `FIX50SP2.xml` (chép từ `vendor/quickfix/spec/`), `crates/dict/NOTICE`, `NOTICE`, `.gitattributes`, `scripts/check-dict-spec-pin.sh` (mới), `scripts/fetch-quickfix-assets.sh` (chỉ comment đầu file, dòng 4–6: "NEVER committed" → trừ ba file này), `.github/workflows/ci.yml` (một bước chạy script pin trong job đang chạy các `scripts/check-*.sh`). **Không**: `build.rs`, mọi `Cargo.toml`, `crates/*/src`, `crates/*/tests` | `scripts/check-dict-spec-pin.sh` exit 0 khi có `vendor/`, và exit 0 với `FIXBOLT_VENDOR=/nonexistent` (in "vendor absent: sha256 only"); `cmp NOTICE crates/dict/NOTICE` im lặng; `shellcheck -S info` sạch; giấy phép trong `NOTICE` trùng từng dòng với `LICENSE` của QuickFIX ở pin | chạy script trước khi chép file → đỏ `missing crates/dict/spec/FIX44.xml`; lật một byte trong bản chép tạm → đỏ `sha256 mismatch`; sửa một bản `NOTICE` → đỏ `NOTICE copies differ` (viết ba câu này ra trước khi chạy), rồi trả lại | plan duyệt lại |
+| 2b | `build.rs` đọc `spec/`; `license`; test đọc XML ship | developer (sonnet) — bảng không đổi, hash là bằng chứng; senior review ở cuối PR | Sửa: `crates/dict/build.rs` (ba hằng `DEFAULT`, comment của chúng, câu báo lỗi thiếu file, doc đầu file), `crates/dict/Cargo.toml` (`license`, `description`), `crates/dict/src/lib.rs` (chỉ rustdoc dòng 1 và 31), `crates/dict/tests/common/mod.rs` và `crates/dict/tests/enums.rs` (chỗ `read("spec/…")` đọc XML → đọc `crates/dict/spec/`; chỗ đọc `src/C++` giữ ở `vendor/`). **Không**: logic sinh bảng trong `build.rs`, `crates/session/`, `crates/codec/`, `crates/engine/`, file `.def` | hash `fix44.rs` và `fixt11_fix50sp2.rs` trong `out_dir` (lấy từ `cargo build -p fixbolt-dict --features fix50sp2 --message-format=json`, dòng `build-script-executed`) **trùng** commit cha; `cargo test -p fixbolt-dict`; `cargo test -p fixbolt-dict --features fix50sp2`; `cargo test -p fixbolt-session --test score` 59 / 59; `cargo test -p fixbolt-engine --test wire` 59 / 59; `cargo test -p fixbolt-session --features fix50sp2 --test score_fixt` và `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt` đúng số `CONFORMANCE.md` §9; `cargo test --all`; `cargo test --no-default-features`; `cargo clippy --all-targets -- -D warnings` | trên một `git worktree` của nhánh **không** fetch `vendor/`: `cargo build -p fixbolt-dict` đỏ trước khi sửa (trích câu `die` gọi tên script fetch), xanh sau khi sửa | 2a |
+| 2c | `fixbolt_dict::NOTICE`, `fixbolt::NOTICE` | developer (sonnet) | Sửa: `crates/dict/src/lib.rs` (một `pub const` + rustdoc), `crates/library/src/lib.rs` (một `pub use` + rustdoc), `crates/dict/tests/notice.rs` (mới). **Không**: `build.rs`, crate khác | `cargo test -p fixbolt-dict --test notice`: `NOTICE` chứa nguyên văn câu ghi công của điều kiện 3, chứa câu của điều kiện 5, chứa pin `386ce46e917ae494ab6e90b1be90fd421cdbe3f9`; `cargo doc -p fixbolt --no-deps` không cảnh báo; `cargo test --all`; clippy | `notice.rs` viết trước khi có `const` → không biên dịch được, trích lỗi; rồi xoá câu ghi công khỏi một bản tạm của `NOTICE` → test đỏ đúng assertion câu ghi công | 2a |
+| 2d | Job CI không `vendor/`; chứng minh trọng tài đã chạy | developer (sonnet) | Sửa: `.github/workflows/ci.yml`, `scripts/check-feature-gated-tests-ran.sh` (nhận `-` = feature mặc định). **Không**: `crates/` | trên PR, job mới xanh: `test ! -e vendor`, `cargo build -p fixbolt-dict`, `cargo build -p fixbolt-dict --features fix50sp2`, `cargo build -p fixbolt --no-default-features`, `cargo build -p fixbolt-engine --features fix50sp2`, `scripts/check-dict-spec-pin.sh` đều exit 0; ở job có `vendor/`: `check-feature-gated-tests-ran.sh fixbolt-dict - LOG` và `… fixbolt-dict fix50sp2 LOG` exit 0; `shellcheck` sạch; manager ghi run id | chạy `cargo test -p fixbolt-dict -- --skip interop` vào LOG → script đỏ ở R1 (viết câu FAIL trước) | 2b |
+| 2e | Tài liệu theo `CLAUDE.md` §4 | developer (sonnet) | Sửa: `README.md` (mục giấy phép nhắc `NOTICE`), `docs/GUIDE.md` (ai phát hành binary có fixbolt phải làm điều kiện 2 và 3; dùng `fixbolt::NOTICE`), `docs/CONFIGURATION.md` (mặc định của ba biến `NANOFIX_*_XML`), `docs/internals/dict.md`, `docs/DESIGN.md` §3 (nguồn của `dict`) và §4 D3 (một câu về nguồn), `docs/CONFORMANCE.md` §2 (bảng sinh từ `crates/dict/spec/` ở pin), `CHANGELOG.md` (`NOTICE`, `license`, `fixbolt::NOTICE`). **Không**: `CLAUDE.md` (manager sửa sau khi anh xem), `STATUS.md` (manager), `crates/` | `python3 scripts/check-links.py` sạch; `scripts/check-adr-numbers.sh` sạch; không câu nào dùng "QuickFIX" để quảng bá (điều kiện 4) — manager đọc lại | — | 2b, 2c, 2d |
 
 ## Cách kiểm chứng
 
-- **Hàng 1**: ba lệnh của 1b, output trích nguyên văn — `--self-check` (0 dòng, bảy con số),
-  `--mutation-check` (đúng 2 dòng), lần chạy thật (bảng + `OUTCOME:`). Con số QuickFIX phía
-  spike phải trùng con số các test Rust đang assert — nếu không, lỗi ở chương trình, không ở dữ
-  liệu.
-- **Hàng 2**: hai hash trùng ở 2a; danh sách đỏ ở 2c trùng bảng spike; 59 / 59 hai đường và FIXT
-  đúng số §9; job không `vendor/` xanh trên CI, nêu run id; script R1–R3 xanh, và đỏ khi cố ý bỏ
-  một test.
-- Đây là dữ liệu thật: hai file từ điển gốc và 59 file `.def` gốc — không file nào tự bịa.
+- **Hàng 1** (đã chạy): `--self-check` 0 dòng và bảy con số; `--mutation-check` đúng 2 dòng; lần
+  chạy thật ra bảng và `OUTCOME: C` — trích trong ADR-0101 *Result*.
+- **Hàng 2**: hash bảng sinh trùng commit cha (2b) — đây là bằng chứng chính rằng sản phẩm không
+  đổi; 59 / 59 hai đường và FIXT đúng §9; job không `vendor/` xanh trên CI, nêu run id; script pin
+  đỏ khi lật một byte; script R1–R3 đỏ khi bỏ một test.
+- Dữ liệu thật: đúng ba file của QuickFIX ở pin, và 59 file `.def` gốc.
 - Đóng mỗi PR: một run CI xanh, nêu id, cho đúng commit đóng (`CLAUDE.md` §9).
 
 ## Tài liệu phải cập nhật
 
-- [ ] ADR-0101 mục *Result* (1c), rồi trạng thái *Accepted* khi manager duyệt kết quả
-- [ ] `docs/reference/orchestra-fix44-vs-quickfix-fix44.md` — bảng lệch (1c)
-- [ ] `docs/DESIGN.md` §4 D3 — nguồn của bảng (2e)
-- [ ] `docs/internals/dict.md` — hai bộ đọc, mô hình trung gian, `spec/` (2e)
-- [ ] `docs/CONFORMANCE.md` §2 — con số trọng tài sau khi đổi nguồn, kèm lệnh và run id (2e)
-- [ ] `docs/CONFIGURATION.md` — `NANOFIX_FIX44_XML` (2e)
-- [ ] `docs/GUIDE.md` — `fix50sp2` cần XML người dùng tự đưa (2e)
-- [ ] `docs/reference/fix44-dictionary-traps.md` — bẫy gặp phải (2e)
-- [ ] `CHANGELOG.md` (2e)
+- [x] ADR-0101 mục *Result* (1c, *Sửa 1*)
+- [x] `docs/reference/orchestra-fix44-vs-quickfix-fix44.md` — bảng lệch và ba bẫy (1c)
+- [x] ADR-0104 (Proposed) và dòng trạng thái của ADR-0001 (*Sửa 1*)
+- [ ] `README.md`, `docs/GUIDE.md`, `docs/CONFIGURATION.md`, `docs/internals/dict.md`,
+      `docs/DESIGN.md` §3 và §4 D3, `docs/CONFORMANCE.md` §2, `CHANGELOG.md` (2e)
+- [ ] `CLAUDE.md` §2 mục 9, bảng *Machine checks*, §8 — **manager** áp dụng câu thay dưới đây,
+      sau khi anh đã xem
 - [ ] `STATUS.md` — manager, khi mỗi PR đóng
 
 ## Bẫy đã lường trước
 
 | Bẫy | Test canh |
 |---|---|
-| Orchestra không bảo đảm thứ tự trên dây — group có thể đúng thành viên mà sai thứ tự | mặt G so trùng khít; `interop_quickfix_order.rs`; `group_roundtrip.rs` |
-| Group trong Orchestra là phần tử riêng (`groupRef`), còn QuickFIX để group nằm trong component (vd. `Parties`) — trải phẳng sai là lệch khoá (message, counter) | `--self-check` phải ra 731; `--mutation-check`; ở 2c danh sách đỏ trùng bảng spike |
-| Kiểu field nằm gián tiếp qua `…CodeSet` | mặt Y; `interop_quickfix_fields.rs` (`every_field_type_agrees_with_quickfix_or_is_a_named_exemption`) |
-| Logon thiếu group `NoMsgTypes` (từng thấy ở bản cũ) — Logon là message session, 59 file `.def` đều đi qua nó | mặt P / G, gate-visible; 59 / 59 ở 2c |
-| Component bắt buộc không làm field bên trong thành bắt buộc; Orchestra ghi `presence` trên `componentRef` / `groupRef` | mặt R; `tables.rs` `a_required_component_does_not_make_its_fields_required`; `referee_quickfix_xml.rs` |
-| Group `NoHops(627)` nằm trong header — lấy thiếu thì bốn tag rơi xuống body | mặt H (30); `tables.rs` `header_group_and_its_members_are_header_fields` |
-| 68 phần tử `updated="FIX.Latest"` — sửa lỗi của bản sau lọt vào file 4.4 | spike liệt kê riêng; mỗi cái thành dòng lệch có tên nếu đổi bảng |
-| Thuộc tính gõ sai (`deprecated="FIIX.4.4"`) làm hỏng bộ đọc nếu bộ đọc tin vào nó | bộ đọc chỉ đọc thuộc tính nó cần; spike báo cáo; `cargo test -p fixbolt-dict` |
-| Chương trình Python trải phẳng khác `build.rs` → đo sai mà tưởng đúng | `--self-check` phải trùng số các test Rust; ở 2c danh sách đỏ trùng bảng spike |
-| File ship bị đổi một byte (editor, git đổi đuôi dòng) → không còn "nguyên vẹn", mất lý do không cần notice | `scripts/check-orchestra-pin.sh` trong CI; `.gitattributes` `-text` |
-| File để trong `vendor/` hoặc bị gitignore → không được đóng gói | file nằm ở `crates/dict/spec/`; job không `vendor/` ở 2d |
+| File ship bị đổi một byte (editor, git đổi đuôi dòng) → không còn là file của QuickFIX ở pin, `NOTICE` nói sai | `scripts/check-dict-spec-pin.sh` trong CI; `.gitattributes` `-text` |
+| Nâng pin QuickFIX trong `fetch-quickfix-assets.sh` mà quên ba file ship (hoặc ngược lại) → test so với oracle khác thứ đang ship | script pin so pin của nó với `PINNED_SHA`, và `cmp` với `vendor/` khi có |
+| Hai bản `NOTICE` trôi khác nhau | script pin `cmp` hai bản |
+| `NOTICE` chép giấy phép từ `master` thay vì từ pin | gate 2a: giấy phép trong `NOTICE` trùng `LICENSE` ở pin |
+| Test vẫn đọc XML trong `vendor/` → kiểm một file khác thứ đang ship | 2b chuyển các chỗ đọc XML sang `crates/dict/spec/`; script pin chứng minh hai bên trùng |
+| Crate build xanh trong repo vì `vendor/` có sẵn, hỏng trên crates.io | job không `vendor/` (2d); test đỏ trước của 2b chạy trên worktree không `vendor/` |
+| Đổi đường dẫn mà bảng sinh ra đổi theo (vd. đọc nhầm file) | hash `out_dir` trùng commit cha (2b) |
 | Trọng tài thiếu mà vẫn xanh | `common/mod.rs` biến thiếu file thành đỏ; `check-feature-gated-tests-ran.sh fixbolt-dict -` (R1–R3) |
-| Một dòng overlay mượn lý do từ QuickFIX → thành dữ liệu QuickFIX, kéo `NOTICE` | mỗi dòng overlay ghi trang văn bản FIX 4.4 Errata; `build.rs` kiểm overlay hai chiều như `SP2_LENGTH_EXCEPTIONS`; senior review đọc từng dòng |
-| Refactor 2a đổi bảng sinh mà không ai thấy | hash `OUT_DIR` trùng từng byte trước/sau |
-| `fix50sp2` trên crates.io âm thầm hỏng | job không `vendor/` khẳng định thông báo lỗi gọi tên hai biến môi trường |
+| crates.io từ chối `LicenseRef-QuickFIX-1.0` lúc publish thật | chưa có test nào chạm được — ghi ở *Rủi ro*; phương án dự phòng `license-file = "NOTICE"` |
+| Chữ "QuickFIX" dùng như lời quảng bá trong README / mô tả crate (điều kiện 4) | kiểm tay ở 2e và ở senior review; không có máy nào kiểm được |
+| Người lạ phát hành binary mà không biết mình mang bảng từ QuickFIX | `docs/GUIDE.md` (2e); `fixbolt::NOTICE` (2c) |
 
 ## Rủi ro
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| Lệch nhiều → outcome C, quay về QuickFIX + `NOTICE` | Trung bình | luật viết sẵn; C dừng lại hỏi anh, không tự xây |
-| Dòng "All Rights Reserved" trong file mâu thuẫn Apache-2.0 | Thấp–trung bình | đọc như dòng bản quyền mà Apache §4(c) bắt giữ lại; nếu FIX Trading Community nói khác → C. Anh có thể muốn hỏi thẳng họ qua issue |
-| Ngưỡng 25 / 150 là phán đoán | Thấp | viết trước khi đo; ADR ghi rõ là phán đoán |
-| Upstream sửa file 4.4 (đã có 10 commit từ 2023) | Thấp | ghim commit + sha256; nâng cấp là việc có chủ ý: ghim lại, chạy lại spike |
-| Refactor `build.rs` làm hỏng bảng mà test không bắt | Trung bình | hash trùng từng byte ở 2a; senior developer làm |
-| Thời gian build tăng vì file 1,5 MB nhiều phần tài liệu | Thấp | 2c ghi thời gian `cargo build -p fixbolt-dict` trước/sau |
+| crates.io không nhận `LicenseRef-QuickFIX-1.0` | Thấp–trung bình | lần publish đầu sẽ biết; dự phòng `license-file = "NOTICE"` (mất phần máy đọc được) |
+| Điều khoản ghi công đi vào mọi binary người dùng phát hành | Chắc chắn, đã chấp nhận | anh đã chọn; `GUIDE.md` và `fixbolt::NOTICE` làm cho việc tuân thủ rẻ |
+| Lỗi từ điển của QuickFIX (QFJ-757, ba group thiếu thành viên, tên `HaltReasonChar`) giờ là hành vi của fixbolt | Thấp | đã ghi trong trang reference; người cần đúng đặc tả dùng biến `NANOFIX_FIX44_XML` |
+| Bảng sinh có phải "sản phẩm dẫn xuất" hay không là cách mình đọc, chưa ai phán | Thấp | đọc theo hướng thận trọng: coi là dẫn xuất |
+| Nâng pin QuickFIX từ nay là thay đổi sản phẩm | Thấp | script pin buộc làm có chủ ý; cần đủ gate như một thay đổi codec |
 
 ## Ngoài phạm vi
 
-- Bỏ `publish = false`, metadata crate, `cargo publish --dry-run` — hàng 6 của phase 3.
-- Sinh FIX 5.0 SP2 từ `OrchestraFIXLatest.xml` — nếu muốn, là một spike riêng.
-- Đọc `FIX44Session.xml` hay `FIXTSession.xml` — FIX 4.4 session đã có sẵn trong
-  `OrchestraFIX44.xml`.
-- Dùng các thông tin phong phú hơn của Orchestra (scenario, rule, workflow) — file FIX 4.4 không
-  có chúng.
-- Phương án (b) hoặc (c) — chỉ khi ADR-0101 ra C, bằng plan riêng.
-- Sửa `STATUS.md`, `PRD.md`.
+- Bỏ `publish = false`, metadata crate, `cargo publish --dry-run`, `cargo package --list` — hàng 6
+  của phase 3.
+- Ship Orchestra, overlay, bộ đọc Orchestra — bỏ theo kết quả C.
+- Sửa lỗi từ điển của QuickFIX trong file ship — file phải nguyên từng byte.
+- Ship file QuickFIX nào khác ba file trên (`.def`, C++, bản FIX khác).
+- Sửa `STATUS.md`, `PRD.md`, `CLAUDE.md` (câu thay dưới đây do manager áp dụng).
+
+## Câu thay trong `CLAUDE.md`
+
+Manager áp dụng **sau khi anh đã xem**, trong cùng commit với 2a (commit đưa file QuickFIX vào
+repo) — và nói rõ ra là đã đổi luật nào.
+
+**§2 mục 9** — hiện tại:
+
+> 9. **No QuickFIX source is copied.** Its XML and `.def` files are data and a test oracle, fetched
+>    into gitignored `vendor/`. If that ever changes, `NOTICE` becomes mandatory. (ADR-0001)
+
+thay bằng:
+
+> 9. **No QuickFIX source is copied, and exactly three QuickFIX files ship.**
+>    `crates/dict/spec/FIX44.xml`, `FIXT11.xml` and `FIX50SP2.xml` are committed byte-identical to
+>    the pin in `scripts/fetch-quickfix-assets.sh`, under `NOTICE`; the `.def` corpus, the
+>    generated C++ and all source stay a test oracle in gitignored `vendor/`. (ADR-0001, ADR-0104)
+
+**§2 bảng *Machine checks*** — thêm một dòng:
+
+> | 9 | `scripts/check-dict-spec-pin.sh`: the three shipped files match their pinned sha256, the pin matches `fetch-quickfix-assets.sh`'s `PINNED_SHA`, and the two `NOTICE` copies are identical | it cannot see a QuickFIX file committed under another name or path — `git add` is still the control |
+
+**§8** — hiện tại:
+
+> - `vendor/` is gitignored. **Never commit its contents** — that pulls QuickFIX's attribution
+>   clause into this repository.
+
+thay bằng:
+
+> - `vendor/` is gitignored. **Never commit its contents.** The only QuickFIX files in the tree are
+>   the three under `crates/dict/spec/`, held to the pinned bytes by
+>   `scripts/check-dict-spec-pin.sh`; committing any other needs a new ADR first (ADR-0104).
 
 ## Điểm manager cần duyệt
 
-1. **ADR-0101**, và luật A / B / C với ngưỡng 25 / 150 — duyệt trước khi 1b chạy.
-2. **`fix50sp2` trên crates.io là "người dùng tự đưa XML"** — thu hẹp dòng bẫy *"dry-run chạy …
-   từng feature công khai"* của plan phase 3: feature này được build trong CI có `vendor/`, còn ở
-   job không `vendor/` thì khẳng định nó hỏng đúng cách.
-3. **Thiếu trọng tài là đỏ, không bỏ qua** — khác với brief ban đầu ("skip kèm lý do"), vì
-   `common/mod.rs` đã đặt luật đó và không ai chạy test của dependency lấy từ crates.io; job không
-   `vendor/` chỉ build.
+1. **ADR-0104** (Proposed): ship **ba** file, không chỉ `FIX44.xml` — `NOTICE` đằng nào cũng phải
+   trả, và ba file chỉ tốn ~196 KB nén; đổi lại `fix50sp2` build được từ crates.io.
+2. **`license = "(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0"`** chỉ cho `fixbolt-dict` —
+   chưa chứng minh trên crates.io.
+3. **API mới `fixbolt::NOTICE`** — phần công khai, vào `CHANGELOG`.
+4. **Ba câu thay trong `CLAUDE.md`** ở trên — anh xem trước khi áp dụng.
+5. **Thiếu trọng tài là đỏ, không bỏ qua** — giữ từ bản đầu.
 
 ## Nhật ký giao hàng
 
-*(Chưa có — plan chờ duyệt.)*
+*(Chưa có mục đóng phase. Hàng 1: 1a và 1b build ở commit `4eaeb53`, kết quả C; 1c viết trong
+*Sửa 1*.)*
