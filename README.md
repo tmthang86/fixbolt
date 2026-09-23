@@ -184,14 +184,23 @@ crates/
 tools/
   w2w/           wire-to-wire harness; the binary the two mode checks trace
   jrnl/          reads a journal file from outside the process that wrote it
-  interop/       both roles against a real libquickfix over kernel TCP. The C++
-                 counterparties are built by scripts/interop.sh and by CI, never by cargo
+  interop/       both roles against a real libquickfix over kernel TCP, and (--role dial,
+                 --features tls) against QuickFIX/J. The C++ counterparty is built by
+                 scripts/interop.sh and by CI, never by cargo
   attr-scan/     lexes a crate root with proc-macro2 and lists its inner attributes;
                  the eyes of scripts/check-no-crate-root-allow.sh. Nothing depends on it
+  interop-qfj/   not a crate: Judge.java, this repository's own judge against a real
+                 QuickFIX/J, both roles, plaintext and TLS. Built by scripts/interop-qfj.sh
+                 and by CI; the six jars it needs are fetched, checked and never committed
 benches/         baselines.tsv: one recorded timing baseline per (CPU model, case).
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets; nightly, outside the workspace
 spikes/ktls/     answers ADR-0005's kTLS question and stops; nothing depends on it
+spikes/fixp-probe/
+                 a Rust probe speaks Artio's Binary EntryPoint schema (B3, 5.6) against our own
+                 referee (Referee.java, Artio's public API only); scripts/fixp-spike.sh's three
+                 arms are CI job `fixp-spike`, BLOCKING (ADR-0140) — nothing in crates/ or tools/
+                 depends on it, and no FIXP session is built here (ADR-0097 decision 5)
 docs/            see the table above; decisions/ holds the ADRs, reference/ the
                  measured facts and traps, plans/ what is about to be built (Vietnamese),
                  internals/ a map of which file in which crate holds what

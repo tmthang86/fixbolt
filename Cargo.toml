@@ -23,7 +23,12 @@ members = [
 # spikes/ktls pulls rustls and ring; cargo unifies features across one
 # invocation, and this repository has already been burned once by exactly that
 # (docs/reference/feature-flags-unify-across-a-workspace.md).
-exclude = ["fuzz", "spikes/ktls"]
+#
+# spikes/fixp-probe is a spike too, and has a sharper reason: its build.rs reads a
+# B3 schema that scripts/fixp-spike.sh fetches into gitignored vendor/fixp/ and
+# that is never committed (ADR-0140 decision 3). Inside the workspace,
+# `cargo test --all` would fail on every machine that has not run that script.
+exclude = ["fuzz", "spikes/ktls", "spikes/fixp-probe"]
 
 # Crates are added one at a time, each behind an approved plan in docs/plans/.
 # See CLAUDE.md §1 — Rule Zero.

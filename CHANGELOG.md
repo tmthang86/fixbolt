@@ -65,6 +65,38 @@ version contains.
   which the facade had not exported before. No method was added
   to `MessageView`; no arithmetic, ordering or rounding is offered. [ADR-0120](docs/decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md).
 
+- **`scripts/bench-instructions.sh A B`** — compares two bench binaries by `instructions:u`
+  (`perf stat`, `n` interleaved runs, one pinned core) and prints `same-work`, `work-changed` or
+  `unstable`. It tells a timed line moved by code layout from one moved by added work, which the
+  timing band cannot. It reads `perf` as `${PERF:-perf}` and holds no `sudo`. It refuses a missing,
+  zero or `<not counted>` counter and a workload that exits non-zero. Its verdict logic is tested
+  by `scripts/check-bench-instructions.sh` with a stub `perf`, in the `gates` job. It requires
+  `-n ≥ 2`, runs under `LC_ALL=C`, and refuses `<not supported>`, uncounted, empty or multiplexed
+  counts.
+- **`FIXBOLT_BENCH_COUNT_ONLY=1`** — a bench-harness switch (`crates/codec/benches/harness.rs`,
+  read once per process). Every case runs and prints its ns/op, but none is compared against
+  `benches/baselines.tsv`, so a binary whose case is `OVER` its line runs to the end instead of
+  panicking. `scripts/bench-instructions.sh` sets it for both arms. Unset, nothing changes.
+  [ADR-0102](docs/decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md).
+
+- **QuickFIX/J judges this engine in both roles, plaintext and TLS — a second, blocking CI
+  gate beside the `libquickfix` one.** [ADR-0130](docs/decisions/ADR-0130-a-jvm-enters-ci-as-a-second-oracle-quickfixj-by-pinned-jar-and-our-own-judge.md),
+  ADR-0097 exit criterion 6. `scripts/interop-qfj.sh` fetches five QuickFIX/J 3.0.2 jars, each
+  pinned by SHA-256, into gitignored `vendor/quickfixj/`, compiles this repository's own judge
+  (`tools/interop-qfj/Judge.java`, QuickFIX/J's public API only, no QuickFIX source), and runs
+  four arms: this engine as acceptor and as initiator, each in plaintext and over kTLS. CI job
+  `interop-qfj` is blocking.
+  **`tools/interop` gains `--role dial`**, the engine's real initiator door
+  (`fixbolt::connect_and_serve` / `fixbolt_engine::connect_and_serve_tls`) driven from a
+  settings file — unlike `--role initiator`, which drives the pure session by hand and has no
+  TLS. **A new `tls` feature** on `fixbolt-interop`, off by default, forwarding to
+  `fixbolt-engine/tls`; `scripts/check-no-optional-deps.sh` asks `rustls` and `ktls-core` are
+  both absent from a build with it off. Each TLS arm also asserts `kernel`:
+  `/proc/net/tls_stat`'s `TlsTxSw`/`TlsRxSw` rose, and this engine printed no
+  `TlsFellBackToUserspace` event — the kernel's own counter is the witness a userspace fallback
+  cannot fake. See [CONFORMANCE.md §10](docs/CONFORMANCE.md) for the command, the machine and
+  the CI run id.
+
 - **Recovery reaches the sharded runtime.**
   **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and
   **`serve_sharded_hft_with_recovery_with`** ask a `Recovery` what each counterparty left
@@ -334,6 +366,24 @@ version contains.
   lists its third-party notices satisfies condition 3's "in the software itself" clause. See
   `docs/GUIDE.md` §10.
 
+- **CI job `fixp-spike`, new and blocking** (phase 3 row 9, ADR-0140 decision 5): proves
+  `fixbolt-sbe`'s encoder and decoder against a Real-Logic-generated Binary EntryPoint codec
+  (Artio 0.184, B3 schema 5.6) over a real socket, both directions. `scripts/fixp-spike.sh` pins
+  11 jars and the extracted schema by SHA-256, builds `spikes/fixp-probe` — a Rust crate
+  detached from this workspace (`[workspace]` empty, listed in the root `Cargo.toml` `exclude`,
+  the `spikes/ktls` pattern) — and runs it against `spikes/fixp-probe/referee/Referee.java`, our
+  own code on Artio's public API, in three arms: `accept` (five steps, `ok` each), and two
+  refusals, `reject-timestamp` (Artio's own `INVALID_TIMESTAMP`) and `reject-credentials` (the
+  referee's own check). The referee also sits in front of Artio as a wire tap that decodes every
+  client frame with Real Logic's generated decoders and judges every field, the header's
+  `blockLength` and the frame length, and every fixed-width field carries a value with no zero
+  byte — so a width mistake in the encoder cannot pass (the review of PR #102 showed `Firm` as
+  `uint16` passing before). The job also runs clippy on the detached probe. The job's own
+  summary-grep step, not `scripts/fixp-spike.sh`'s exit code, is what decides. Nothing in `crates/` or `tools/` depends on the probe or the referee,
+  and no FIXP session exists yet (ADR-0078 decision 2, ADR-0097 decision 5).
+  [docs/CONFORMANCE.md §11](docs/CONFORMANCE.md#11-fixp-spike-against-artio-measured-2026-09-23),
+  [docs/reference/b3-binary-entrypoint-facts.md](docs/reference/b3-binary-entrypoint-facts.md).
+
 ### Changed
 
 - **`FileLog` and `FileJournal` no longer write a secret to disk in clear.** `FileLog` masks
@@ -442,6 +492,17 @@ version contains.
   `STATUS.md` item 75.
 
 ### Fixed
+
+- **`fixbolt-sbe-gen` reads `valueRef` on a `<type>`, including a composite member.** A schema
+  whose composite ends in `<type presence="constant" valueRef="Enum.Value"/>` — the SBE 1.0
+  Standard's own timestamp examples, and B3 Binary EntryPoint as Artio ships it — failed with
+  the misleading `constant '' is not an unsigned integer`; it now resolves to the named
+  `<validValue>` at 0 wire bytes, as a `<field>`'s `valueRef` already did. As `sbe-tool` does,
+  `generate` refuses a `valueRef` whose `presence` is not `constant`, or whose enum is not
+  encoded as the `<type>`'s `primitiveType`; every unresolvable `valueRef` error, on a field or
+  a type, now names `valueRef '<ref>'`. Tables for schemas without such a member are
+  byte-identical. `crates/sbe-gen/tests/value_ref_on_composite_member.rs`;
+  [the trap](docs/reference/sbe-valueref-on-a-composite-member.md); ADR-0140 decision 4.
 
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
   a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;

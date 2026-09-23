@@ -376,7 +376,7 @@ fn flatten(
         .get(type_ref)
         .ok_or_else(|| Error::Schema(format!("unknown type '{type_ref}'")))?;
     match local_name(node) {
-        "type" => element_from_type_node(node, prefix, presence_override).map(single),
+        "type" => element_from_type_node(node, types, prefix, presence_override).map(single),
         "enum" => element_from_enum_node(node, types, prefix, presence_override).map(single),
         "set" => element_from_set_node(node, types, prefix, presence_override).map(single),
         "composite" => {
@@ -395,6 +395,7 @@ fn flatten(
 
 fn element_from_type_node(
     node: Node<'_, '_>,
+    types: &Types<'_, '_>,
     prefix: &str,
     presence_override: Option<Presence>,
 ) -> Result<Element, Error> {
@@ -418,7 +419,7 @@ fn element_from_type_node(
     }
     let presence = match presence_override {
         Some(p) => p,
-        None => resolve_presence(node, primitive)?,
+        None => resolve_presence(node, primitive, types)?,
     };
     if matches!(presence, Presence::Optional { .. }) && primitive != Primitive::Char && length > 1 {
         // `fixbolt_sbe` nulls an array only as a char array (every byte the
@@ -445,8 +446,32 @@ fn element_from_type_node(
 /// one rule, in one place, rather than this function guessing again from a
 /// `length` attribute that a constant like `Engine.fuel` (SBE's own sample
 /// schema) does not even bother to declare.
-fn resolve_presence(node: Node<'_, '_>, primitive: Primitive) -> Result<Presence, Error> {
-    match node.attribute("presence").unwrap_or("required") {
+///
+/// A constant may instead name its value with `valueRef="Enum.Value"`, the
+/// shape the SBE 1.0 Standard's own timestamp examples put on a composite
+/// member (`02FieldEncoding.md:884`) and `sbe.xsd` allows on `<type>`
+/// (`encodedDataType` takes `presenceAttributes`), although the prose
+/// `<type>` attribute table (`04MessageSchema.md:142-155`) omits it; Real
+/// Logic's `sbe-tool` reads it here too (`EncodedDataType.java`). Its rules
+/// are `sbe-tool`'s: `presence` must be `constant`, and the enum's encoding
+/// must be this type's `primitiveType`. Guarded by
+/// `tests/value_ref_on_composite_member.rs`; the trap is
+/// `docs/reference/sbe-valueref-on-a-composite-member.md`.
+fn resolve_presence(
+    node: Node<'_, '_>,
+    primitive: Primitive,
+    types: &Types<'_, '_>,
+) -> Result<Presence, Error> {
+    let presence = node.attribute("presence").unwrap_or("required");
+    let value_ref = node.attribute("valueRef");
+    if let Some(value_ref) = value_ref
+        && presence != "constant"
+    {
+        return Err(Error::Schema(format!(
+            "valueRef '{value_ref}' on a <type> whose presence is '{presence}', not 'constant'"
+        )));
+    }
+    match presence {
         "required" => Ok(Presence::Required),
         "optional" => {
             let null = match node.attribute("nullValue") {
@@ -455,10 +480,22 @@ fn resolve_presence(node: Node<'_, '_>, primitive: Primitive) -> Result<Presence
             };
             Ok(Presence::Optional { null })
         }
-        "constant" => Ok(Presence::Constant(constant_value(
-            primitive,
-            node.text().unwrap_or(""),
-        )?)),
+        "constant" => Ok(Presence::Constant(match value_ref {
+            Some(value_ref) => {
+                let (enum_node, value_node) = find_value_ref(value_ref, types)?;
+                let encoding =
+                    resolve_encoding_primitive(required_attr(enum_node, "encodingType")?, types)?;
+                if encoding != primitive {
+                    return Err(Error::Schema(format!(
+                        "valueRef '{value_ref}' names an enum encoded as {}, but the <type> is {}",
+                        encoding.rust_name(),
+                        primitive.rust_name()
+                    )));
+                }
+                constant_value(primitive, value_node.text().unwrap_or(""))?
+            }
+            None => constant_value(primitive, node.text().unwrap_or(""))?,
+        })),
         other => Err(Error::Schema(format!(
             "presence '{other}' is not one of required/optional/constant"
         ))),
@@ -539,21 +576,36 @@ fn resolve_value_ref(
     types: &Types<'_, '_>,
     primitive: Primitive,
 ) -> Result<Value, Error> {
+    let (_enum_node, value_node) = find_value_ref(value_ref, types)?;
+    constant_value(primitive, value_node.text().unwrap_or(""))
+}
+
+/// The `<enum>` and `<validValue>` a `valueRef="EnumName.ValueName"` names.
+/// Every error names `valueRef`, so a schema author is pointed at the
+/// attribute rather than at an empty constant.
+fn find_value_ref<'a, 'i>(
+    value_ref: &str,
+    types: &Types<'a, 'i>,
+) -> Result<(Node<'a, 'i>, Node<'a, 'i>), Error> {
     let (enum_name, value_name) = value_ref
         .split_once('.')
         .ok_or_else(|| Error::Schema(format!("valueRef '{value_ref}' is not 'Enum.Value'")))?;
     let enum_node = types
         .get(enum_name)
         .filter(|n| local_name(*n) == "enum")
-        .ok_or_else(|| Error::Schema(format!("valueRef names unknown enum '{enum_name}'")))?;
+        .ok_or_else(|| {
+            Error::Schema(format!(
+                "valueRef '{value_ref}' names unknown enum '{enum_name}'"
+            ))
+        })?;
     let value_node = is_element_iter(enum_node)
         .find(|n| local_name(*n) == "validValue" && n.attribute("name") == Some(value_name))
         .ok_or_else(|| {
             Error::Schema(format!(
-                "enum '{enum_name}' has no validValue '{value_name}'"
+                "valueRef '{value_ref}': enum '{enum_name}' has no validValue '{value_name}'"
             ))
         })?;
-    constant_value(primitive, value_node.text().unwrap_or(""))
+    Ok((enum_node, value_node))
 }
 
 /// Flattens a `<composite>`'s members, resolving offsets left to right.
@@ -624,7 +676,7 @@ fn flatten_composite(
             }
             "type" | "enum" | "set" => {
                 let mut el = match local_name(child) {
-                    "type" => element_from_type_node(child, &member_prefix, None)?,
+                    "type" => element_from_type_node(child, types, &member_prefix, None)?,
                     "enum" => element_from_enum_node(child, types, &member_prefix, None)?,
                     _ => element_from_set_node(child, types, &member_prefix, None)?,
                 };
