@@ -266,6 +266,26 @@ below describe what a first release would contain.
   `scripts/compare-w2w-procedures.sh` — which gained a 6 % FAIL / 4 % PASS case at each of p50,
   p99 and p99.9 (ADR-0096 decision 4(a)); the comparator itself is unchanged.
 
+- **`fixbolt-dict` builds without `vendor/`.** QuickFIX's `FIX44.xml`, `FIXT11.xml` and
+  `FIX50SP2.xml` now ship inside the crate, at `crates/dict/spec/`, byte-identical to a pinned
+  commit, under a `NOTICE` at the repository root and at `crates/dict/NOTICE` (identical
+  copies, checked by the new `scripts/check-dict-spec-pin.sh`). `cargo add fixbolt` now builds
+  every feature, `fix50sp2` included, with nothing but crates.io — no `vendor/` checkout, no
+  network access, no external toolchain. The generated tables are unchanged: the emitted `.rs`
+  hashes identical to the commit before the switch. **`fixbolt_dict::license` is now
+  `(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0`**, not the workspace's plain
+  `MIT OR Apache-2.0` — every other crate is unaffected, since none of them ships QuickFIX
+  data. [ADR-0104](docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md);
+  supersedes part of [ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md) decision 1
+  for these three files only.
+
+- **`fixbolt_dict::NOTICE`**, re-exported as **`fixbolt::NOTICE`**: the QuickFIX Software
+  License in full, the attribution sentence its condition 3 requires, and the pinned commit.
+  **Anyone distributing a binary built with `fixbolt` carries QuickFIX-derived tables and owes
+  that licence's conditions 2 and 3** — printing this constant wherever an application already
+  lists its third-party notices satisfies condition 3's "in the software itself" clause. See
+  `docs/GUIDE.md` §10.
+
 ### Changed
 
 - **`parse_utc` reads the two widths that are actually on a wire in a straight line.** 17 bytes

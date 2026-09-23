@@ -1,0 +1,8 @@
+# crates/dict/spec/*.xml are byte-identical copies of QuickFIX's dictionary
+# XML at the pin scripts/fetch-quickfix-assets.sh uses (docs/decisions/
+# ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md
+# decision 2). `-text` stops git from normalising a line ending on checkout
+# or commit on any platform — a single rewritten byte would make the file no
+# longer QuickFIX's file at that commit, and scripts/check-dict-spec-pin.sh
+# would have no way to tell that from a real drift.
+crates/dict/spec/*.xml -text

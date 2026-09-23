@@ -1,4 +1,5 @@
-//! FIX 4.4 tables, generated from `vendor/quickfix/spec/FIX44.xml` at build time.
+//! FIX 4.4 tables, generated from `spec/FIX44.xml` (shipped in this crate, under
+//! `NOTICE`) at build time.
 //!
 //! Nothing here is hand-written. See `build.rs`, and ADR-0001 for why the XML is
 //! data rather than something copied into this repository.
@@ -8,6 +9,20 @@ mod tables;
 
 pub use field_type::FieldType;
 pub use tables::Tables;
+
+/// The third-party notice for the QuickFIX-derived dictionaries this crate
+/// ships (ADR-0104). Contains the QuickFIX Software License's condition 3
+/// acknowledgment ("This product includes software developed by
+/// quickfixengine.org…"), its condition 5 naming restriction, and the pinned
+/// commit the shipped files come from.
+///
+/// A binary that links `fixbolt-dict` — directly, or through `fixbolt`, which
+/// re-exports this as `fixbolt::NOTICE` — carries QuickFIX-derived tables and
+/// owes the licence's conditions 2 and 3.
+/// Printing this constant wherever the application lists its third-party
+/// notices satisfies condition 3's "in the software itself" clause; see
+/// `docs/GUIDE.md` for what a distributor owes beyond that.
+pub const NOTICE: &str = include_str!("../NOTICE");
 
 /// FIX 4.4 tag=value under [`fixbolt_codec::Encoding`].
 ///
@@ -28,7 +43,8 @@ pub type Fix44TagValue = fixbolt_codec::TagValue<Fix44, 64>;
 include!(concat!(env!("OUT_DIR"), "/fix44.rs"));
 
 /// The FIXT 1.1 / FIX 5.0 SP2 tables, generated from the **pair**
-/// `vendor/quickfix/spec/FIXT11.xml` + `FIX50SP2.xml` at build time.
+/// `spec/FIXT11.xml` + `spec/FIX50SP2.xml` (shipped in this crate, under
+/// `NOTICE`) at build time.
 ///
 /// Behind the `fix50sp2` feature, and behind a module rather than at the crate
 /// root: the generated free functions have the same names as FIX 4.4's and two

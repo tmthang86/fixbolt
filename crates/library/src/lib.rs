@@ -26,6 +26,15 @@ pub use fixbolt_session::{MAX_BEGIN_STRING_LEN, MAX_COMP_ID_LEN, Peer};
 /// Starting, stopping, and why a connection ended.
 pub use fixbolt_engine::{ServeError, Shutdown, serve_hft};
 
+/// The third-party notice for the QuickFIX-derived dictionaries this crate
+/// builds on, transitively, through `fixbolt-dict` (ADR-0104). **Anyone
+/// distributing a binary built with `fixbolt` carries QuickFIX-derived
+/// tables and owes the QuickFIX Software License's conditions 2 and 3** —
+/// printing this constant wherever the application already lists its
+/// third-party notices satisfies condition 3's "in the software itself"
+/// clause. See `docs/GUIDE.md` for the rest of what a distributor owes.
+pub use fixbolt_dict::NOTICE;
+
 /// The `*_with` forms, for a deployment that must name `N`, `RX` and `TX`.
 ///
 /// `[2026-09-05]` **`docs/CONFIGURATION.md` used to tell a reader to

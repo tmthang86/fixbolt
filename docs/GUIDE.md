@@ -1695,3 +1695,36 @@ Stated so you do not discover it in production:
 - **It cannot originate an application message.** `Handler::on_message` returns one reply to
   one inbound message, and the session's `send_application` is reachable only by driving the
   session yourself (STATUS item 46).
+
+## 10. Distributing a binary carries a QuickFIX notice obligation
+
+`fixbolt-dict` ships the FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 XML dictionaries inside the crate,
+byte-identical to a pinned QuickFIX commit, so that `cargo add fixbolt` builds with nothing but
+crates.io ([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)).
+Every binary that links `fixbolt` — which depends on `fixbolt-dict` directly — carries tables
+generated from those files at build time, and **whoever distributes that binary owes the
+QuickFIX Software License's conditions 2 and 3**, not this project:
+
+1. **Condition 2** (binary redistribution): reproduce the copyright notice, the license's
+   conditions and its disclaimer in the documentation or other materials that ship with the
+   binary.
+2. **Condition 3** (end-user documentation): include the sentence *"This product includes
+   software developed by quickfixengine.org (http://www.quickfixengine.org/)."* — either in
+   that documentation, or **in the software itself**, wherever such third-party
+   acknowledgments normally appear.
+
+`fixbolt_dict::NOTICE` — re-exported as [`fixbolt::NOTICE`](../crates/library/src/lib.rs) — is
+the full text: the acknowledgment sentence, the pinned commit, and the license in full.
+Printing it wherever your application already lists its third-party notices (an `--about`
+flag, a `/notices` page, a packaged `NOTICE` file next to the binary) satisfies both
+conditions in one place:
+
+```rust
+println!("{}", fixbolt::NOTICE);
+```
+
+**What this does not cover:** condition 4 and 5's naming restriction (never call your product
+"QuickFIX", never use the name to endorse it) is about how *you* present your own product, and
+no constant can do that for you. See the licence's full text in [`NOTICE`](../NOTICE) at the
+repository root, and [ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+for the reasoning.
