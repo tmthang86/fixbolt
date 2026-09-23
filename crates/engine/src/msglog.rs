@@ -37,6 +37,10 @@
 //!   lines, never the timestamp column.
 //! * A full ring **drops and counts**. The log is never the reason a session
 //!   stalls — ADR-0011's rule, pointed the other way.
+//! * **Not the bytes exactly as they crossed the wire.** A password and the
+//!   other fields [`crate::redact::MASKED`] names are masked with `*` on the
+//!   writer thread, length kept, so a masked line frames but does not checksum.
+//!   ADR-0110.
 
 // `[measured 2026-09-08]` 10 `clippy::indexing_slicing` sites in this file on
 // the day `indexing_slicing = "deny"` went into the workspace lints. Debt, not
@@ -444,6 +448,17 @@ fn write_loop(mut file: File, mut from_engine: Consumer, lost: &AtomicU64) {
                 let at_ms = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
                 let shard = u16::from_le_bytes(buf[9..11].try_into().unwrap_or([0; 2]));
                 let id = ConnId::from_le_bytes(buf[11..19].try_into().unwrap_or([0; 8]));
+                // **Masked here, on the writer, in the writer's own buffer** —
+                // never on the engine thread, which is unchanged. Every value
+                // byte of a secret becomes `*`, length kept, so the line still
+                // frames and deliberately no longer checksums. An `Open` record
+                // is a peer address, not a message. ADR-0110 decision 3;
+                // `secrets_stay_off_disk.rs` is the gate.
+                if dir != Direction::Open {
+                    if let Some(message) = buf.get_mut(REC_HEADER..n) {
+                        crate::redact::mask(message);
+                    }
+                }
                 let payload = &buf[REC_HEADER..n];
 
                 line.clear();

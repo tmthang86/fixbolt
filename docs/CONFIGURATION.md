@@ -291,6 +291,7 @@ Set in code when the engine is built or started.
 | `MAX_ON_LOGON` | Most messages one session may originate from `Handler::on_logon` | `u32`, not configurable | `16` | compile-time constant | [`engine/src/lib.rs`](../crates/engine/src/lib.rs) |
 | `ORIGIN_CAPACITY` | Originated messages a `Sender` may have waiting for the engine's next turn | `usize`, not configurable | `64` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
 | `ORIGIN_LEN` | Largest message `Sender::send` will take | bytes, not configurable | `512` | compile-time constant | [`origin.rs`](../crates/engine/src/origin.rs) |
+| `redact::MASKED` | `[added 2026-09-23]` The fields `FileLog` masks and `FileJournal` never writes for: `554` Password, `925` NewPassword, `1402` EncryptedPassword, `1404` EncryptedNewPassword (every message), `96` RawData (only when any `35=` in the record is `Logon`/`UserRequest`, or there is no `35=`) | fixed list, not configurable | as listed | `fixbolt_engine::redact::MASKED` | [`redact.rs`](../crates/engine/src/redact.rs) |
 
 ### The three origination numbers
 
@@ -309,6 +310,18 @@ the caller's is work nobody has asked for yet.
   for a resend is a message that should not go out. A message over it is refused at
   `Sender::send`, which answers `false` — unlike the reply scratch, this ceiling does not fail
   as silence.
+
+### Why `redact::MASKED` has no key
+
+`[added 2026-09-23]` Every other row in this table can be turned off or resized. This one
+cannot: there is no `Settings` key and no `Config` method that disables masking. **Deliberately**
+— an off switch for credential masking is a foot-gun sitting in a configuration file an operator
+copies from a forum post, and once it exists someone eventually ships it flipped. A deployment
+that genuinely needs the raw bytes on disk can implement `MessageLog` or `Journal` itself — both
+are public traits — and owns that choice in its own code, not in a file a stranger can edit.
+`NoLog` and `MemJournal` are unaffected either way: they hold nothing on disk to mask.
+([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)
+decision 6.)
 
 ### Sizing the resend ring
 
@@ -399,6 +412,17 @@ The library's `Handler<N, P, S>` has its own three: `N = 256` fields in the inbo
 `P = 64` fields in a reply, `S = 1024` bytes for them. A reply that does not fit is
 `Answer::Failed`, counted by `App::failed_replies()` ([GUIDE.md §1b](GUIDE.md)).
 
+**`fixbolt_codec::Decimal::MAX_LEN = 147`** is not a key, but is a user-visible constant: the
+size the buffer passed to `Decimal::format` must be, `[u8; Decimal::MAX_LEN]`. It is the longest
+canonical form `format` can write — a `-`, 19 digits of `i64::MIN`, and 127 zeros for the largest
+positive exponent (`the_longest_output_is_max_len`, `crates/codec/tests/decimal.rs`). The
+exponent has two ranges. `as_decimal` produces only `-128..=0`: it refuses more than 128 digits
+after the point with `Overflow` (`a_fraction_over_128_digits_overflows`), and a FIX float has no
+exponent notation, so its exponent is never positive. `-128..=127`, the whole of `i8`, is the
+range `Decimal::new` takes, for example from an SBE mantissa/exponent pair
+([ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)
+decisions 1, 3 and 7).
+
 ---
 
 ## 4. Cargo features
@@ -428,3 +452,23 @@ target compiles the crate but exposes no way to bring a TLS listener up — [D11
 (§1) are unaffected by any of this: `TlsSettings` and `Settings::into_tls_table` are compiled in
 every feature set, which is what lets a build **without** `tls` refuse `SocketUseSSL=Y` with a
 sentence (`Problem::NeedsFeature`) instead of failing to compile at all.
+
+## 5. Build-time environment variables
+
+`crates/dict/build.rs` reads three FIX dictionaries to generate its tables. Each has a default
+and an override, read only at build time by `build.rs` — none of them is a `Settings` key and
+none is read at runtime.
+
+| Variable | Overrides | Default (relative to `crates/dict/`) |
+|---|---|---|
+| `NANOFIX_FIX44_XML` | The FIX 4.4 dictionary | `spec/FIX44.xml` — shipped inside the crate, byte-identical to QuickFIX at the pin `scripts/fetch-quickfix-assets.sh` uses ([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)) |
+| `NANOFIX_FIXT11_XML` | The FIXT 1.1 transport half of the `fix50sp2` pair | `spec/FIXT11.xml`, same terms |
+| `NANOFIX_FIX50SP2_XML` | The FIX 5.0 SP2 application half of the `fix50sp2` pair | `spec/FIX50SP2.xml`, same terms |
+
+The default needs nothing outside the crate: `cargo add fixbolt` builds `fixbolt-dict` — and
+everything built on it — with no `vendor/` checkout, no network access and no external
+toolchain. Setting an override points `build.rs` at a dictionary of your own instead — a
+customised FIX 4.4 dialect, or a fix for one of the QuickFIX dictionary quirks
+`crates/dict/spec/` ships as-is (see [ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
+*Consequences*). A path missing at build time fails the build loudly, by design — the
+generator never falls back to an empty table.

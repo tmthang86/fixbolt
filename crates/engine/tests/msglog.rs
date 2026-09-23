@@ -133,19 +133,20 @@ fn a_sharded_line_names_its_shard_and_both_are_readable_by_one_reader() {
 fn a_data_field_with_a_newline_stays_on_one_line() {
     let tmp = Tmp::new("newline");
     let mut log = FileLog::open(tmp.path()).unwrap();
+    // `35=B` (News): ADR-0110 decision 1 masks `96` on a frame with no `35=`.
     log.record(
         Direction::In,
         msg_time(),
         0,
         1,
-        b"8=FIX.4.4\x0195=3\x0196=a\nb\x0110=000\x01",
+        b"8=FIX.4.4\x0135=B\x0195=3\x0196=a\nb\x0110=000\x01",
     );
     log.record(
         Direction::In,
         msg_time(),
         0,
         1,
-        b"8=FIX.4.4\x0195=3\x0196=a\rb\x0110=000\x01",
+        b"8=FIX.4.4\x0135=B\x0195=3\x0196=a\rb\x0110=000\x01",
     );
     log.close();
 
@@ -163,7 +164,8 @@ fn a_data_field_with_a_newline_stays_on_one_line() {
 #[test]
 fn a_backslash_in_a_data_field_round_trips() {
     let tmp = Tmp::new("backslash");
-    let raw: &[u8] = b"8=FIX.4.4\x0196=a\\nb\x0196=c\nd\x0110=000\x01";
+    // `35=B` (News): ADR-0110 decision 1 masks `96` on a frame with no `35=`.
+    let raw: &[u8] = b"8=FIX.4.4\x0135=B\x0196=a\\nb\x0196=c\nd\x0110=000\x01";
     let mut log = FileLog::open(tmp.path()).unwrap();
     log.record(Direction::In, msg_time(), 0, 1, raw);
     log.close();

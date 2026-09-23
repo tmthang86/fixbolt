@@ -17,6 +17,29 @@ below describe what a first release would contain.
 
 ### Added
 
+- **A secret is masked in the message log and never written to the journal.**
+  **`fixbolt_engine::redact`** is a new public module: the constant **`MASKED`** names, in one
+  place, every field the engine treats as a secret — `554` Password and `925` NewPassword
+  (every message), `1402` EncryptedPassword and `1404` EncryptedNewPassword (every message), and
+  `96` RawData (only when any `35=` in the record is a `Logon`/`UserRequest`, or there is no `35=`). **`mask`**
+  overwrites a field's value bytes with `*` in place, length kept; **`carries_secret`** answers
+  whether a message holds one. Both are pure functions over a borrowed slice — no allocation, no
+  panic, no dictionary — proven by `benches/alloc.rs` cases `redact-mask` and `redact-scan`
+  (`crates/engine/tests/redact.rs`, `crates/engine/tests/secrets_stay_off_disk.rs`).
+  [ADR-0110](docs/decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md);
+  `STATUS.md` phase 3 row 3, ADR-0097 exit criterion 4.
+
+- **`fixbolt_codec::Decimal` and `as_decimal`.** A FIX float read on demand, 16 bytes and `Copy`:
+  `as_decimal(view.get(tag)?)` beside `as_i64`, and `Decimal::format(self, out: &mut [u8;
+  Decimal::MAX_LEN]) -> &[u8]` writes it back in canonical form. Equality is structural —
+  `1.5 != 1.50` — and a positive exponent (reachable only through `Decimal::new`, for an SBE
+  mantissa/exponent pair) does not round-trip byte-for-byte through `format`. `Decimal::MAX_LEN`
+  (`147`) is the longest buffer `format` can write. Both are re-exported from the `fixbolt`
+  facade beside `as_i64`, as `fixbolt::Decimal` and `fixbolt::as_decimal`, together with
+  `fixbolt::ConvertError`, the error type of `as_i64`, `as_u32`, `as_char` and `as_decimal`,
+  which the facade had not exported before. No method was added
+  to `MessageView`; no arithmetic, ordering or rounding is offered. [ADR-0120](docs/decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md).
+
 - **`scripts/bench-instructions.sh A B`** — compares two bench binaries by `instructions:u`
   (`perf stat`, `n` interleaved runs, one pinned core) and prints `same-work`, `work-changed` or
   `unstable`. It tells a timed line moved by code layout from one moved by added work, which the
@@ -273,7 +296,37 @@ below describe what a first release would contain.
   `scripts/compare-w2w-procedures.sh` — which gained a 6 % FAIL / 4 % PASS case at each of p50,
   p99 and p99.9 (ADR-0096 decision 4(a)); the comparator itself is unchanged.
 
+- **`fixbolt-dict` builds without `vendor/`.** QuickFIX's `FIX44.xml`, `FIXT11.xml` and
+  `FIX50SP2.xml` now ship inside the crate, at `crates/dict/spec/`, byte-identical to a pinned
+  commit, under a `NOTICE` at the repository root and at `crates/dict/NOTICE` (identical
+  copies, checked by the new `scripts/check-dict-spec-pin.sh`). `cargo add fixbolt` now builds
+  every feature, `fix50sp2` included, with nothing but crates.io — no `vendor/` checkout, no
+  network access, no external toolchain. The generated tables are unchanged: the emitted `.rs`
+  hashes identical to the commit before the switch. **`fixbolt_dict::license` is now
+  `(MIT OR Apache-2.0) AND LicenseRef-QuickFIX-1.0`**, not the workspace's plain
+  `MIT OR Apache-2.0` — every other crate is unaffected, since none of them ships QuickFIX
+  data. [ADR-0104](docs/decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md);
+  supersedes part of [ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md) decision 1
+  for these three files only.
+
+- **`fixbolt_dict::NOTICE`**, re-exported as **`fixbolt::NOTICE`**: the QuickFIX Software
+  License in full, the attribution sentence its condition 3 requires, and the pinned commit.
+  **Anyone distributing a binary built with `fixbolt` carries QuickFIX-derived tables and owes
+  that licence's conditions 2 and 3** — printing this constant wherever an application already
+  lists its third-party notices satisfies condition 3's "in the software itself" clause. See
+  `docs/GUIDE.md` §10.
+
 ### Changed
+
+- **`FileLog` and `FileJournal` no longer write a secret to disk in clear.** `FileLog` masks
+  `redact::MASKED` fields on its writer thread before escaping, in place, length kept — `9=`,
+  the LENGTH fields and `10=` are left as received, so a masked line still frames but
+  deliberately no longer checksums. `FileJournal` never writes a message record for an
+  application message that carries one, under either `Durability`: the file gets the
+  ADR-0053 outbound mark for that number instead, so a resumed session gap-fills it rather than
+  replaying a credential; the in-memory ring is unaffected, so an in-process `ResendRequest`
+  still replays it. `NoLog`, `MemJournal` and a caller's own `MessageLog`/`Journal` are
+  unchanged. No configuration key turns this off, by decision (ADR-0110).
 
 - **`parse_utc` reads the two widths that are actually on a wire in a straight line.** 17 bytes
   (the corpus's `I` lines) and 21 (its `E` lines, and every `52=` this engine sends —

@@ -74,6 +74,22 @@ jobs:
       # instance is fixed; this guards the class. Note it can only fail here
       # for a tree reason, never a machine one: the check reads text.
       - run: scripts/check-scratch-fixtures.sh
+      # CLAUDE.md §2 non-negotiable 9 (ADR-0104): exactly three QuickFIX files
+      # ship, byte-identical to the pin, under NOTICE. This job never fetches
+      # vendor/, so this step exercises the sha256-only path — "vendor
+      # absent: sha256 only" is expected output here, not a warning. The
+      # `dict-no-vendor` job below deliberately never fetches vendor/ either,
+      # so ITS pin-script step is also sha256-only, by design (the point of
+      # that job is proving fixbolt-dict builds without vendor/ at all). The
+      # byte-for-byte comparison against vendor/'s own copy only ever runs in
+      # the `gates` job, which is the one job in this file that both fetches
+      # vendor/ and runs this script.
+      - run: scripts/check-dict-spec-pin.sh
+      # The reversal for the check above: proves each of its FAIL arms fires
+      # for the reason it claims (CLAUDE.md §10). Cheap — pure bash and one
+      # single-byte file edit via python3, no cargo, no network — so it runs
+      # right beside the check it proves, on every commit.
+      - run: scripts/check-dict-spec-pin-reversal.sh
       # ADR-0093 decision 2, plan docs/plans/2026-09-22-the-detector-and-the-
       # campaign-preconditions.md step 3: does a `sudo` line in scripts/ hand
       # root a command it can find, or a name that only exists on the
@@ -107,7 +123,7 @@ jobs:
       # than being left out with the other scripts: they need no §9 machine
       # to prove a quoting fix changed nothing, since their pure halves are
       # already tested by check-ab-rotation.sh in the script-logic job.
-      - run: shellcheck -S info scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh scripts/check-sudo-names-what-root-can-find.sh scripts/check-sudo-verdicts.sh scripts/ab-rotation.sh scripts/check-ab-rotation.sh
+      - run: shellcheck -S info scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh scripts/check-sudo-names-what-root-can-find.sh scripts/check-sudo-verdicts.sh scripts/ab-rotation.sh scripts/check-ab-rotation.sh scripts/check-dict-spec-pin.sh scripts/check-dict-spec-pin-reversal.sh
 
   # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
   # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
@@ -434,6 +450,27 @@ jobs:
       # row 214, `Not proven (b)`.
       - name: The dictionary generator refuses a message with no msgcat, and the two die arms beside it
         run: scripts/check-dict-refuses-a-message-without-msgcat.sh
+
+      # ADR-0104 (CLAUDE.md §2 non-negotiable 9): this job fetched vendor/
+      # above, so this step exercises check-dict-spec-pin.sh's cmp-against-
+      # vendor path — the shipped crates/dict/spec/ files are not merely the
+      # right sha256, they are the SAME bytes as the test oracle's own copy.
+      - run: scripts/check-dict-spec-pin.sh
+
+      # `fixbolt-dict`'s interop_quickfix_*.rs tests are the oracle for the
+      # tables `crates/dict/spec/` now generates directly (ADR-0104 decision
+      # 8), and they are gated on nothing but vendor/ being present — no
+      # feature flag names them. `cargo test --all` above ran them, but
+      # nothing had PROVEN that until now: the same gap
+      # docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md
+      # names for a feature-gated test applies here to a vendor-gated one.
+      # `-` tells check-feature-gated-tests-ran.sh to build with no
+      # `--features` flag at all rather than skip the reconcile step.
+      - name: fixbolt-dict's own oracle tests, and proof they were the ones that ran
+        run: |
+          set -o pipefail
+          cargo test -p fixbolt-dict --tests --no-fail-fast --locked 2>&1 | tee /tmp/dict-default.log
+          scripts/check-feature-gated-tests-ran.sh fixbolt-dict - /tmp/dict-default.log
 
       # `affinity` is off by default and Linux-only (ADR-0015 decision 9), so
       # the two steps above never compile a line of it. Without this the module
@@ -891,6 +928,41 @@ jobs:
       # Asking per crate is the only scope where the flag means what it says.
       # See docs/reference/feature-flags-unify-across-a-workspace.md.
       - run: scripts/check-no-optional-deps.sh
+
+  # ADR-0097 exit criterion 1, ADR-0104: `fixbolt-dict` must build with
+  # nothing but what crates.io gives a downloader — no `vendor/`, no network,
+  # no external toolchain. Every OTHER job in this file calls
+  # `scripts/fetch-quickfix-assets.sh` before building anything that depends
+  # on `fixbolt-dict`, which is exactly why none of them could ever have
+  # caught a regression back to reading `vendor/`: they all made vendor/
+  # present first. This job is the one place that deliberately never does,
+  # on its own runner so a stray fetch anywhere else in the workflow cannot
+  # leak a checkout into it.
+  #
+  # `test ! -e vendor` is not decorative: a runner image, an action, or a
+  # future step added to this job could fetch vendor/ by accident (or by a
+  # cache restore), and a green `cargo build` that had a `vendor/` sitting
+  # there proves nothing about a crates.io download. This assertion is what
+  # makes the four builds below mean what they claim.
+  dict-no-vendor:
+    name: fixbolt-dict builds from nothing but the crate itself (no vendor/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: vendor/ must not exist on this runner
+        run: |
+          if [ -e vendor ]; then
+            echo "::error title=vendor/ is present::This job exists to prove fixbolt-dict builds WITHOUT vendor/ (ADR-0104). Something put a vendor/ directory on this runner before this step; find it and remove it rather than trusting this job's green." >&2
+            exit 1
+          fi
+      - run: cargo build -p fixbolt-dict
+      - run: cargo build -p fixbolt-dict --features fix50sp2
+      - run: cargo build -p fixbolt --no-default-features
+      - run: cargo build -p fixbolt-engine --features fix50sp2
+      # sha256-only path (no vendor/ to cmp against here) — the other half of
+      # this check, the cmp against vendor/, runs in the `gates` job, which
+      # does fetch it.
+      - run: scripts/check-dict-spec-pin.sh
 
   # PHASE 1 EXIT CRITERION 4, and the only gate in this file with an opinion
   # that did not come from this repository.

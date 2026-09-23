@@ -22,6 +22,13 @@
 //! thread clean:** the bytes go into an [`crate::ring`] and a writer thread does
 //! the I/O. `Fsync` deliberately blocks, because a deployment that is required
 //! to fsync is buying exactly that.
+//!
+//! # A message carrying a secret stays in memory only
+//!
+//! A message holding a field [`crate::redact::MASKED`] names is kept in the
+//! ring verbatim — so a `ResendRequest` inside the same process replays it —
+//! and the **file** gets only the outbound mark for its number. After a restart
+//! that number has no bytes and is gap-filled. ADR-0110 decision 4.
 
 use std::fs::File;
 use std::io::Write;
@@ -433,6 +440,36 @@ const ACTIVITY_LEN: usize = 8;
 /// record shape lifts the version to v2. ADR-0053.
 const OUTBOUND_LEN: usize = 4;
 
+/// The record `mark_out(seq)` writes, before its CRC: an ADR-0053 outbound mark.
+///
+/// **One function, three callers**: `mark_out`, and the two places a message
+/// that carries a secret is replaced by the mark for its number (ADR-0110
+/// decision 4) — `write_loop` under `Async`, `put` under `Fsync`. One builder
+/// is what keeps *"the same bytes `mark_out` writes"* true.
+fn outbound_mark(seq: u32) -> [u8; RECORD_HEADER + OUTBOUND_LEN] {
+    let mut rec = [0u8; RECORD_HEADER + OUTBOUND_LEN];
+    rec[..RECORD_SEQ].copy_from_slice(&ACTIVITY_MARK.to_le_bytes());
+    let n = u32::try_from(OUTBOUND_LEN).unwrap_or(0);
+    rec[RECORD_SEQ..RECORD_HEADER].copy_from_slice(&n.to_le_bytes());
+    rec[RECORD_HEADER..].copy_from_slice(&seq.to_le_bytes());
+    rec
+}
+
+/// The sequence number of a **message** record whose bytes carry a secret, or
+/// `None` for anything else — a clean message, or any of the three marks.
+///
+/// `record` is `seq ‖ len ‖ bytes`, as `put` pushes it under `Async`.
+fn carries_secret_at(record: &[u8]) -> Option<u32> {
+    let mut s4 = [0u8; RECORD_SEQ];
+    s4.copy_from_slice(record.get(..RECORD_SEQ)?);
+    let seq = u32::from_le_bytes(s4);
+    let payload = record.get(RECORD_HEADER..)?;
+    // `seq == 0` is an activity or outbound mark and an empty payload is an
+    // inbound mark; none of them is a message.
+    (seq != ACTIVITY_MARK && !payload.is_empty() && crate::redact::carries_secret(payload))
+        .then_some(seq)
+}
+
 /// Where the writer thread should be pinned, if anywhere.
 ///
 /// Two aliases rather than two copies of `open_with`: without the `affinity`
@@ -768,6 +805,20 @@ fn write_loop(mut file: File, mut from_engine: Consumer, format: Format) {
                 // record on disk, and skipping the pop is the only answer that
                 // does not write one. `indexing_slicing`, 2026-09-08.
                 let Some(record) = buf.get(..n) else { continue };
+                // **A message carrying a secret never reaches the file**, not
+                // even masked: replayed after a restart, `554=********` would be
+                // a wrong password on the wire. The mark for its number goes in
+                // its place, so a restart still knows the number was spent and
+                // gap-fills it. Decided here, on the writer, so the engine
+                // thread under `Async` is unchanged. ADR-0110 decision 4.
+                let mark;
+                let record = match carries_secret_at(record) {
+                    Some(seq) => {
+                        mark = outbound_mark(seq);
+                        mark.as_slice()
+                    }
+                    None => record,
+                };
                 let _ = file.write_all(record);
                 // **The checksum is computed here, not on the engine thread.**
                 // `Async` exists to keep work off that thread, and a CRC over a
@@ -806,6 +857,21 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
             }
             Durability::Fsync => {
                 if let Some(f) = self.file.as_mut() {
+                    // ADR-0110 decision 4, the same rule `write_loop` applies
+                    // under `Async`, made here because `Fsync` has no writer:
+                    // a message carrying a secret leaves only the mark for its
+                    // number. One scan on the engine thread, which allocates
+                    // nothing (`benches/alloc.rs` case `redact-scan`); what it
+                    // costs in time is `[unmeasured]`.
+                    if crate::redact::carries_secret(bytes) {
+                        let rec = outbound_mark(seq);
+                        let _ = f.write_all(&rec);
+                        if self.format == Format::V1 {
+                            let _ = f.write_all(&crc32(&[&rec]).to_le_bytes());
+                        }
+                        let _ = f.sync_data();
+                        return true;
+                    }
                     let mut rec = [0u8; RECORD_HEADER];
                     rec[..RECORD_SEQ].copy_from_slice(&seq.to_le_bytes());
                     let n = u32::try_from(bytes.len()).unwrap_or(0);
@@ -923,21 +989,12 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
         match self.how {
             Durability::Async => {
                 if let Some(p) = self.to_writer.as_mut() {
-                    let n = u32::try_from(OUTBOUND_LEN).unwrap_or(0);
-                    let _ = p.push(&[
-                        &ACTIVITY_MARK.to_le_bytes(),
-                        &n.to_le_bytes(),
-                        &seq.to_le_bytes(),
-                    ]);
+                    let _ = p.push(&[&outbound_mark(seq)]);
                 }
             }
             Durability::Fsync => {
                 if let Some(f) = self.file.as_mut() {
-                    let mut rec = [0u8; RECORD_HEADER + OUTBOUND_LEN];
-                    rec[..RECORD_SEQ].copy_from_slice(&ACTIVITY_MARK.to_le_bytes());
-                    let n = u32::try_from(OUTBOUND_LEN).unwrap_or(0);
-                    rec[RECORD_SEQ..RECORD_HEADER].copy_from_slice(&n.to_le_bytes());
-                    rec[RECORD_HEADER..].copy_from_slice(&seq.to_le_bytes());
+                    let rec = outbound_mark(seq);
                     let _ = f.write_all(&rec);
                     if self.format == Format::V1 {
                         let _ = f.write_all(&crc32(&[&rec]).to_le_bytes());

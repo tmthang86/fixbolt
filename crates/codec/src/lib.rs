@@ -7,6 +7,7 @@
 #![no_std]
 
 pub mod checksum;
+pub mod decimal;
 pub mod dict;
 pub mod encoding;
 pub mod group;
@@ -16,6 +17,7 @@ pub mod template;
 pub mod timestamp;
 
 pub use checksum::{checksum, format_checksum};
+pub use decimal::{Decimal, as_decimal};
 pub use dict::{Dictionary, NoDict};
 pub use encoding::{Encoding, SessionFields, TagValue};
 pub use group::{GroupEntry, GroupIter};
@@ -33,3 +35,6 @@ pub use timestamp::{Precision, TIMESTAMP_LEN, TIMESTAMP_MAX_LEN, TimestampCache}
 const _: () = assert!(core::mem::size_of::<MessageView<'static, 64>>() == 24);
 const _: () = assert!(core::mem::size_of::<FieldEntry>() == 12);
 const _: () = assert!(core::mem::align_of::<FieldEntry>() == 4);
+/// `Decimal` is an `i64` and an `i8`, padded to two words, and `Copy`. A third
+/// field, or a wider exponent, stops this compiling (ADR-0120 decision 1).
+const _: () = assert!(core::mem::size_of::<Decimal>() == 16);

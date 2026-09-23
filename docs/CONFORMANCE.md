@@ -47,7 +47,13 @@ with no line of `crates/session/src` changed. Command: `cargo test -p fixbolt-co
 
 ## 2. Dictionary agreement with QuickFIX
 
-The generated tables were checked against QuickFIX's own generated C++ `[measured 2026-08-28]`:
+The generated tables were checked against QuickFIX's own generated C++ `[measured 2026-08-28]`.
+`[2026-09-23]` the generator's input moved from gitignored `vendor/quickfix/spec/` to
+`crates/dict/spec/`, shipped inside the crate under `NOTICE`
+([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md));
+the shipped files are byte-identical to the same pinned commit
+(`scripts/check-dict-spec-pin.sh`), and the tables generated from them hash identical to the
+pre-switch commit — the numbers below did not need re-measuring:
 
 | What | Result |
 |---|---|

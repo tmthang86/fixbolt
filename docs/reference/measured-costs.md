@@ -359,6 +359,16 @@ reports "still zero" is a reversal that did not run.** `CLAUDE.md` §7 already
 says a guard is proven by reversal and that the reversal must be confirmed to
 have changed something. This is what that sentence costs when it is skipped.
 
+`[cost 2026-09-23]` **Paid a second time, from a plan.** The reversal R5 in
+`docs/plans/2026-09-23-p3-redact-secrets.md` was written as
+`let _v: Vec<u8> = Vec::with_capacity(1);` injected into `redact::mask`, and
+`cargo bench -p fixbolt-engine --bench alloc --features fix50sp2` printed
+`redact-mask 0` — the same deletion, one entry below this page's own warning.
+With `std::hint::black_box(Vec::with_capacity(1))` the same bench printed
+`redact-mask 1000` and failed its `non-negotiable 1` assertion. **The rule, as
+a plan must write it: a reversal that injects an allocation `black_box`es it.**
+Carried by `benches/alloc.rs` cases `redact-mask` / `redact-scan` (plan *Sửa 1*).
+
 `[to testing-skills → [PR #2](https://github.com/tmthang86/testing-skills/pull/2), open]` — *the optimiser deleted the reversal.* `false-greens.md` §5 already has
 "a reversal can itself be a no-op" from a search-and-replace that missed; this is the same
 shape produced by the compiler instead, which no amount of grepping the diff would catch.
