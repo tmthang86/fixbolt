@@ -1070,6 +1070,77 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Phase 3 row 9 (docs/plans/2026-09-23-p3-fixp-spike.md), ADR-0140 decision 5. Beyond ADR-0097
+  # decision 5's wording ("prove, as a command in CI"), this is the first check anywhere in this
+  # repository of fixbolt-sbe's encoder against a decoder Real Logic's own tool generated from a
+  # real venue's schema (Artio 0.184's Binary EntryPoint, B3 schema version 5.6) — the SBE interop
+  # check PRD.md §2 still lists as unbuilt (`tools/sbe-interop`). That value survives whatever the
+  # FIXP ADR (docs/decisions/, number pending) decides about a FIXP session, which this spike does
+  # not build (ADR-0078 decision 2, ADR-0097 decision 5).
+  #
+  # IT IS BLOCKING (ADR-0140 decision 5): a check nobody can fail is not a check — CLAUDE.md §10.
+  #
+  # scripts/fixp-spike.sh pins 11 jars and one schema file by SHA-256 (fails before compiling or
+  # running anything on a mismatch), builds spikes/fixp-probe — a crate detached from this
+  # workspace's own `[workspace]` and `exclude` list, so no other job here ever sees it or the
+  # fetched schema — and runs three arms against spikes/fixp-probe/referee/Referee.java, our own
+  # code on Artio's public API. Aeron needs shared memory (`/dev/shm`, present on GitHub-hosted
+  # runners by default) and two localhost UDP ports for its Archive control/response streams
+  # (10010/10020, the script's own defaults) — the plan's stated risk if that ever proves flaky
+  # here. Every other port is a fresh one the kernel hands out per arm (scripts/fixp-spike.sh
+  # `pick_port`), never a fixed number: `scripts/interop-qfj.sh` on a sibling branch already owns
+  # 15660-15663 for its own fixed acceptors, and this job must not collide with it.
+  #
+  # ONLY THE PRINTED SUMMARY LINE DECIDES (CLAUDE.md §7, §10: read the output, not the exit
+  # status), so the grep below is its own step, separate from the run that produced the log —
+  # ADR-0140 decision 6's two refusal arms exist so a referee that has only ever said yes proves
+  # nothing, and row 4's reversal G (a summary grep with the wrong pattern) must go red on this
+  # exact green log, not just on a broken run.
+  fixp-spike:
+    name: FIXP spike — fixbolt-sbe against Artio's Binary EntryPoint (blocking, ADR-0140)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: python3 is present (the fresh-port picker scripts/fixp-spike.sh's pick_port uses)
+        run: python3 --version
+      - name: Pin, fetch, build and run all three arms; read the transcript, not the exit code alone
+        run: |
+          set -o pipefail
+          scripts/fixp-spike.sh 2>&1 | tee "$RUNNER_TEMP/fixp-spike.log"
+
+      # A step of its own, on the log the step above already captured — a run that exits 0 without
+      # ever printing the summary line (or that prints a near-miss) must still fail this job.
+      - name: The summary line is what decides, not the exit code above
+        run: |
+          if ! grep -qxF 'fixp-spike: accept PASS 5/5, reject-timestamp PASS, reject-credentials PASS' "$RUNNER_TEMP/fixp-spike.log"; then
+            echo "::error title=fixp-spike did not print its summary line::scripts/fixp-spike.sh's transcript, published below on failure, has no exact match for the line all three arms must produce together. See ADR-0140 decision 5 and docs/CONFORMANCE.md's FIXP spike section."
+            exit 1
+          fi
+
+      # The probe is outside the workspace, so the workspace clippy job never lints it, and the
+      # lint table copied into spikes/fixp-probe/Cargo.toml would be a claim nobody runs (review of
+      # PR #102). It runs here, after the step above has fetched the schema its build.rs needs.
+      - name: Lint the detached probe with its own copy of the workspace lint table
+        run: cargo clippy --locked --manifest-path spikes/fixp-probe/Cargo.toml --all-targets -- -D warnings
+
+      # Only on failure — the run above already tees the log to this step's own reader on a green
+      # run, and CLAUDE.md §7 asks for the output to be read, not archived unconditionally.
+      - if: failure()
+        name: Publish the transcript on the run page
+        run: |
+          {
+            echo '## FIXP spike transcript'
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/fixp-spike.log" 2>/dev/null || echo '(no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ADR-0097 exit criterion 6, ADR-0130. `libquickfix` above is one independent opinion;
   # QuickFIX/J is a second family entirely — a JVM, a different codebase — judging this engine
   # in BOTH roles, plaintext AND TLS, which the criterion's own wording asks for and `interop`

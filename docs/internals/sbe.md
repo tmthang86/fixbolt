@@ -43,7 +43,7 @@ Spec facts and known RC4 discrepancies: [docs/reference/sbe-spec-facts.md](../re
 
 | File | Keeps |
 |---|---|
-| `generator.rs` | The XML → tables generator itself (ADR-0081 decision 2); loaded twice — once as a normal module, once by `build.rs` via `#[path]`, so there is one writer of the tables `sbe` reads. Scope (ADR-0081 decision 5) and its `Error::Unsupported(name)` refusal are stated at the top |
+| `generator.rs` | The XML → tables generator itself (ADR-0081 decision 2); loaded twice — once as a normal module, once by `build.rs` via `#[path]`, so there is one writer of the tables `sbe` reads. Scope (ADR-0081 decision 5) and its `Error::Unsupported(name)` refusal are stated at the top. `valueRef` resolves on a `<field>` (`field_presence_override`) and on a `<type>`, standing alone or inside a composite (`resolve_presence`), both through `find_value_ref` — the `<type>` case with `sbe-tool`'s two extra refusals ([sbe-valueref-on-a-composite-member](../reference/sbe-valueref-on-a-composite-member.md)) |
 | `lib.rs` | The public entry points, `generate(xml)` and `generate_with_includes(xml, resolve)`, for a caller's own `build.rs` (this repository's own use is `crates/dict/build.rs`'s FIX 4.4 shape, mirrored for SBE) |
 
 ## Read in this order
@@ -60,5 +60,6 @@ Spec facts and known RC4 discrepancies: [docs/reference/sbe-spec-facts.md](../re
 - `crates/sbe-gen/tests/encoding.rs` — byte-for-byte re-encode of all three RC4 dumps plus `Car`, over generated tables (moved from C3 to C4)
 - `crates/sbe-gen/tests/versioning.rs` — schema versioning and truncation through generated tables (step C3(3))
 - `crates/sbe-gen/tests/generated.rs` — the generator against two schemas it never wrote (RC4's and Real Logic's)
+- `crates/sbe-gen/tests/value_ref_on_composite_member.rs` — `presence="constant" valueRef="Enum.Value"` on a composite member `<type>` resolves to the named value at 0 wire bytes, and the four refusals `sbe-tool` makes name `valueRef`; fixture `tests/fixtures/value_ref_on_composite_member.xml`, written for this repository ([the trap](../reference/sbe-valueref-on-a-composite-member.md))
 - `crates/sbe/benches/alloc.rs` — counting allocator proving non-negotiable 1 for decode, one field, nested-group+`varData` walk, encode
 - `crates/sbe/benches/sbe.rs` — the same four paths timed through the shared Criterion harness (no baseline recorded yet)

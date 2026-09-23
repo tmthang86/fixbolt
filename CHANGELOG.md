@@ -341,6 +341,24 @@ below describe what a first release would contain.
   lists its third-party notices satisfies condition 3's "in the software itself" clause. See
   `docs/GUIDE.md` §10.
 
+- **CI job `fixp-spike`, new and blocking** (phase 3 row 9, ADR-0140 decision 5): proves
+  `fixbolt-sbe`'s encoder and decoder against a Real-Logic-generated Binary EntryPoint codec
+  (Artio 0.184, B3 schema 5.6) over a real socket, both directions. `scripts/fixp-spike.sh` pins
+  11 jars and the extracted schema by SHA-256, builds `spikes/fixp-probe` — a Rust crate
+  detached from this workspace (`[workspace]` empty, listed in the root `Cargo.toml` `exclude`,
+  the `spikes/ktls` pattern) — and runs it against `spikes/fixp-probe/referee/Referee.java`, our
+  own code on Artio's public API, in three arms: `accept` (five steps, `ok` each), and two
+  refusals, `reject-timestamp` (Artio's own `INVALID_TIMESTAMP`) and `reject-credentials` (the
+  referee's own check). The referee also sits in front of Artio as a wire tap that decodes every
+  client frame with Real Logic's generated decoders and judges every field, the header's
+  `blockLength` and the frame length, and every fixed-width field carries a value with no zero
+  byte — so a width mistake in the encoder cannot pass (the review of PR #102 showed `Firm` as
+  `uint16` passing before). The job also runs clippy on the detached probe. The job's own
+  summary-grep step, not `scripts/fixp-spike.sh`'s exit code, is what decides. Nothing in `crates/` or `tools/` depends on the probe or the referee,
+  and no FIXP session exists yet (ADR-0078 decision 2, ADR-0097 decision 5).
+  [docs/CONFORMANCE.md §11](docs/CONFORMANCE.md#11-fixp-spike-against-artio-measured-2026-09-23),
+  [docs/reference/b3-binary-entrypoint-facts.md](docs/reference/b3-binary-entrypoint-facts.md).
+
 ### Changed
 
 - **`FileLog` and `FileJournal` no longer write a secret to disk in clear.** `FileLog` masks
@@ -449,6 +467,17 @@ below describe what a first release would contain.
   `STATUS.md` item 75.
 
 ### Fixed
+
+- **`fixbolt-sbe-gen` reads `valueRef` on a `<type>`, including a composite member.** A schema
+  whose composite ends in `<type presence="constant" valueRef="Enum.Value"/>` — the SBE 1.0
+  Standard's own timestamp examples, and B3 Binary EntryPoint as Artio ships it — failed with
+  the misleading `constant '' is not an unsigned integer`; it now resolves to the named
+  `<validValue>` at 0 wire bytes, as a `<field>`'s `valueRef` already did. As `sbe-tool` does,
+  `generate` refuses a `valueRef` whose `presence` is not `constant`, or whose enum is not
+  encoded as the `<type>`'s `primitiveType`; every unresolvable `valueRef` error, on a field or
+  a type, now names `valueRef '<ref>'`. Tables for schemas without such a member are
+  byte-identical. `crates/sbe-gen/tests/value_ref_on_composite_member.rs`;
+  [the trap](docs/reference/sbe-valueref-on-a-composite-member.md); ADR-0140 decision 4.
 
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
   a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;
