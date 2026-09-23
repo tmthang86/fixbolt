@@ -166,6 +166,20 @@ exposed, so temperature and frequency cannot be read here and the header says `n
 a wrong sensor. What moved ten arms on 2026-09-15 stays unexplained, with no candidate left on
 the list; the guard (ADR-0068 pairs, `scripts/compare-w2w-procedures.sh`) is what holds.
 
+## Candidate tested again, 2026-09-23 — three procedures, and the build slot is still not it
+
+`[measured 2026-09-23]` boot F, the plan's probe C-85 at 20 runs rather than boot C's 10: `hft`
+admin `off`, `RUNS=20`, the same `w2w` binary (sha256 `1cbe3f0…`), commit `9cc8138`. **P1** 24
+minutes after boot with nothing built, **P2** 6 seconds after a full bench rebuild, **P3** after
+at least ten idle minutes. p50 **16 226 / 16 256 / 16 240 ns**; `scripts/compare-w2w-procedures.sh`
+reads every pair `reproduced` at p50, p99 and p99.9 (largest diff 1.161 %, P1↔P3 at p99.9).
+Refuted twice now. `STATUS.md` item 85 closes on *cause unnamed, comparator built*: the tool
+that applies ADR-0068's rule exists, its reversal (`scripts/check-w2w-compare.sh`, a 6 % pair
+must FAIL and a 4 % pair PASS at each percentile) runs in the CI `gates` job, and what moved the
+ten arms of 2026-09-15 stays unexplained. P3's own header read `pass 16 fail 1` on the
+*machine is quiet* row (4 % busy, the manager session at 2 %); its twenty runs each qualified.
+Tables: [measured-costs.md](measured-costs.md), *Boot F, item 85*.
+
 ## Related
 
 - [recording-a-baseline-changed-the-baseline.md](recording-a-baseline-changed-the-baseline.md)

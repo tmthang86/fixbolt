@@ -10,6 +10,14 @@
 # BASELINE_SOURCE_ONLY=1. The threshold in the "B2, 4.7%" case below is the
 # number this file's reversal changes (5 -> 4): everything else in this file
 # is expected to stay green when that happens.
+#
+# This reversal proves only what it tried, per boot F's own trap table: the
+# earlier wire-arm reversal moved only `wire p50`, so a bug in `extract`'s
+# awk that mismatched `p99` or `p99.9` (three separate string comparisons,
+# not one) could still hide behind it. `pct_case` below rotates a 6% (must
+# fail) move across each of `p50`, `p99`, `p99.9` in turn, with the other two
+# held at 4% (must pass), so each of the three published percentiles gets
+# its own FAIL and its own PASS.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -262,6 +270,54 @@ same "arms 2 reproduced 2 not-reproduced 0" \
   "the @10us and @20us arms of one summary are two distinct, paired keys"
 same "2" "$(printf '%s\n' "$ivout" | grep -c '^== hft/admin/off@')" \
   "both arm headers carry the interval suffix"
+
+echo
+echo "=== compare-w2w-procedures.sh, 6% FAIL / 4% PASS at each published percentile"
+
+pctdir=$(mktemp -d)
+trap 'rm -rf "$pctdir" "$ivdir" "$wiredir" "$fixdir"' EXIT
+
+# One arm, base value 10000 ns at every percentile so a 6% move and a 4%
+# move are unambiguous round numbers (diff_pct(10000, 10600) = 6.000,
+# diff_pct(10000, 10400) = 4.000, threshold 5). Only the percentile named
+# `bad` differs by 6%; the other two differ by 4%. Run once per percentile,
+# rotating which one is `bad`, so a bug that reads the right column for
+# `p50` but the wrong one for `p99` or `p99.9` cannot hide behind the other
+# two happening to agree.
+pct_case() { # pct_case <bad> <p50_b> <p99_b> <p99.9_b>
+  local bad=$1 p50b=$2 p99b=$3 p999b=$4
+  cat >"$pctdir/a.txt" <<A
+  == hft / admin / off: median of 9 qualifying runs (0 disqualified) ==
+     p50    10000 ns
+     p99    10000 ns
+     p99.9  10000 ns
+A
+  cat >"$pctdir/b.txt" <<B
+  == hft / admin / off: median of 9 qualifying runs (0 disqualified) ==
+     p50    $p50b ns
+     p99    $p99b ns
+     p99.9  $p999b ns
+B
+  local out rc badline otherline other
+  out=$("$here/compare-w2w-procedures.sh" "$pctdir/a.txt" "$pctdir/b.txt" 2>&1)
+  rc=$?
+  same "1" "$rc" "$bad at 6%, the other two at 4%: exit 1"
+  badline=$(printf '%s\n' "$out" | grep "^    $bad ")
+  same "1" "$(printf '%s\n' "$badline" | grep -c 'not reproduced$')" \
+    "$bad's own line (6%) reads not reproduced"
+  for other in p50 p99 p99.9; do
+    [ "$other" = "$bad" ] && continue
+    otherline=$(printf '%s\n' "$out" | grep "^    $other ")
+    same "0" "$(printf '%s\n' "$otherline" | grep -c 'not reproduced')" \
+      "$bad at 6%: $other (4%) is not flagged not-reproduced"
+    same "1" "$(printf '%s\n' "$otherline" | grep -c 'reproduced$')" \
+      "$bad at 6%: $other (4%) line ends reproduced"
+  done
+}
+
+pct_case p50 10600 10400 10400
+pct_case p99 10400 10600 10400
+pct_case p99.9 10400 10400 10600
 
 echo
 echo "=== summary"

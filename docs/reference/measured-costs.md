@@ -4098,6 +4098,67 @@ all item 89 asks of them. Nothing was compiled to make D5 run, and its provenanc
 is a file's timestamp rather than a manifest line; that is weaker, and it is why the two boots'
 p50 figures are compared here as *tiers* rather than differenced.
 
+### Boot D, D5 — the admin gap, diffed
+
+`[analysed 2026-09-23, boot F step F4]` — no new measurement. The five D5 `perf record` files
+(`-e cycles -F 4999 -t <engine tid>`, 4 s, **no `-g`**) and the five `.stat` files above, read on
+the same desk with the same `w2w` binary (sha256 `1cbe3f0…`, re-checked at analysis time). Kernel
+symbols need root here (`kptr_restrict = 1`), so every command ran as
+`DEBUGINFOD_URLS= nice taskset -c 0-5 sudo -n env DEBUGINFOD_URLS= perf … -f`
+([the two perf traps](perf-report-hangs-on-debuginfod-and-refuses-a-root-owned-record.md)). The
+rule is [ADR-0095](../decisions/ADR-0095-a-drift-is-read-at-re-record-time-not-by-a-wider-band-a-segment-is-named-by-a-rule-and-the-desk-runs-strict-at-every-boot.md)
+decision 3, applied with `a` = N = 1 (`a-1` = `d5-n1-2`, `a-2` = `d5-n1-3`; the `n1-1` record was
+disqualified at the boot) and `b` = N = 16 (`b-1` = `d5-n16-1`, `b-2` = `d5-n16-2`; `d5-n16-3` run as
+two extra cross pairs). One pair, verbatim:
+
+```text
+DEBUGINFOD_URLS= nice taskset -c 0-5 sudo -n env DEBUGINFOD_URLS= perf diff -f -c delta-abs -s symbol -o 1 -t ';' d5-n1-2.data d5-n16-1.data
+```
+
+`Δns = share_b × p50_b − share_a × p50_a`, the p50 each record run printed. Σ Δns tracks
+`p50_b − p50_a` in every pair (+61.9 vs +61, +105.6 vs +130, +60.6 vs +101, +90.6 vs +90), and
+`perf diff`'s Δshare agrees with the two per-file `perf report`s to ≤ 0.02 pp. Unresolved
+addresses (≈ 5.3 % `[k]`, ≈ 0.3 % `[.]`, flat across runs) are pooled and never named.
+
+| cross pair | largest \|Δns\| | next rows |
+|---|---|---|
+| a-1 → b-1 | `native_queued_spin_lock_slowpath` **−425.6 ns** (−2.62 pp) | `inode_init_always_gfp` −44.9; `__sys_recvfrom` +44.4; `tcp_v4_rcv` +37.8; `tcp_recvmsg` +37.8 |
+| a-2 → b-2 | `native_queued_spin_lock_slowpath` **−400.4 ns** (−2.47 pp) | `arch_exit_to_user_mode_prepare` +56.4; `__memcg_slab_post_alloc_hook` +41.2; `_raw_spin_lock` −38.1 |
+| a-1 → b-2 | `native_queued_spin_lock_slowpath` **−427.2 ns** (−2.63 pp) | `__sys_recvfrom` +57.9; `fdget` +40.0; `Engine::turn` +36.3 |
+| a-2 → b-1 | `native_queued_spin_lock_slowpath` **−398.9 ns** (−2.46 pp) | `aa_inet_msg_perm` +50.8; `arch_exit_to_user_mode_prepare` +38.1; `tcp_v4_rcv` +36.3 |
+
+The two extra pairs against `d5-n16-3` lead with the same symbol (−435.3, −408.5 ns). The largest
+same-arm |Δshare| of that symbol is **0.16 pp** (`a-1 ↔ a-2`), against a smallest cross 2.46 pp.
+
+**What the rule returns, and why it is not the answer.** Mechanically, decision 3 names
+`native_queued_spin_lock_slowpath`: the largest |Δns| in all four cross pairs, one sign, 15× its
+same-arm noise. But that sign is **negative** in every pair while the gap is **positive**: a
+contended kernel spinlock that takes 2.66–2.82 % of the engine thread's samples at N = 1 takes
+0.13–0.19 % at N = 16. The symbol names what N = 16 *removes*, not what makes N = 16 slower, and
+the rule as written does not ask the named symbol's sign to match `turn_b − turn_a`. Looked for on
+the gap's own side, the largest **positive** Δns is a different symbol in 4 of the 6 cross pairs
+(`__sys_recvfrom`, `arch_exit_to_user_mode_prepare`, `aa_inet_msg_perm`, `fdget`), each ≤ +58 ns,
+the size of the largest same-arm move (+42 ns). So:
+
+**Item 89's +0.62 %: accept, unnamed.** IPC from the `.stat` files, N = 1 → N = 16:
+**0.7688 / 0.7689 / 0.7726 → 0.7902 / 0.7947** (`d5-n16-2`'s stat run was disqualified). The
+engine at N = 16 retires more instructions per cycle and spends the samples the spinlock gave up
+across the `recvfrom` and syscall-entry path — a spin loop spending its idle time elsewhere, which
+is a share and not a per-message cost (the *Boot B* caveat stands).
+
+Not settled by this, each for a stated reason:
+
+- **Who holds the spinlock.** The records have no callchains, so the caller of
+  `native_queued_spin_lock_slowpath` is unread.
+- **Why `accept4` is not thinned.** `do_accept` (0.74–1.00 %) and `inode_init_always_gfp`
+  (0.97–1.31 %) keep the same share at both N, where a 16× thinning would show. The candidate is
+  the reset of the countdown on every idle turn ([ADR-0069](../decisions/ADR-0069-the-listener-is-polled-on-a-cadence-in-hft.md)
+  consequence 1, *Bad*) — a candidate, not measured here.
+- **Order.** The arms ran in sequence, all N = 1 then all N = 16, so a drift in time over
+  those 81 s (11:44:56 → 11:46:17) is not separated from N.
+
+Evidence: `target/boot-d-evidence/d5-analysis.txt` (gitignored, this desk only).
+
 ### What boot D did not settle
 
 - **The four remaining segments of item 93.** Only segment (3) has a cause. The `perf diff`
@@ -4276,6 +4337,163 @@ not a regression, and is unrelated to the three lines S3 found genuinely over ba
 S1's first 20-round run lost rounds 1, 6 and 11 to busy ≥ 3% — traced to the manager's own tool
 calls running on the desk while the rotation was in flight, not to background system load. The
 second run (S1b) was driven with the manager idle for its duration and lost 0 of 4 rounds.
+
+## Boot F, 2026-09-23: item 99 named, the wakeup p50s banded, `--strict` green, item 85's candidate refuted, and item 51's flush arm run
+
+`[measured 2026-09-23]` steps F0–F9 of
+[plans/2026-09-23-boot-f-closes-the-open-items-and-powers-off.md](../plans/2026-09-23-boot-f-closes-the-open-items-and-powers-off.md).
+§9 desktop `tmt-B450-I-AORUS-PRO-WIFI`, Ryzen 7 3700X, kernel 7.0.0-31, grub line
+`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, mitigations on, runtime toggles
+by `fixbolt-machine on`, systemd timers stopped, `enp9s0` IRQs on cpus 0–5, `rx-usecs 0`, EEE
+off; `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 17 fail 0 unknown 0` before every
+measuring step (one exception, P3 below, printed by the procedure itself). The boot rebuilt the
+bench binaries **once**, on the housekeeping cores, as ADR-0096 decision 3 allows
+(`nice taskset -c 0-5 cargo bench --no-run`, `target/boot-f-evidence/f6-build.txt`: 20 bench
+binaries, `compiling=0 errors=0` on the verify pass, alignment pinned and read back); every
+timing after F6 is the new binaries, and none of the three `--strict` runs below compiled
+anything. Evidence: `target/boot-f-evidence/` (gitignored, this desk only).
+
+### Boot F, item 99 — the `one slot` case was set by the length of `benches/baselines.tsv`
+
+F1, before any `perf record` of the boot, on the **old** pinned `journal` binary
+(`journal-0f5dc4e01fbfa6df`, sha256 checked against `../fb-s9e/MANIFEST.txt`), `taskset -c 6`,
+`target/boot-f-evidence/f1-table.txt`:
+
+| arm | `benches/baselines.tsv` | `journal put, 191 bytes, one slot` | `…, walking` (191) |
+|---|---|---|---|
+| F1a, the file as committed | 24 897 bytes | 12.4, 12.4, 12.4 | 8.8 ×3 |
+| F1b, the file at `9374820` (boot E S3) | 24 226 bytes | 7.7, 7.4, 7.4 | 8.7 ×3 |
+| restored by `git checkout --` | 24 897 bytes | 12.4 | 8.8 |
+
+Then the sweep: the `9374820` file with a `# pad …` comment line of `k` bytes appended,
+`k = 0 … 1024` in steps of 16, one run each. **`one slot` read 6.3 … 19.0 ns** — 6.3 … 8.1 for
+`k ≤ 624`, then 11.4 … 19.0 for `k = 640 … 800` (24 866 … 25 026 bytes, the single exception 6.3
+at `k = 784`), then 6.3 … 7.7 again from `k = 816` to 1024. `walking` stayed 8.7 … 8.9 at
+every `k`. Same binary, same core, same boot: the only variable was the length of a file the
+harness reads before the timed closure runs. F1c (step F7, after the boot's `perf record`s): one
+S2-shaped `perf record -g` of the `validate` bench, then three `journal` runs on the committed
+file — **12.4, 12.4, 12.4** (`f7.txt`), the value F1a read before any `perf`. So `perf` is not a
+cause; boot E's 7.4 → 12.4 was the commit between S3 and S4 that lengthened the file.
+
+**Named: the bench's heap layout, set by the length of a file it reads at startup** — the second
+instance of the class [recording-a-baseline-changed-the-baseline](recording-a-baseline-changed-the-baseline.md)
+records, this time at run time. Fix `6b2833b` (ADR-0096 decision 2, revised in place: the
+buffer is a **fixed-size** 1 MiB block, carved from brk here, not `mmap`): `load_baselines` and
+`cpu_model` read into `String::with_capacity(1 << 20)`; guarded by
+`a_loaded_file_reads_into_a_fixed_one_mib_buffer` in `crates/codec/tests/bench_verdict.rs`.
+
+The same sweep on the **new** `journal` binary (sha256 `22558546…`, F8, `f8.txt`, the committed
+26 342-byte file plus `k`): **7.4 … 8.3 ns**, 43 of 65 points at 7.4, `walking` 8.7 … 8.8
+throughout. The ×1.68 step is gone. **But by the plan's own bound this is not flat**: max/min is
+8.3 / 7.4 = **1.12**, and the plan and ADR-0096 decision 2 asked for ≤ 1.10; two points,
+8.3 (`k = 224`) and 8.2 (`k = 800`), sit above the line's band ceiling of 8.1. The residue is a
+spread of single-run points, not a step. The `one slot` line was **not** re-recorded (it reads
+7.4 / 7.6 / 7.4 against baseline 7.4, band [6.7, 8.1], in the three `--strict` runs below), so the "not accepted, not
+re-recorded" branch of decision 2 is what the line did; item 99 is closed on the cause, with the
+residual 1.12 left in *Not proven*.
+
+### Boot F, item 100 — the wakeup p50s meet the band through `Suite::figure`
+
+F2 (`f23.txt`), before the rebuild: 20 unpinned runs of the old `wakeup` binary (sha256
+`1a353b98…`), 8 s apart, run 1 discarded as the procedure says, `check-machine` 17/0/0 before and
+after. Medians of runs 2–20: **`wakeup epoll p50` 5 089.0 ns** (5 070 … 5 109, max/median
+1.004), **`wakeup poll p50` 4 939.0 ns** (4 929 … 4 999, max/median 1.012). **n = 19, one short
+of the 20 the plan named** — the discarded run was one of the twenty, not a twenty-first. These
+are the two `benches/baselines.tsv` lines of `6b2833b`, margin 1.10, `n` column 19, unpinned
+because `bench.sh --strict` runs them unpinned. On the new binary inside the three `--strict`
+runs: epoll 5 080.0 / 5 080.0 / 5 070.0, poll 4 929.0 / 4 919.0 / 4 960.0, every one inside
+[4 626.4, 5 597.9] and [4 490.0, 5 432.9]. So the F2 lines stand and no F8 re-record was needed.
+
+### Boot F, `--strict` three times, and the case the fix moved
+
+| run | when (UTC) | exit | over | under | no baseline | the case that matters |
+|---|---|---|---|---|---|---|
+| `f8-strict-1.txt` | 01:35–01:45 | **0** | 0 | 0 | **0** | `walk nested group + varData` 175.2 in [145.0, 175.5] — by 0.3 ns |
+| `f8-strict-2.txt` | 01:55 | 1 | **1** | 0 | 0 | `walk nested group + varData` **177.9 OVER** 175.5 |
+| `f8-strict-3.txt` | after `5576694` | **0** | 0 | 0 | 0 | 178.7 in [160.5, 194.2] |
+
+Every run: `targets measuring 20 of 20`, `targets silent 0`, `check-machine` 17/0/0, no
+`Compiling` line. Run 1 is the first `bench.sh --strict` green on this desk since boot B step B1
+(2026-09-15).
+
+**The one red was a layout shift the item 99 fix caused.** `fixbolt-sbe`'s `walk nested group +
+varData` was recorded 159.5 at boot E (S1c, n = 24). A/B in this boot, interleaved, pinned
+`cpu6` (`f8-sbe-ab.txt`): the **pre-`6b2833b`** `sbe` binary (sha256 `89bcc880…`) read
+**153.6 / 159.9 / 160.3 / 154.4 / 158.4**, the **post-`6b2833b`** binary (sha256 `1719ddc4…`)
+**175.0 / 174.8 / 175.3 / 174.2 / 176.1** — about **+10 %**, nothing in `crates/sbe` changed.
+Not glibc's raised mmap threshold (ADR-0096 decision 2's recorded side effect): with
+`MALLOC_MMAP_THRESHOLD_=131072`, which pins the threshold, the new binary read 175.3 / 174.7 /
+177.4 against 177.0 / 175.6 / 175.6 without it. The mechanism — the heap position after the
+fixed 1 MiB block, or the harness's own code layout — is **not isolated**. The line was
+re-recorded with that cause named (`5576694`, ADR-0095 decision 2): 20 runs of the new binary
+(`f9b.txt`), median **176.5**, max/median 183.2 / 176.5 = **1.038**, margin 1.10 kept. This is
+`STATUS.md` item 101: the fix for one layout trap moved a different case by the same class of
+mechanism.
+
+### Boot F, item 85 — three procedures, one variable, all reproduced
+
+`ARMS="hft:admin" RUNS=20 scripts/w2w-baseline.sh`, `target/release/w2w` sha256 `1cbe3f0…`
+(built 2026-09-19, not rebuilt), commit `9cc8138`, tree clean, engine `cpu6`, client `cpu7`,
+20 qualifying runs of 20 000 each, 0 disqualified, in every procedure:
+
+| procedure | when | p50 (across runs) | p99 | p99.9 | machine row in its own header |
+|---|---|---|---|---|---|
+| P1 (`f23.txt`, `f3-p1/`) | uptime 24 min, nothing built this boot | **16 226** (16 140 … 16 391) | 21 155 | 22 748 | `pass 17 fail 0` |
+| P2 (`f3-p2.txt`) | **6 s** after the F6 build ended (`f3-p2-head.txt`) | **16 256** (16 141 … 16 351) | 21 004 | 22 608 | `pass 17 fail 0` |
+| P3 (`f3-p3.txt`) | uptime 1 h 21 min, ≥ 10 min idle after P2 | **16 240** (16 110 … 16 401) | 21 000 | 22 487 | `pass 16 fail 1` — *machine is quiet* 4 % busy, `claude` 2 % |
+
+`scripts/compare-w2w-procedures.sh` (`f8.txt`), p50 / p99 / p99.9 diffs: P1↔P2 **0.185 %** /
+0.719 % / 0.619 %, P1↔P3 **0.086 %** / 0.738 % / 1.161 %, P2↔P3 **0.099 %** / 0.019 % /
+0.538 % — **`reproduced` at every percentile in all three pairs**. The "right after a build"
+candidate is refuted a second time (boot C's C-85 refuted it at 10 runs); the 2026-09-14/15
+effect keeps no candidate. P3's own quiet row read red at the instant it was taken (the manager
+session's process at 2 % of a core); its twenty runs each passed the per-run busy check, and
+the P3 figures are read as a comparison, as the row's own text allows, not published.
+
+### Boot F, item 51 — the flush arm: netfilter is about 2.9 µs of the loopback round trip
+
+Run only after `ss -tnp` and `who` showed no controlling session on a `100.x` address.
+`crates/engine/benches/payload.rs`'s `TCP loopback, 8 in 8 out`, the new `payload` binary
+(`payload-feeb7b4c284ff02a`), `taskset -c 6`, five runs per phase, `f9b.txt` (script `f9b.sh`):
+
+| phase | ruleset | runs (ns/op) | median |
+|---|---|---|---|
+| A (02:06 UTC) | as booted | 12 817.6, 12 853.7, 12 821.9, 12 830.3, 12 828.7 | **12 828.7** |
+| B (02:09) | `systemctl stop tailscaled`, `nft flush ruleset` (0 chains) | 9 912.2, 9 929.7, 9 935.4, 9 940.1, 9 951.3 | **9 935.4** (**−22.6 %**, −2 893 ns) |
+| A′ (02:12) | `systemctl start tailscaled`, ruleset rebuilt | 12 839.8, 12 797.8, 12 844.6, 12 818.7, 12 805.1 | **12 818.7** |
+
+A and A′ agree to 0.08 %, so the flush left nothing behind. The ruleset on this desk is
+**entirely tailscaled's**: tables `ip`/`ip6` `filter`, `nat`, `mangle`, chains `ts-input`,
+`ts-forward`, `ts-postrouting` and the base chains that jump to them, all marked "managed by
+iptables-nft", no Docker chain (`nft-before-2.txt`). Restarting tailscaled rebuilt it
+**identical modulo counters** (diffed with counters normalised, and identical again to the
+first attempt's `nft-before.txt`). The first attempt at this arm (`f9.txt`) lost its A, B and A′
+readings to a field-number slip and could not restore by `nft -f` —
+[a-saved-iptables-nft-ruleset-does-not-load-back-through-nft](a-saved-iptables-nft-ruleset-does-not-load-back-through-nft.md).
+
+Read with the earlier arms, never added to them: boot B's `notrack` on `lo` was −420 ns
+(−3.3 %), boot C's `mitigations=off` was −58.4 %, and this flush is −22.6 %; the three ran on
+different boots and were never combined, and a mitigation's cost lands partly inside the
+netfilter hooks, so the shares are not additive. **One machine, one boot, one case, five runs
+per phase** — an A/B, not a published figure. Item 51 closes at the mitigation tier per
+ADR-0096 decision 5, with this arm recorded; the per-mitigation split stays decided, not
+measured.
+
+### Boot F, Item 96 — the descent's inclusive cost
+
+`[2026-09-23, boot F step F7]` Machine: AMD Ryzen 7 3700X, §9 desk, `check-machine.sh` pass 17 fail 0 unknown 0. Binary: manifest-pinned `ms` `validate` (`fix50sp2`), sha256 `e34e60f9…`, pinned to cpu6. Three records: `perf record -e cycles -F 999 --call-graph dwarf,32768`. Read with `DEBUGINFOD_URLS= perf report -f -i d96f-<k>.data --symfs <fixed tree> --time <exec>, --children -s sym --percent-limit 0`.
+
+| k | children % | self % | case ns/op | Total Lost Samples |
+|---|---|---|---|---|
+| 1 | 8.49 | 2.86 | 82 666.9 | 0 |
+| 2 | 9.68 | 3.31 | 82 704.7 | 0 |
+| 3 | 8.28 | 2.85 | 82 884.6 | 0 |
+
+**Price (ADR-0094 decision 1): ≥ 7 021.6 ns (children 8.49 %, self 2.86 %, n = 3, range 6 844.8–8 023.2 ns).** Divided by the case's own share of the run (95.72 %), that is 8.87 % of the case. C1–C5 hold. Every chain reaches `_start`. The only outer caller is `validate_with`, into which `bad_group_count` is inlined. The callees are `group_members`, `open`, `region_end`, `entry_end` and the recursion. There is one outer call site (`c7046`), so no level of the descent is inlined. The "≥" is for the `bad_group_count` loop that drives it. The number is cycles inside the descent, not cycles a message would save without it (ADR-0094 §3). Boot E's 2.94 % was the self share only. Boot D's −10.83 % is about 2 points above this figure; those points are layout or second-order cost. Evidence: `target/boot-f-evidence/d96f-analysis.txt`.
+
+The read needed a workaround for a perf unwinder trap:
+[perf-dwarf-unwind-fails-on-an-lld-linked-pie](perf-dwarf-unwind-fails-on-an-lld-linked-pie.md).
+The manager did not re-run the read; the agent's independent `perf script` re-aggregation is the check.
 
 ## Boot C, 2026-09-18: the listener cadence, N ∈ {1, 16, 256}, two procedures
 

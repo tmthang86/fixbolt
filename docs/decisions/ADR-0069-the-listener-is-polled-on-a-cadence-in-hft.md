@@ -7,6 +7,7 @@ the same morning at step 1, questions Q1–Q3 answered by the owner as recommend
 in place before acceptance** (`CLAUDE.md` §5): decision 2's default moves from 1 to **16**, on
 the figures in *Measured*; the original text is kept struck through. · **Date:** 2026-09-18 ·
 **Plan:** docs/plans/2026-09-18-polling-the-listener-less-often-than-the-sessions.md
+**Measured again:** the boot C admin gap, diffed under ADR-0095 decision 3 at boot D's D5 — *accept, unnamed* — in [measured-costs](../reference/measured-costs.md) *Boot D, D5 — the admin gap, diffed*.
 **Answers:** `STATUS.md` open item 89 — *whether the listener should be polled less often than
 the sessions, and what that measures as*.
 **Changes nothing in:** [ADR-0012](ADR-0012-latency-first-and-one-session-per-polling-thread.md)

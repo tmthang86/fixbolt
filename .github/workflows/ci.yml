@@ -575,6 +575,19 @@ jobs:
       - name: The socket corpus under contention, both harnesses
         run: scripts/check-socket-corpus-under-contention.sh 2 8
 
+      # `STATUS.md` item 85, ADR-0096 decision 4(a): `compare-w2w-procedures.sh`
+      # is the comparator ADR-0068 decision 2 names, and this is its own
+      # reversal (a 6% pair FAILs, a 4% pair PASSes, at each of p50, p99,
+      # p99.9) — already run under the `script-logic` job above, alongside
+      # this repository's other pure-function probes. It is run again here,
+      # in `gates`, because ADR-0068's rule is "no longer applied by hand":
+      # the comparator that decides whether a published wire figure
+      # reproduced is exactly as load-bearing as `cargo test`, `clippy` and
+      # the socket corpus above, and belongs on the same gate that blocks a
+      # merge, not only on the advisory job that reports script logic.
+      - name: The w2w procedure comparator, and its own reversal
+        run: scripts/check-w2w-compare.sh
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning
