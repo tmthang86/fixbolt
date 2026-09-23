@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # The FIXP spike (phase 3 row 9, docs/plans/2026-09-23-p3-fixp-spike.md, ADR-0140): pin and fetch
-# Artio's Binary EntryPoint jars, extract the schema they actually decode with, and run this
-# repository's own referee (spikes/fixp-probe/referee/Referee.java) alone.
+# Artio's Binary EntryPoint jars, extract the schema they actually decode with, build the Rust
+# probe (spikes/fixp-probe) against that schema, and run it against this repository's own referee
+# (spikes/fixp-probe/referee/Referee.java) — Artio's acceptor behind our authentication strategy.
 #
-# THIS ROW (1) ONLY BUILDS ONE ARM: `referee-only` — the referee starts headless behind an
-# in-process Aeron media driver, is OBSERVED listening (FixEngine.launch binds the acceptor
-# socket synchronously and only returns once that succeeds — see the trap recorded at the top of
-# spikes/fixp-probe/referee/Referee.java for why this, and not a bare loopback probe, is what
-# counts as the observation here), runs for its own deadline, and stops on its own.
-# Later rows (plan Chia việc 3-5) add the `accept`, `reject-timestamp` and `reject-credentials`
-# arms and the summary line; this script refuses any arm it does not yet know, by name, so a
-# typo in FIXP_SPIKE_ARMS fails loudly instead of silently skipping something.
+# Arms (FIXP_SPIKE_ARMS, default: the three below; an unknown name fails loudly):
+#   referee-only        the referee starts headless, is OBSERVED listening (FixEngine.launch binds
+#                       the acceptor socket synchronously — see the trap at the top of
+#                       Referee.java), runs for its own deadline, and stops on its own (row 1).
+#   accept              Negotiate -> NegotiateResponse -> Establish -> EstablishAck -> Terminate ->
+#                       Terminate -> EOF: five probe lines `accept: <step> ok`, and the referee's
+#                       seven `referee: field <name> ok <value>` lines, each value held against
+#                       what the probe was told to send (row 3).
+#   reject-timestamp    a Negotiate an hour old: `NegotiateReject INVALID_TIMESTAMP(7)`, Artio's
+#                       own check, after the referee accepted all seven fields (ADR-0140 dec. 6).
+#   reject-credentials  credentials the referee does not expect: `referee: field credentials
+#                       MISMATCH`, then `NegotiateReject CREDENTIALS(1)` (ADR-0140 decision 6).
+#
+# Only the printed lines decide (CLAUDE.md §7: read the output, not the exit status). The summary
+#   fixp-spike: accept PASS 5/5, reject-timestamp PASS, reject-credentials PASS
+# is printed only when all three of those arms ran and passed; nothing else prints it.
 #
 # ADR-0140 decision 3: no B3 schema byte and no jar is ever committed. Both land under
 # vendor/fixp/, which /vendor/ already gitignores wholesale (ADR-0001's rule for third-party
@@ -28,21 +37,52 @@ SCHEMA_FILE="${VENDOR_DIR}/binary_entrypoint.xml"
 CLASSES_DIR="${VENDOR_DIR}/classes"
 REFEREE_SRC="${REPO_ROOT}/spikes/fixp-probe/referee/Referee.java"
 
-ARMS="${FIXP_SPIKE_ARMS:-referee-only}"
-PORT="${FIXP_REFEREE_PORT:-15660}"
+PROBE_DIR="${REPO_ROOT}/spikes/fixp-probe"
+PROBE_BIN="${PROBE_DIR}/target/debug/fixp-probe"
+
+ARMS="${FIXP_SPIKE_ARMS:-accept reject-timestamp reject-credentials}"
+# Empty (the default): each arm takes a port the kernel hands out fresh — see pick_port below.
+PORT_OVERRIDE="${FIXP_REFEREE_PORT:-}"
 ARCHIVE_CONTROL_PORT="${FIXP_REFEREE_ARCHIVE_CONTROL_PORT:-10010}"
 ARCHIVE_RESPONSE_PORT="${FIXP_REFEREE_ARCHIVE_RESPONSE_PORT:-10020}"
 DEADLINE_SECONDS="${FIXP_REFEREE_DEADLINE_SECONDS:-5}"
+# A probe arm ends the referee through its stop file; this is only the ceiling if that never comes.
+ARM_REFEREE_CEILING_SECONDS="${FIXP_ARM_REFEREE_CEILING_SECONDS:-60}"
+# Every read the probe makes has this deadline (the plan's "Probe đọc không hạn chót" trap).
+PROBE_DEADLINE_MS="${FIXP_PROBE_DEADLINE_MS:-5000}"
+# How long to wait for the referee's "library connected" line before giving up on the arm.
+REFEREE_READY_SECONDS="${FIXP_REFEREE_READY_SECONDS:-60}"
 
-for tool in curl sha256sum jar javac java git comm mktemp; do
+# ---- The session identity, said once --------------------------------------------------------------
+# The referee is told to EXPECT these; the probe is told to SEND them (reject-credentials alone
+# sends a different credentials value). The script then holds each value the referee prints as
+# RECEIVED against what the probe was told to send.
+SESSION_ID=4242
+SESSION_VER_ID=1
+ENTERING_FIRM=77
+CREDENTIALS="fixbolt-spike-credentials"
+CLIENT_IP="127.0.0.1"
+CLIENT_APP_NAME="fixbolt-fixp-probe"
+CLIENT_APP_VERSION="0.0.0-spike"
+WRONG_CREDENTIALS="${CREDENTIALS}-wrong"
+# Establish.keepAliveInterval the probe sends: inside Artio's [min, max] below.
+PROBE_KEEPALIVE_MS=10000
+# The referee's limits, set explicitly and printed by it (plan trap: keep-alive out of bounds ->
+# EstablishReject). ACCEPTOR_KEEPALIVE_MS is what EstablishAck.keepAliveInterval must carry.
+SENDING_TIME_WINDOW_MS=120000
+KEEPALIVE_MIN_MS=1
+KEEPALIVE_MAX_MS=60000
+ACCEPTOR_KEEPALIVE_MS=30000
+
+for tool in curl sha256sum jar javac java git comm mktemp python3; do
   command -v "${tool}" >/dev/null || { echo "${tool} is required" >&2; exit 1; }
 done
 
 # Taken before anything is fetched, built or run, so the last step can ask what THIS run added
 # rather than whether the tree happened to already be clean (scripts/interop.sh's pattern).
-BEFORE="$(cd "${REPO_ROOT}" && git status --porcelain --untracked-files=all | sort)"
+BEFORE="$(cd "${REPO_ROOT}" && git status --porcelain --untracked-files=all | LC_ALL=C sort)"
 
-echo "==> fixp-spike: arms=[${ARMS}] port=${PORT} archive-control=${ARCHIVE_CONTROL_PORT} archive-response=${ARCHIVE_RESPONSE_PORT} deadline=${DEADLINE_SECONDS}s"
+echo "==> fixp-spike: arms=[${ARMS}] port=${PORT_OVERRIDE:-fresh per arm} archive-control=${ARCHIVE_CONTROL_PORT} archive-response=${ARCHIVE_RESPONSE_PORT} deadline=${DEADLINE_SECONDS}s"
 
 # ---- 1. The 11 jars, pinned by SHA-256 (docs/plans/2026-09-23-p3-fixp-spike.md, "Jar cần ghim") -
 # Maven Central path -> pinned SHA-256. Flip one hex digit here and the jar checked against a
@@ -123,7 +163,48 @@ JAVA_ADD_OPENS=(
   --add-opens java.base/java.util.zip=ALL-UNNAMED
 )
 
-# ---- 4. Arms -------------------------------------------------------------------------------
+# A port for one arm's acceptor. Artio 0.184 binds it without SO_REUSEADDR
+# (DefaultTcpChannelSupplier.bind -> ServerSocketChannel.bind; JDK NIO does not set it), and Artio
+# closes first — after echoing Terminate, and at its authentication timeout after a library-level
+# NegotiateReject — so the port it listened on is left in TIME_WAIT for about a minute, and the next
+# referee on that port fails in FixEngine.launch with `BindException: Address already in use`
+# [measured 2026-09-23 on this desk: the third arm of the first run on one fixed port]. So each arm
+# asks the kernel for a port that is bindable now, without SO_REUSEADDR, exactly as Artio will bind
+# it, and prints it. FIXP_REFEREE_PORT pins one port for every arm instead, at the caller's risk.
+pick_port() {
+  if [[ -n "${PORT_OVERRIDE}" ]]; then
+    echo "${PORT_OVERRIDE}"
+    return
+  fi
+  # IPv6 first, bound to the v4-mapped loopback, because that is the socket a JVM opens for
+  # 127.0.0.1 on a dual-stack host; plain IPv4 where there is no IPv6.
+  python3 - <<'PY'
+import socket
+try:
+    s = socket.socket(socket.AF_INET6)
+    s.bind(("::ffff:127.0.0.1", 0))
+except OSError:
+    s = socket.socket(socket.AF_INET)
+    s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+# ---- 4. The probe, built against the schema just extracted ---------------------------------------
+# Outside the workspace (root Cargo.toml `exclude`), so it builds from its own manifest and its own
+# committed Cargo.lock (`--locked`: a re-run must not resolve different versions silently).
+NEEDS_PROBE=0
+for arm in ${ARMS}; do
+  [[ "${arm}" == "referee-only" ]] || NEEDS_PROBE=1
+done
+if [[ "${NEEDS_PROBE}" -eq 1 ]]; then
+  command -v cargo >/dev/null || { echo "cargo is required" >&2; exit 1; }
+  echo "==> building ${PROBE_DIR#"${REPO_ROOT}"/}"
+  cargo build --locked --quiet --manifest-path "${PROBE_DIR}/Cargo.toml"
+fi
+
+# ---- 5. Arms -------------------------------------------------------------------------------
 #
 # One arm, one run directory of its own, and the JVM's OWN CWD is that directory too — so any
 # incidental file a crashing JVM writes (hs_err_pid*.log and friends) lands under vendor/fixp/,
@@ -132,13 +213,14 @@ JAVA_ADD_OPENS=(
 # before (the plan's "Thư mục Aeron / archive còn sót" trap) — this row's reversal at the process
 # level, proven separately from the jar/schema checksum reversal above.
 run_referee_only() {
-  local run_dir log rc start_s elapsed
+  local run_dir log rc start_s elapsed PORT
+  PORT="$(pick_port)"
   run_dir="$(mktemp -d "${VENDOR_DIR}/run.XXXXXX")"
   log="${run_dir}/referee.log"
   start_s="${SECONDS}"
 
   echo
-  echo "==> [referee-only] aeron-dir=${run_dir}"
+  echo "==> [referee-only] port=${PORT} aeron-dir=${run_dir}"
 
   set +e
   ( cd "${run_dir}" && java "${JAVA_ADD_OPENS[@]}" -cp "${CLASSES_DIR}:${CLASSPATH}" Referee \
@@ -178,26 +260,196 @@ run_referee_only() {
   return 0
 }
 
+# `require LOG LINE` — LINE must appear in LOG as a whole line; says MISSING otherwise.
+require() {
+  if grep -qxF -- "$2" "$1"; then
+    return 0
+  fi
+  echo "MISSING: '$2'" >&2
+  return 1
+}
+
+# One probe arm: the referee in the background with its own run directory, stop file and
+# expectations; the probe in the foreground; then the stop file, and both transcripts judged by
+# their lines.
+run_probe_arm() {
+  local arm="$1"
+  local run_dir ref_log probe_log stop_file ref_pid ref_rc probe_rc start_s elapsed waited PORT
+  PORT="$(pick_port)"
+  run_dir="$(mktemp -d "${VENDOR_DIR}/run.XXXXXX")"
+  ref_log="${run_dir}/referee.log"
+  probe_log="${run_dir}/probe.log"
+  stop_file="${run_dir}/stop"
+  start_s="${SECONDS}"
+
+  local sent_credentials="${CREDENTIALS}"
+  [[ "${arm}" == "reject-credentials" ]] && sent_credentials="${WRONG_CREDENTIALS}"
+  local sent_client_app_version="${CLIENT_APP_VERSION}"
+
+  echo
+  echo "==> [${arm}] port=${PORT} aeron-dir=${run_dir}"
+  # Created before the referee starts, so the wait below never greps a file not yet there.
+  : >"${ref_log}"
+
+  ( cd "${run_dir}" && exec java "${JAVA_ADD_OPENS[@]}" -cp "${CLASSES_DIR}:${CLASSPATH}" Referee \
+      --port "${PORT}" \
+      --archive-control-port "${ARCHIVE_CONTROL_PORT}" \
+      --archive-response-port "${ARCHIVE_RESPONSE_PORT}" \
+      --deadline-seconds "${ARM_REFEREE_CEILING_SECONDS}" \
+      --aeron-dir "${run_dir}/aeron" \
+      --stop-file "${stop_file}" \
+      --sending-time-window-ms "${SENDING_TIME_WINDOW_MS}" \
+      --keepalive-min-ms "${KEEPALIVE_MIN_MS}" \
+      --keepalive-max-ms "${KEEPALIVE_MAX_MS}" \
+      --acceptor-keepalive-ms "${ACCEPTOR_KEEPALIVE_MS}" \
+      --expect-session-id "${SESSION_ID}" \
+      --expect-session-ver-id "${SESSION_VER_ID}" \
+      --expect-entering-firm "${ENTERING_FIRM}" \
+      --expect-credentials "${CREDENTIALS}" \
+      --expect-client-ip "${CLIENT_IP}" \
+      --expect-client-app-name "${CLIENT_APP_NAME}" \
+      --expect-client-app-version "${CLIENT_APP_VERSION}" ) >>"${ref_log}" 2>&1 &
+  ref_pid=$!
+
+  # The probe starts only once a library is connected to acquire its connection.
+  waited=0
+  until grep -qxF "referee: library connected" "${ref_log}"; do
+    if ! kill -0 "${ref_pid}" 2>/dev/null; then
+      break
+    fi
+    if (( waited >= REFEREE_READY_SECONDS * 10 )); then
+      break
+    fi
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+
+  probe_rc=-1
+  if grep -qxF "referee: library connected" "${ref_log}"; then
+    set +e
+    "${PROBE_BIN}" \
+      --arm "${arm}" \
+      --addr "127.0.0.1:${PORT}" \
+      --deadline-ms "${PROBE_DEADLINE_MS}" \
+      --session-id "${SESSION_ID}" \
+      --session-ver-id "${SESSION_VER_ID}" \
+      --entering-firm "${ENTERING_FIRM}" \
+      --credentials "${sent_credentials}" \
+      --client-ip "${CLIENT_IP}" \
+      --client-app-name "${CLIENT_APP_NAME}" \
+      --client-app-version "${sent_client_app_version}" \
+      --keepalive-ms "${PROBE_KEEPALIVE_MS}" \
+      --server-keepalive-ms "${ACCEPTOR_KEEPALIVE_MS}" >"${probe_log}" 2>&1
+    probe_rc=$?
+    set -e
+  else
+    echo "the referee never printed 'referee: library connected' (waited $(( waited / 10 ))s)" >"${probe_log}"
+  fi
+
+  touch "${stop_file}"
+  set +e
+  wait "${ref_pid}"
+  ref_rc=$?
+  set -e
+  elapsed=$(( SECONDS - start_s ))
+
+  echo "---- referee ----"
+  cat "${ref_log}"
+  echo "---- probe ----"
+  cat "${probe_log}"
+  echo "----"
+
+  local bad=0
+  require "${ref_log}" "referee: limits sending-time-window=${SENDING_TIME_WINDOW_MS}ms keepalive-min=${KEEPALIVE_MIN_MS}ms keepalive-max=${KEEPALIVE_MAX_MS}ms acceptor-keepalive=${ACCEPTOR_KEEPALIVE_MS}ms" || bad=1
+  require "${ref_log}" "referee: shutdown ok" || bad=1
+  [[ "${ref_rc}" -eq 0 ]] || { echo "the referee process exited ${ref_rc}" >&2; bad=1; }
+
+  # The referee's seven lines: each value it RECEIVED, against what the probe was told to SEND.
+  require "${ref_log}" "referee: field sessionID ok ${SESSION_ID}" || bad=1
+  require "${ref_log}" "referee: field sessionVerID ok ${SESSION_VER_ID}" || bad=1
+  require "${ref_log}" "referee: field enteringFirm ok ${ENTERING_FIRM}" || bad=1
+  if [[ "${arm}" == "reject-credentials" ]]; then
+    require "${ref_log}" "referee: field credentials MISMATCH got ${sent_credentials} want ${CREDENTIALS}" || bad=1
+  else
+    require "${ref_log}" "referee: field credentials ok ${sent_credentials}" || bad=1
+  fi
+  require "${ref_log}" "referee: field clientIP ok ${CLIENT_IP}" || bad=1
+  require "${ref_log}" "referee: field clientAppName ok ${CLIENT_APP_NAME}" || bad=1
+  require "${ref_log}" "referee: field clientAppVersion ok ${sent_client_app_version}" || bad=1
+
+  case "${arm}" in
+    accept)
+      require "${ref_log}" "referee: authentication accepted" || bad=1
+      local step passed=0
+      for step in negotiate establish terminate echo eof; do
+        if grep -qxF "accept: ${step} ok" "${probe_log}"; then
+          passed=$(( passed + 1 ))
+        else
+          echo "MISSING: 'accept: ${step} ok'" >&2
+        fi
+      done
+      ACCEPT_STEPS_PASSED="${passed}"
+      [[ "${passed}" -eq 5 ]] || bad=1
+      ;;
+    reject-timestamp)
+      require "${ref_log}" "referee: authentication accepted" || bad=1
+      require "${probe_log}" "reject-timestamp: refused ok: NegotiateReject INVALID_TIMESTAMP(7)" || bad=1
+      ;;
+    reject-credentials)
+      require "${ref_log}" "referee: authentication rejected" || bad=1
+      require "${probe_log}" "reject-credentials: refused ok: NegotiateReject CREDENTIALS(1)" || bad=1
+      ;;
+  esac
+  if grep -q " FAIL: " "${probe_log}"; then
+    echo "the probe printed a FAIL line" >&2
+    bad=1
+  fi
+  [[ "${probe_rc}" -eq 0 ]] || { echo "the probe exited ${probe_rc}" >&2; bad=1; }
+
+  rm -rf "${run_dir}"
+  if [[ "${bad}" -ne 0 ]]; then
+    echo "==> [${arm}] FAIL in ${elapsed}s"
+    return 1
+  fi
+  echo "==> [${arm}] PASS in ${elapsed}s"
+  return 0
+}
+
 fail=0
+ACCEPT_STEPS_PASSED=0
+declare -A ARM_RESULT=()
 for arm in ${ARMS}; do
   case "${arm}" in
     referee-only)
       run_referee_only || fail=1
       ;;
+    accept | reject-timestamp | reject-credentials)
+      if run_probe_arm "${arm}"; then
+        ARM_RESULT[${arm}]=PASS
+      else
+        ARM_RESULT[${arm}]=FAIL
+        fail=1
+      fi
+      ;;
     *)
-      echo "UNKNOWN ARM: ${arm} (not built yet — see docs/plans/2026-09-23-p3-fixp-spike.md, Chia việc)" >&2
+      echo "UNKNOWN ARM: ${arm} (see docs/plans/2026-09-23-p3-fixp-spike.md, Chia việc)" >&2
       fail=1
       ;;
   esac
 done
 
 if [[ "${fail}" -ne 0 ]]; then
+  echo
+  echo "==> fixp-spike: FAIL (accept steps ${ACCEPT_STEPS_PASSED}/5; arms: $(for k in "${!ARM_RESULT[@]}"; do printf '%s=%s ' "${k}" "${ARM_RESULT[${k}]}"; done))" >&2
   exit 1
 fi
 
-# ---- 5. Nothing this run did is visible to git --------------------------------------------------
-AFTER="$(cd "${REPO_ROOT}" && git status --porcelain --untracked-files=all | sort)"
-ADDED="$(comm -13 <(echo "${BEFORE}") <(echo "${AFTER}") || true)"
+# ---- 6. Nothing this run did is visible to git --------------------------------------------------
+AFTER="$(cd "${REPO_ROOT}" && git status --porcelain --untracked-files=all | LC_ALL=C sort)"
+# Byte order on both sides: under en_US.UTF-8, `sort` and `comm` disagreed about porcelain lines
+# that start with a space (" M file" beside "?? file"), and comm said "file 1 is not in sorted
+# order" and compared unreliably [measured 2026-09-23, row 3, once the tree had untracked files].
+ADDED="$(LC_ALL=C comm -13 <(echo "${BEFORE}") <(echo "${AFTER}") || true)"
 if [[ -n "${ADDED}" ]]; then
   echo "THIS RUN CHANGED WHAT git STATUS SEES:" >&2
   echo "${ADDED}" >&2
@@ -205,3 +457,9 @@ if [[ -n "${ADDED}" ]]; then
 fi
 echo
 echo "==> the run added nothing git can see"
+
+# ---- 7. The summary, only when all three probe arms ran and passed ------------------------------
+if [[ "${ARM_RESULT[accept]:-}" == PASS && "${ARM_RESULT[reject-timestamp]:-}" == PASS \
+      && "${ARM_RESULT[reject-credentials]:-}" == PASS && "${ACCEPT_STEPS_PASSED}" -eq 5 ]]; then
+  echo "fixp-spike: accept PASS 5/5, reject-timestamp PASS, reject-credentials PASS"
+fi

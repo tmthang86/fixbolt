@@ -19,9 +19,13 @@ import uk.co.real_logic.artio.messages.DisconnectReason;
 import uk.co.real_logic.artio.messages.FixPProtocolType;
 import uk.co.real_logic.artio.messages.SessionReplyStatus;
 import uk.co.real_logic.artio.Reply;
+import uk.co.real_logic.artio.binary_entrypoint.BinaryEntryPointContext;
+import uk.co.real_logic.artio.fixp.FixPContext;
+import uk.co.real_logic.artio.validation.FixPAuthenticationProxy;
 
 import java.io.File;
 import java.util.Collections;
+import java.util.Objects;
 
 /**
  * The FIXP spike's referee (ADR-0140 decision 2, docs/plans/2026-09-23-p3-fixp-spike.md row 1).
@@ -32,11 +36,28 @@ import java.util.Collections;
  * {@link FixEngine} configured with {@code acceptFixPProtocol(BINARY_ENTRYPOINT)}, and a
  * {@link FixLibrary} in sole-library mode connected over {@link CommonContext#IPC_CHANNEL}.
  *
- * <p>Row 1 only: start headless, print a line once the acceptor is OBSERVED to be listening, run
- * until a deadline this process holds itself, then stop and print that it stopped. No client
- * drives it yet — that is row 3, which also adds per-field comparison against values passed on
- * the command line (ADR-0140 decision 2); the authentication strategy below accepts
- * unconditionally because there is nothing yet to compare a field against.
+ * <p>Start headless, print a line once the acceptor is OBSERVED to be listening, run until the
+ * script's stop file appears or a deadline this process holds itself, then stop and print that it
+ * stopped.
+ *
+ * <p><strong>The judge (row 3, ADR-0140 decision 2).</strong> The authentication strategy compares
+ * all seven fields of the {@link BinaryEntryPointContext} the Negotiate produced — {@code sessionID},
+ * {@code sessionVerID}, {@code enteringFirm} and the four {@code varData}: {@code credentials},
+ * {@code clientIP}, {@code clientAppName}, {@code clientAppVersion} — with the {@code --expect-*}
+ * values on the command line. It prints one line per field, {@code referee: field <name> ok <value>}
+ * or {@code referee: field <name> MISMATCH got <value> want <value>}, and <strong>rejects</strong>
+ * on any mismatch; Artio then answers with {@code NegotiateReject} code {@code CREDENTIALS}. The
+ * value is printed as received so {@code scripts/fixp-spike.sh} can hold it against what the probe
+ * was told to send. With no {@code --expect-*} values at all (the {@code referee-only} arm) it
+ * refuses every connection: a referee with nothing to compare against must not say yes.
+ *
+ * <p>The limits Artio judges a timestamp and a keep-alive interval by are set explicitly and
+ * printed ({@code referee: limits ...}), so a reject the probe sees can be read against them.
+ * Artio 0.184's defaults ({@code CommonConfiguration}): sending-time window 2 minutes, counterparty
+ * keep-alive 1 ms to 1 minute, the acceptor's own keep-alive 30 s. The timestamp window is checked
+ * by the library's connection ({@code InternalBinaryEntryPointConnection.isInvalidTimestamp}), after
+ * this strategy accepted — so the {@code reject-timestamp} arm prints seven {@code ok} lines and is
+ * still refused.
  *
  * <p><strong>The "listening" line is printed only after {@code FixEngine.launch} has returned</strong>
  * rather than before the bind is attempted — CLAUDE.md §10, an observation rather than a claim.
@@ -95,10 +116,7 @@ public final class Referee
                 .deleteLogFileDirOnStart(true)
                 .scheduler(new LowResourceEngineScheduler())
                 .acceptFixPProtocol(FixPProtocolType.BINARY_ENTRYPOINT)
-                // Row 1 has no client yet, so nothing to compare a field against: accept
-                // whatever a future arm sends. Row 3 replaces this with the per-field judge
-                // ADR-0140 decision 2 describes, fed by values passed on the command line.
-                .fixPAuthenticationStrategy((context, authProxy) -> authProxy.accept())
+                .fixPAuthenticationStrategy((context, authProxy) -> judge(a, context, authProxy))
                 .errorHandlerFactory(errorBuffer -> Throwable::printStackTrace);
             engineConfig.aeronContext().aeronDirectoryName(a.aeronDir);
             engineConfig.aeronArchiveContext()
@@ -108,25 +126,50 @@ public final class Referee
             engine = FixEngine.launch(engineConfig);
             System.out.println("referee: listening on " + DEFAULT_HOST + ":" + a.port);
 
-            final LibraryConfiguration libraryConfig = new LibraryConfiguration()
+            final LibraryConfiguration libraryConfig = new LibraryConfiguration();
+            libraryConfig
                 .libraryAeronChannels(Collections.singletonList(CommonContext.IPC_CHANNEL))
                 .fixPConnectionExistsHandler((lib, surrogateSessionId, protocol, context) ->
                 {
-                    // Row 1 has no client, so this is never invoked; row 3's arms are what
-                    // exercise it and finish the reply this call starts.
+                    // Sole-library mode: the engine offers each accepted connection here, and
+                    // this library acquires it; the Negotiate itself is then answered by the
+                    // library's connection (InternalBinaryEntryPointConnection.onNegotiate).
                     lib.requestSession(
                         surrogateSessionId, FixLibrary.NO_MESSAGE_REPLAY, FixLibrary.NO_MESSAGE_REPLAY, 5_000);
                     return io.aeron.logbuffer.ControlledFragmentHandler.Action.CONTINUE;
                 })
-                .fixPConnectionAcquiredHandler(connection -> NO_OP_HANDLER);
+                .fixPConnectionAcquiredHandler(connection ->
+                {
+                    System.out.println("referee: connection acquired");
+                    return LOGGING_HANDLER;
+                });
+            // Explicit, and printed, rather than inherited: these are what Artio judges the
+            // probe's timestamps and keep-alive by (the plan's keep-alive trap).
+            libraryConfig
+                .sendingTimeWindowInMs(a.sendingTimeWindowMs)
+                .minFixPKeepaliveTimeoutInMs(a.minKeepaliveMs)
+                .maxFixPKeepaliveTimeoutInMs(a.maxKeepaliveMs)
+                .acceptorFixPKeepaliveTimeoutInMs(a.acceptorKeepaliveMs);
             libraryConfig.aeronContext().aeronDirectoryName(a.aeronDir);
+            System.out.println("referee: limits sending-time-window=" + a.sendingTimeWindowMs
+                + "ms keepalive-min=" + a.minKeepaliveMs + "ms keepalive-max=" + a.maxKeepaliveMs
+                + "ms acceptor-keepalive=" + a.acceptorKeepaliveMs + "ms");
 
             library = FixLibrary.connect(libraryConfig);
+            // A client is only served once a library is there to acquire its connection, so the
+            // script waits for this line, not for "listening", before it starts the probe.
+            System.out.println("referee: library connected");
 
             final FixLibrary polledLibrary = library;
+            final File stopFile = a.stopFile == null ? null : new File(a.stopFile);
             final long deadlineNs = System.nanoTime() + a.deadlineSeconds * 1_000_000_000L;
             while (System.nanoTime() < deadlineNs)
             {
+                if (stopFile != null && stopFile.exists())
+                {
+                    System.out.println("referee: stop file seen");
+                    break;
+                }
                 final int worked = polledLibrary.poll(10);
                 if (worked == 0)
                 {
@@ -155,6 +198,58 @@ public final class Referee
         System.out.println("referee: shutdown ok");
     }
 
+    /**
+     * The authentication strategy: seven fields compared, one line each, reject on any mismatch
+     * (ADR-0140 decision 2). Runs on the engine's thread.
+     */
+    private static void judge(final Args a, final FixPContext context, final FixPAuthenticationProxy authProxy)
+    {
+        if (!(context instanceof BinaryEntryPointContext))
+        {
+            System.out.println("referee: refused a " + context.getClass().getName() + ", not Binary EntryPoint");
+            authProxy.reject();
+            return;
+        }
+        final BinaryEntryPointContext c = (BinaryEntryPointContext)context;
+        if (!a.hasExpectations())
+        {
+            System.out.println("referee: no --expect-* values given; refusing " + c);
+            authProxy.reject();
+            return;
+        }
+
+        boolean ok = true;
+        ok &= field("sessionID", Long.toString(c.sessionID()), a.expectSessionId);
+        ok &= field("sessionVerID", Long.toString(c.sessionVerID()), a.expectSessionVerId);
+        ok &= field("enteringFirm", Long.toString(c.enteringFirm()), a.expectEnteringFirm);
+        ok &= field("credentials", c.credentials(), a.expectCredentials);
+        ok &= field("clientIP", c.clientIP(), a.expectClientIp);
+        ok &= field("clientAppName", c.clientAppName(), a.expectClientAppName);
+        ok &= field("clientAppVersion", c.clientAppVersion(), a.expectClientAppVersion);
+
+        if (ok)
+        {
+            System.out.println("referee: authentication accepted");
+            authProxy.accept();
+        }
+        else
+        {
+            System.out.println("referee: authentication rejected");
+            authProxy.reject();
+        }
+    }
+
+    private static boolean field(final String name, final String got, final String want)
+    {
+        if (Objects.equals(got, want))
+        {
+            System.out.println("referee: field " + name + " ok " + got);
+            return true;
+        }
+        System.out.println("referee: field " + name + " MISMATCH got " + got + " want " + want);
+        return false;
+    }
+
     private static void closeQuietly(final AutoCloseable closeable)
     {
         if (closeable == null)
@@ -171,7 +266,8 @@ public final class Referee
         }
     }
 
-    private static final FixPConnectionHandler NO_OP_HANDLER = new FixPConnectionHandler()
+    /** Prints what the library's connection reports; the probe judges the wire itself. */
+    private static final FixPConnectionHandler LOGGING_HANDLER = new FixPConnectionHandler()
     {
         public io.aeron.logbuffer.ControlledFragmentHandler.Action onBusinessMessage(
             final FixPConnection connection, final int templateId, final org.agrona.DirectBuffer buffer,
@@ -210,12 +306,14 @@ public final class Referee
         public io.aeron.logbuffer.ControlledFragmentHandler.Action onError(
             final FixPConnection connection, final Exception ex)
         {
+            System.out.println("referee: connection error " + ex);
             return io.aeron.logbuffer.ControlledFragmentHandler.Action.CONTINUE;
         }
 
         public io.aeron.logbuffer.ControlledFragmentHandler.Action onDisconnect(
             final FixPConnection connection, final DisconnectReason reason)
         {
+            System.out.println("referee: disconnected " + reason);
             return io.aeron.logbuffer.ControlledFragmentHandler.Action.CONTINUE;
         }
     };
@@ -227,6 +325,24 @@ public final class Referee
         int archiveResponsePort = 10020;
         int deadlineSeconds = 5;
         String aeronDir;
+        String stopFile;
+        long sendingTimeWindowMs = 120_000;
+        long minKeepaliveMs = 1;
+        long maxKeepaliveMs = 60_000;
+        long acceptorKeepaliveMs = 30_000;
+        String expectSessionId;
+        String expectSessionVerId;
+        String expectEnteringFirm;
+        String expectCredentials;
+        String expectClientIp;
+        String expectClientAppName;
+        String expectClientAppVersion;
+
+        /** All seven or none: a partial set is a script error, refused at parse time. */
+        boolean hasExpectations()
+        {
+            return expectSessionId != null;
+        }
 
         static Args parse(final String[] argv)
         {
@@ -251,6 +367,42 @@ public final class Referee
                     case "--aeron-dir":
                         a.aeronDir = argv[++i];
                         break;
+                    case "--stop-file":
+                        a.stopFile = argv[++i];
+                        break;
+                    case "--sending-time-window-ms":
+                        a.sendingTimeWindowMs = Long.parseLong(argv[++i]);
+                        break;
+                    case "--keepalive-min-ms":
+                        a.minKeepaliveMs = Long.parseLong(argv[++i]);
+                        break;
+                    case "--keepalive-max-ms":
+                        a.maxKeepaliveMs = Long.parseLong(argv[++i]);
+                        break;
+                    case "--acceptor-keepalive-ms":
+                        a.acceptorKeepaliveMs = Long.parseLong(argv[++i]);
+                        break;
+                    case "--expect-session-id":
+                        a.expectSessionId = argv[++i];
+                        break;
+                    case "--expect-session-ver-id":
+                        a.expectSessionVerId = argv[++i];
+                        break;
+                    case "--expect-entering-firm":
+                        a.expectEnteringFirm = argv[++i];
+                        break;
+                    case "--expect-credentials":
+                        a.expectCredentials = argv[++i];
+                        break;
+                    case "--expect-client-ip":
+                        a.expectClientIp = argv[++i];
+                        break;
+                    case "--expect-client-app-name":
+                        a.expectClientAppName = argv[++i];
+                        break;
+                    case "--expect-client-app-version":
+                        a.expectClientAppVersion = argv[++i];
+                        break;
                     default:
                         throw new IllegalArgumentException("unknown argument: " + arg);
                 }
@@ -258,6 +410,22 @@ public final class Referee
             if (a.aeronDir == null)
             {
                 throw new IllegalArgumentException("--aeron-dir is required");
+            }
+            final String[] expectations = {
+                a.expectSessionId, a.expectSessionVerId, a.expectEnteringFirm, a.expectCredentials,
+                a.expectClientIp, a.expectClientAppName, a.expectClientAppVersion };
+            int given = 0;
+            for (final String e : expectations)
+            {
+                if (e != null)
+                {
+                    given++;
+                }
+            }
+            if (given != 0 && given != expectations.length)
+            {
+                throw new IllegalArgumentException(
+                    "--expect-* values come as all seven or none; got " + given);
             }
             return a;
         }
