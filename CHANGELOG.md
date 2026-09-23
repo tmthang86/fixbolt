@@ -29,6 +29,17 @@ below describe what a first release would contain.
   [ADR-0110](docs/decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md);
   `STATUS.md` phase 3 row 3, ADR-0097 exit criterion 4.
 
+- **`fixbolt_codec::Decimal` and `as_decimal`.** A FIX float read on demand, 16 bytes and `Copy`:
+  `as_decimal(view.get(tag)?)` beside `as_i64`, and `Decimal::format(self, out: &mut [u8;
+  Decimal::MAX_LEN]) -> &[u8]` writes it back in canonical form. Equality is structural —
+  `1.5 != 1.50` — and a positive exponent (reachable only through `Decimal::new`, for an SBE
+  mantissa/exponent pair) does not round-trip byte-for-byte through `format`. `Decimal::MAX_LEN`
+  (`147`) is the longest buffer `format` can write. Both are re-exported from the `fixbolt`
+  facade beside `as_i64`, as `fixbolt::Decimal` and `fixbolt::as_decimal`, together with
+  `fixbolt::ConvertError`, the error type of `as_i64`, `as_u32`, `as_char` and `as_decimal`,
+  which the facade had not exported before. No method was added
+  to `MessageView`; no arithmetic, ordering or rounding is offered. [ADR-0120](docs/decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md).
+
 - **Recovery reaches the sharded runtime.**
   **`fixbolt_engine::shard::serve_sharded_hft_with_recovery`** and
   **`serve_sharded_hft_with_recovery_with`** ask a `Recovery` what each counterparty left

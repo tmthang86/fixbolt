@@ -26,9 +26,11 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use std::hint::black_box;
+
 use fixbolt_codec::{
-    Dictionary, Encoding, FieldIndex, NoDict, Parsed, TagValue, TemplateBuilder, TimestampCache,
-    Validation, parse_into,
+    Decimal, Dictionary, Encoding, FieldIndex, NoDict, Parsed, TagValue, TemplateBuilder,
+    TimestampCache, Validation, as_decimal, parse_into,
 };
 use fixbolt_dict::Fix44;
 
@@ -284,6 +286,36 @@ fn main() {
         }
     });
 
+    // A price read and written back, ADR-0120: `as_decimal` on a field's bytes
+    // and `Decimal::format` into the caller's buffer, the two halves an
+    // application runs per priced message. Both are pure and `#[inline]`, so
+    // an optimiser that sees a constant in and nothing out may fold the whole
+    // loop away and leave a zero that measured nothing — hence `black_box` on
+    // the input and on the written bytes, and the liveness asserts before the
+    // count: the parse returns the exact pair, and the format writes back the
+    // exact bytes it was given.
+    let price: &[u8] = b"12345.6789";
+    let mut dbuf = [0u8; Decimal::MAX_LEN];
+    let warm_decimal = as_decimal(price);
+    assert_eq!(
+        warm_decimal,
+        Ok(Decimal::new(123_456_789, -4)),
+        "the decimal parse path must actually run"
+    );
+    let d = warm_decimal.expect("asserted above");
+    assert_eq!(
+        d.format(&mut dbuf),
+        price,
+        "the decimal format path must actually write the value back"
+    );
+    let decimal_allocs = count(|| {
+        for _ in 0..10_000 {
+            if let Ok(d) = as_decimal(black_box(price)) {
+                black_box(d.format(&mut dbuf));
+            }
+        }
+    });
+
     // The same parse, through the FIXT 1.1 / FIX 5.0 SP2 tables rather than
     // `Fix44`. A second dictionary is a second set of generated `match` arms
     // over a table two orders of magnitude larger — 25 929 `(msg_type,
@@ -325,6 +357,7 @@ fn main() {
     println!("allocations: group   {group_allocs}");
     println!("allocations: validate {validate_allocs}");
     println!("allocations: data    {data_allocs}");
+    println!("allocations: decimal {decimal_allocs}");
     assert_eq!(parse_allocs, 0, "parse must not allocate");
     assert_eq!(
         encoding_parse_allocs, 0,
@@ -343,6 +376,10 @@ fn main() {
     assert_eq!(
         data_allocs, 0,
         "writing a DATA field and its length must not allocate"
+    );
+    assert_eq!(
+        decimal_allocs, 0,
+        "decimal parse and format must not allocate"
     );
     #[cfg(feature = "fix50sp2")]
     {

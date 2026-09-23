@@ -10,6 +10,7 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 |---|---|
 | `lib.rs` | Crate root; the `no_std` intent and the pointer to `benches/alloc.rs` as the actual proof of non-negotiable 1 |
 | `index.rs` | `MessageView`, `FieldIndex<const N>` — the 24-byte, `Copy` index kept apart from the bytes it points into ([ADR-0003](../decisions/ADR-0003-message-representation.md)) |
+| `decimal.rs` | `Decimal { mantissa: i64, exponent: i8 }` (16 bytes, `Copy`) and the free function `as_decimal`, reading a FIX float from a field's bytes on demand, beside `as_i64`; `Decimal::format` writes the canonical form back ([ADR-0120](../decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)) |
 | `dict.rs` | The `Dictionary` trait: what parsing needs from a FIX dictionary, as a trait rather than a dependency on `dict` |
 | `parse.rs` | `parse_into` and the frame reader; the syntax/semantics boundary — this crate rejects only what it cannot read, everything else is passed up to `session` |
 | `checksum.rs` | The FIX checksum, a plain byte loop |
@@ -23,15 +24,21 @@ I/O buffer, the hot path, zero runtime dependencies. `no_std` is a goal, not yet
 
 1. `lib.rs` — what the crate promises and how that promise is checked
 2. `index.rs` — the shape everything else operates on
-3. `dict.rs` — the trait the parser needs, before reading what uses it
-4. `parse.rs` — inbound: bytes to index
-5. `checksum.rs`, `timestamp.rs` — the two per-field helpers `parse.rs` and `template.rs` share
-6. `group.rs` — reading repeating groups off the index
-7. `template.rs` — outbound: index to bytes
-8. `encoding.rs` — the trait `TagValue` names over 2–7, read last since it composes them
+3. `decimal.rs` — a typed value read from the index the same way `as_i64` is, before the parser
+   that fills the index
+4. `dict.rs` — the trait the parser needs, before reading what uses it
+5. `parse.rs` — inbound: bytes to index
+6. `checksum.rs`, `timestamp.rs` — the two per-field helpers `parse.rs` and `template.rs` share
+7. `group.rs` — reading repeating groups off the index
+8. `template.rs` — outbound: index to bytes
+9. `encoding.rs` — the trait `TagValue` names over 2–8, read last since it composes them
 
 ## Tests that guard it
 
+- `tests/decimal.rs` (30 tests) — `as_decimal` grammar and overflow, `Decimal::format`'s
+  canonical form, and the two round-trip halves of ADR-0120 decision 5; `benches/decimal.rs` —
+  two timing cases, `NO BASELINE` until plan step 7 records one on the §9 machine; the alloc
+  case `decimal` in `benches/alloc.rs` (below) is the non-negotiable-1 proof for this path
 - `tests/parse_basics.rs`, `tests/defs.rs`, `tests/stream.rs` — inbound parsing, including
   incomplete frames
 - `tests/groups.rs`, `tests/group_roundtrip.rs` — repeating groups, nested included

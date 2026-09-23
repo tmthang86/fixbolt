@@ -680,6 +680,28 @@ cannot skip it at all.
 
 ---
 
+## 3c. `Decimal` reads a price when you ask, and only in canonical form
+
+`[2026-09-23]` `as_decimal(view.get(tag)?)` reads a `PRICE`/`QTY`/`AMT`/`FLOAT`/`PRICEOFFSET`/
+`PERCENTAGE` field into a `Decimal { mantissa: i64, exponent: i8 }` — 16 bytes, `Copy`, produced
+only when you ask, the same shape `as_i64` already has ([ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)).
+Four things the compiler will not stop you from getting wrong:
+
+- **To echo a counterparty's bytes verbatim, send `view.get(tag)`, not a reformatted `Decimal`.**
+  `Decimal::format` writes the canonical form, which need not be the bytes that arrived —
+  `002000.00` reads fine and formats back as `2000.00`
+  ([a-fix-float-round-trips-only-in-canonical-form](reference/a-fix-float-round-trips-only-in-canonical-form.md)).
+- **`1.5 != 1.50`.** Equality is structural, because they are different bytes on the wire
+  (ADR-0028 decision 4, carried into ADR-0120 decision 6): `1.5` is `(15, -1)`, `1.50` is
+  `(150, -2)`.
+- **`as_decimal` does not know whether the tag it was given is a float type.** Asking it to read
+  a `STRING` or an `int` field is your mistake to avoid, not one it can catch.
+- **There is no arithmetic, no `Ord`, no rounding.** Adding two `Decimal`s of different
+  exponents, or comparing them numerically, is a rounding decision, and rounding money is your
+  application's call, not the codec's.
+
+---
+
 ## 4. When the ring fills, you lose the connection
 
 Under `RingDispatch`, if your thread stops draining, the ring fills, and **the connection is

@@ -102,7 +102,7 @@ Added one at a time, each behind an approved plan. All of them exist.
 
 | Crate | Layer | Owns | Depends on |
 |---|---|---|---|
-| `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule. `encoding`: the `Encoding` trait and `TagValue<D, N>`, its tag=value implementation, which forwards unchanged to `parse_into`, `MessageView` and `Template` (D16) | — |
+| `codec` | L1 | Parse and serialise in place. The hot path. `no_std`-compatible is the goal; zero dependencies is the rule. `encoding`: the `Encoding` trait and `TagValue<D, N>`, its tag=value implementation, which forwards unchanged to `parse_into`, `MessageView` and `Template` (D16). `decimal`: `Decimal` (16 bytes, `Copy`, mantissa × 10^exponent) and the free function `as_decimal`, read from a field's bytes on demand exactly as `as_i64` is (ADR-0120) | — |
 | `sbe` | L1 | SBE 1.0 decode and encode over `&'static` tables a schema's `Schema` impl supplies: header, `SbeView` (24 bytes, `Copy`), group cursor, `varData`. `#![no_std]`, `#![forbid(unsafe_code)]`. Behind the default feature `encoding`: `Sbe<S>: codec::Encoding`, and the writer (`MessageWriter`/`GroupWriter`/`EntryWriter`) that lets `encode` fill a root block and groups/`varData` fill themselves (D16) | `codec`, only under the default feature `encoding`; none with it off |
 | `dict` | build | Code generation from the FIX XML: tag constants, message shapes, required-field tables, **field ordering**, group delimiters and members, and the validation tables (defined tags, message types, per-message tag sets, field types, enum values). `tables`: `Tables`, the nine functions the session calls, implemented for `Fix44`; the alias `Fix44TagValue` (D16). `[2026-09-19]` behind the off-by-default `fix50sp2` feature it emits a **second table**, `Fixt11Fix50Sp2Tables`, built from two XML files at once — transport from `FIXT11.xml`, application from `FIX50SP2.xml` (ADR-0080). The eighth function, `is_defined_tag_for`, exists because an admin message's body is checked against the transport file alone (ADR-0084). `[2026-09-20]` the ninth, `is_admin(msg_type)`, is generated from each `<message>`'s `msgcat`, no default method, and answers ADR-0080 decision 3's `1128` exemption rather than a hand-written list beside the call site (ADR-0086 decision 2) | `codec`; it implements `codec::Dictionary` |
 | `sbe-gen` | build | `generate(xml)` / `generate_with_includes(xml, resolve)`: an SBE 1.0 schema to the `&'static` tables `sbe` reads, plus a unit struct implementing `sbe::Schema`. A construct outside ADR-0081 decision 5's scope is `Error::Unsupported(name)`, never a silently wrong table | `roxmltree`; dev-depends on `fixbolt-sbe` to compile the tables its own tests read |
@@ -303,6 +303,12 @@ session layer's decision.
 `[added 2026-09-19]` This view is one encoding's view. `Encoding` (D16) names it as
 `TagValue::View<'a>` and forwards to it unchanged; a second encoding brings a second view type
 of its own rather than widening this one.
+
+`[added 2026-09-23]` A typed value is read the same way: a price is
+`as_decimal(view.get(44)?)`, a free function beside `as_i64`, not a method on `MessageView`. The
+index is unchanged and nothing is decoded because a message arrived — `Decimal { mantissa: i64,
+exponent: i8 }` is produced only when the caller asks, 16 bytes, `Copy`. ADR-0120 (which revises
+ADR-0028 decisions 1 and 2).
 
 ### D3 — Field ordering comes from generated tables, never from hand-written code
 
