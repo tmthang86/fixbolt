@@ -1330,6 +1330,23 @@ busy machine does. `--reextract <evidence-dir>` rebuilds `runs.reextracted.txt` 
 raw captures under `<evidence-dir>/raw/` without re-running anything and without ever writing
 over `runs.txt`.
 
+**A line that moves after a commit that did not touch its code is first counted, not timed**
+([ADR-0102](decisions/ADR-0102-a-line-that-moves-while-its-instruction-count-does-not-is-a-layout-move-and-the-count-is-read-off-the-desk.md)).
+Every `Suite::bench::<F>` is inlined into one `harness::suite::<closure>` per bench file, so an
+edit to the harness, or a case added to the file, moves every other case's timed loop. ADR-0049
+pins a function's start and nothing inside it. The band cannot tell that from a regression:
+`[measured 2026-09-23, a diagnostic from the desk on its desktop grub line — not the §9 line,
+not a published figure]` `6b2833b` moved `walk nested group + varData` about +10 % in ns/op while
+the binary retired 0.032 % *fewer* instructions. `scripts/bench-instructions.sh A B` compares the binary a
+line was recorded with against the current one by `instructions:u`, run with
+`FIXBOLT_BENCH_COUNT_ONLY=1` so a binary whose case is `OVER` its line still runs to the end (`same-work` at ≤ 0.1 %,
+`work-changed` above, `unstable` if an arm's own spread exceeds 0.01 %). The count is independent
+of layout and valid on either grub line, but it needs a PMU, so it runs on the desk. CI runs only
+its stub self-test, `scripts/check-bench-instructions.sh`, in `gates`. `same-work`, with no other
+case of the binary moving the opposite way, makes *layout* a named cause for the re-record
+ADR-0095 decision 2 demands; `work-changed` sends the case to the code. Every re-record keeps its
+binary in `target/baseline-bins/` so the next comparison has its first arm.
+
 ## 7. Build order
 
 Each step was a plan, a branch and a merge. **Steps 1–8 are complete as of 2026-09-02. Step 9 is
