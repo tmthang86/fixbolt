@@ -41,7 +41,13 @@ PROBE_DIR="${REPO_ROOT}/spikes/fixp-probe"
 PROBE_BIN="${PROBE_DIR}/target/debug/fixp-probe"
 
 ARMS="${FIXP_SPIKE_ARMS:-accept reject-timestamp reject-credentials}"
-# Empty (the default): each arm takes a port the kernel hands out fresh — see pick_port below.
+# Empty is the only default: each arm takes a port the kernel hands out fresh — see pick_port
+# below. FIXP_REFEREE_PORT overrides that with one fixed port for every arm, at the caller's risk;
+# it must not be 15660-15663 (scripts/interop-qfj.sh's fixed PORT_ACCEPTOR_PLAIN /
+# PORT_INITIATOR_PLAIN / PORT_ACCEPTOR_TLS / PORT_INITIATOR_TLS) — a parallel run of both scripts
+# on that range binds the same port from two directions and one side fails with a bind error that
+# reads as an interop regression rather than a port clash
+# (docs/reference/b3-binary-entrypoint-facts.md names this trap).
 PORT_OVERRIDE="${FIXP_REFEREE_PORT:-}"
 ARCHIVE_CONTROL_PORT="${FIXP_REFEREE_ARCHIVE_CONTROL_PORT:-10010}"
 ARCHIVE_RESPONSE_PORT="${FIXP_REFEREE_ARCHIVE_RESPONSE_PORT:-10020}"

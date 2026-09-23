@@ -289,6 +289,20 @@ below describe what a first release would contain.
   `scripts/compare-w2w-procedures.sh` — which gained a 6 % FAIL / 4 % PASS case at each of p50,
   p99 and p99.9 (ADR-0096 decision 4(a)); the comparator itself is unchanged.
 
+- **CI job `fixp-spike`, new and blocking** (phase 3 row 9, ADR-0140 decision 5): proves
+  `fixbolt-sbe`'s encoder and decoder against a Real-Logic-generated Binary EntryPoint codec
+  (Artio 0.184, B3 schema 5.6) over a real socket, both directions. `scripts/fixp-spike.sh` pins
+  11 jars and the extracted schema by SHA-256, builds `spikes/fixp-probe` — a Rust crate
+  detached from this workspace (`[workspace]` empty, listed in the root `Cargo.toml` `exclude`,
+  the `spikes/ktls` pattern) — and runs it against `spikes/fixp-probe/referee/Referee.java`, our
+  own code on Artio's public API, in three arms: `accept` (five steps, `ok` each), and two
+  refusals, `reject-timestamp` (Artio's own `INVALID_TIMESTAMP`) and `reject-credentials` (the
+  referee's own check). The job's own summary-grep step, not `scripts/fixp-spike.sh`'s exit
+  code, is what decides. Nothing in `crates/` or `tools/` depends on the probe or the referee,
+  and no FIXP session exists yet (ADR-0078 decision 2, ADR-0097 decision 5).
+  [docs/CONFORMANCE.md §10](docs/CONFORMANCE.md#10-fixp-spike-against-artio-measured-2026-09-23),
+  [docs/reference/b3-binary-entrypoint-facts.md](docs/reference/b3-binary-entrypoint-facts.md).
+
 ### Changed
 
 - **`FileLog` and `FileJournal` no longer write a secret to disk in clear.** `FileLog` masks

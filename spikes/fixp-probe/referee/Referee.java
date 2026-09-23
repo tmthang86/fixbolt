@@ -320,7 +320,12 @@ public final class Referee
 
     private static final class Args
     {
-        int port = 15660;
+        // No default: scripts/fixp-spike.sh always passes a port the kernel handed out fresh
+        // (pick_port there). A hardcoded fallback here previously read 15660, which collides with
+        // scripts/interop-qfj.sh's fixed PORT_ACCEPTOR_PLAIN (15660-15663) — a parallel run of
+        // this referee and that script's judge could bind the same port. The only default this
+        // spike has for the referee's own port is "the caller must say" (see --aeron-dir below).
+        int port = -1;
         int archiveControlPort = 10010;
         int archiveResponsePort = 10020;
         int deadlineSeconds = 5;
@@ -406,6 +411,10 @@ public final class Referee
                     default:
                         throw new IllegalArgumentException("unknown argument: " + arg);
                 }
+            }
+            if (a.port <= 0)
+            {
+                throw new IllegalArgumentException("--port is required");
             }
             if (a.aeronDir == null)
             {

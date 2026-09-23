@@ -679,3 +679,87 @@ command exited 0 — see
   counts once quoted.
 
 ---
+
+## 10. FIXP spike against Artio `[measured 2026-09-23]`
+
+Phase 3 row 9 (`docs/plans/2026-09-23-p3-fixp-spike.md`), ADR-0140. **Not a session, and not
+against the venue.** This is the first check anywhere in this repository of `fixbolt-sbe`'s
+encoder and decoder against a Binary EntryPoint codec Real Logic's own `sbe-tool` generated from
+a real venue schema, over a real socket — the SBE interop check `PRD.md` §2 still lists as
+unbuilt. `fixbolt-sbe` and `fixbolt-sbe-gen` are otherwise unchanged by this row except for the
+one generator fix section 10 below cites; nothing in `crates/` or `tools/` depends on the probe
+or the referee this section is about.
+
+**Command:**
+
+```
+scripts/fixp-spike.sh
+```
+
+**Machine:** the `DESIGN.md` §9 desk, `tmt-B450-I-AORUS-PRO-WIFI`, on its ordinary desktop grub
+line — not the tuned §9 line, because this row publishes no latency number (non-negotiable 10)
+and a correctness count does not depend on OS tuning (this page's own opening paragraph).
+`openjdk 21.0.12.1`. Artio `0.184`; the schema both ends speak is the `binary_entrypoint.xml`
+inside `artio-binary-entrypoint-codecs-0.184.jar`, `semanticVersion="5.6"`, SHA-256
+`c31fcd6228e613fa6ee3af441832393a4a35c30263bb5cd80929f16529af4a71` — the version the referee
+actually decodes with, not B3's currently published `8.4.2` (see
+[docs/reference/b3-binary-entrypoint-facts.md](reference/b3-binary-entrypoint-facts.md)).
+
+**CI run id:** `<pending>` — this section is written before the `fixp-spike` job (blocking,
+ADR-0140 decision 5) has run against a merged commit; the manager fills the run id in when it
+does, per `CLAUDE.md` §9's rule that a laptop result is not a CI result.
+
+**Output, verbatim, from the command above on this desk:**
+
+```
+==> [accept] PASS in 0s
+==> [reject-timestamp] PASS in 5s
+==> [reject-credentials] PASS in 1s
+
+==> the run added nothing git can see
+fixp-spike: accept PASS 5/5, reject-timestamp PASS, reject-credentials PASS
+```
+
+Three runs in a row, same line each time — nothing in `vendor/fixp/` (gitignored) or in the
+tree moved between them. `accept` is five steps (`negotiate`, `establish`, `terminate`, `echo`,
+`eof`), each read against seven fields Artio's own decoder recovered from what the probe wrote
+(`referee: field <name> ok <value>`, printed for `sessionID`, `sessionVerID`, `enteringFirm` and
+the four `varData`: `credentials`, `clientIP`, `clientAppName`, `clientAppVersion`) and against
+what the probe's own decoder recovered from Artio's replies (`NegotiateResponse`,
+`EstablishAck`, `Terminate`). `reject-timestamp` and `reject-credentials` are the two refusals
+ADR-0140 decision 6 requires, so a referee that had only ever said yes proves nothing:
+
+```
+reject-timestamp: refused ok: NegotiateReject INVALID_TIMESTAMP(7)
+reject-credentials: refused ok: NegotiateReject CREDENTIALS(1)
+```
+
+### What is not proven here
+
+* **No FIXP session exists.** This is a straight-line probe — Negotiate, Establish, Terminate,
+  in that order, once — not a state machine; `Input::Tick`, `Sequence`, retransmission,
+  `NotApplied`, and reconnection are all out of scope (ADR-0078 decision 2, ADR-0097 decision 5).
+  A green run here says the encoding and the wire framing interoperate; it says nothing about a
+  session built on top of them.
+* **This is Artio's Binary EntryPoint, not B3's.** The referee decodes schema `5.6`
+  (`semanticVersion`); B3 currently publishes `8.4.2`, three major versions ahead. Targeting the
+  current venue schema needs a second `sbe-gen` fix — `presence` on a field whose type is a
+  composite, which 8.4.2 uses on twelve fields including a session message
+  (`NegotiateResponse.semanticVersion`) — deliberately **not** built in this plan (ADR-0140
+  decision 4). Until that fix exists and is measured against `8.4.2`, a green run here bounds
+  nothing about the venue's own dialect.
+* **`EstablishAck.nextSeqNo` is Artio echoing the probe's own number back, not an
+  independently-tracked sequence.** `InternalBinaryEntryPointConnection.onEstablish` passes the
+  client's `Establish.nextSeqNo` straight through to `sendEstablishAck`
+  (`spikes/fixp-probe/src/main.rs`, the comment on `EXPECTED_ACK_NEXT_SEQ_NO`), so the probe
+  sending `1` and reading `1` back proves the field round-trips, not that Artio's own session
+  bookkeeping produced that number. The same is not true of `lastIncomingSeqNo`, which Artio
+  computes from what it actually received.
+* **No counterparty acceptance from B3 itself.** As with section 7's `libquickfix` interop, this
+  spike is this repository's own reading of a public schema and a third party's implementation
+  of it; it is not a B3 certification and does not substitute for one.
+* **The referee judges only a fixbolt initiator.** Artio's Binary EntryPoint support is
+  acceptor-only (ADR-0140, *Facts found*), so this spike gives no evidence about fixbolt's own
+  acceptor role in FIXP — the role `ADR-0077` positions this engine on for FIX 4.4.
+
+---

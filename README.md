@@ -152,6 +152,11 @@ benches/         baselines.tsv: one recorded timing baseline per (CPU model, cas
                  DESIGN.md §6 gates against this, not against an absolute target
 fuzz/            cargo-fuzz targets; nightly, outside the workspace
 spikes/ktls/     answers ADR-0005's kTLS question and stops; nothing depends on it
+spikes/fixp-probe/
+                 a Rust probe speaks Artio's Binary EntryPoint schema (B3, 5.6) against our own
+                 referee (Referee.java, Artio's public API only); scripts/fixp-spike.sh's three
+                 arms are CI job `fixp-spike`, BLOCKING (ADR-0140) — nothing in crates/ or tools/
+                 depends on it, and no FIXP session is built here (ADR-0097 decision 5)
 docs/            see the table above; decisions/ holds the ADRs, reference/ the
                  measured facts and traps, plans/ what is about to be built (Vietnamese),
                  internals/ a map of which file in which crate holds what
