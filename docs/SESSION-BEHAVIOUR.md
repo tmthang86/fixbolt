@@ -490,6 +490,20 @@ magnitude and not a band. The band is owed and is tracked in
   `crates/session/tests/numbering.rs::the_logout_that_ends_the_session_is_still_a_message_that_was_consumed`
   and by `scripts/interop.sh`'s `interop-reconnect-logout: no_resend`, which is what found it.
 
+- **`[added 2026-09-23]` An application message carrying a secret is gap-filled after a restart,
+  never replayed.** This is an `engine`-layer behaviour, not a session one — the session machine
+  stays pure and does not know what a secret is (D1) — but it changes what a resumed session
+  sends for a number the journal file holds no bytes for. When `FileJournal` is asked to `put` a
+  message naming a field `engine::redact::MASKED` lists, the file records the ADR-0053 outbound
+  mark for that number instead of the message; the in-memory ring still keeps it verbatim, so a
+  `ResendRequest` inside the same process replays it with `43=Y` exactly as it would any other
+  application message. Only after a restart — when the ring is rebuilt from the file alone — does
+  the number come back with no bytes, and the session gap-fills it the same way it already
+  gap-fills a `Logon` or a `Heartbeat`. Guarded by
+  `crates/engine/tests/secrets_stay_off_disk.rs`
+  ([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)
+  decision 4).
+
 ### 4a. `789` and `369` — resynchronising without a `ResendRequest` `[added 2026-09-06]`
 
 Both are **off by default** and both are optional in FIX 4.4. **Reading them is not optional**:

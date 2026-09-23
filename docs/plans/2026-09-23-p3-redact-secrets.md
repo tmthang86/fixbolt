@@ -171,7 +171,7 @@ nằm **cùng commit** với code (`CLAUDE.md` §4, §8). Manager chạy lại g
 |---|---|---|---|---|---|
 | 1 | **Test đỏ trước.** `crates/engine/tests/secrets_stay_off_disk.rs`, chỉ dùng API đã có: (a) qua socket, `serve_with_recovery` + `FileLog` + `FileJournal<_,_>` `Async` trong thư mục tạm; client gửi `Logon` có `553`, `554=<S1>`, `95`, `96=<S2 chứa một SOH>`, rồi một `UserRequest` `35=BE` có `554=<S3>`, `925=<S4>`, `95`, `96=<S5>`, và một `35=D`; app trong test trả lời `BE` bằng một `BE` mang đúng các bí mật đó và trả lời `D` bằng một `35=8`; (b) `FileLog` đứng riêng, `record` một `Logon` có bí mật; (c) `FileJournal` `Async` và `Fsync` đứng riêng, `put` một `BE` có bí mật. Mỗi test đọc file dạng **bytes** và khẳng định không có byte-string bí mật nào. Kèm tiền đề dương: client **có** nhận `554=<S3>` trên dây; file journal **có** chứa bản tin `35=8`; file log **có** dòng `IN` với `35=A` | senior developer (opus) | Chỉ tạo `crates/engine/tests/secrets_stay_off_disk.rs`. Không đụng `crates/*/src`, `crates/session/`, `scripts/`, CI | `cargo test -p fixbolt-engine --test secrets_stay_off_disk` **đỏ**, trích nguyên văn; câu FAIL mong đợi viết ra trước khi chạy (xem *Cách kiểm chứng*) | anh / manager duyệt plan này và ADR-0110 |
 | 2 | **Code.** `redact.rs` (hằng `MASKED`, `mask`, `carries_secret`); `pub mod redact;` trong `lib.rs`; gọi `mask` trong `msglog::write_loop`; trong `journal.rs` nhánh `Async` (`write_loop`) và `Fsync` (`put`) ghi dấu outbound thay cho bản ghi mang bí mật. `crates/engine/tests/redact.rs`: các test đơn vị ở mục *Bẫy*, cộng test ghim cặp độ dài→DATA với `fixbolt_dict` (`Fix44` mặc định; `1401→1402`, `1403→1404` trong test `#[cfg(feature = "fix50sp2")]`). Hai case `redact-mask`, `redact-scan` trong `benches/alloc.rs`, thêm tên vào dòng `allocations:` và mảng assert | senior developer (opus), cùng agent | Sửa: `crates/engine/src/{redact.rs (mới), lib.rs, msglog.rs, journal.rs}`, `crates/engine/tests/redact.rs` (mới), `crates/engine/benches/alloc.rs`. **Không** sửa: `conn.rs`, `crates/session/`, `crates/codec/`, `crates/dict/`, file test có sẵn, `scripts/`, `.github/` | `cargo test -p fixbolt-engine --test secrets_stay_off_disk --test redact`; `cargo test -p fixbolt-engine --features fix50sp2 --test redact`; test có sẵn **không sửa** vẫn xanh: `cargo test -p fixbolt-engine --test msglog --test journal --test on_disk --test journal_reader --test engine_recovery --test recovery --test shard_recovery --test settings_wire`; `cargo test --all`; `cargo test --no-default-features`; `cargo bench -p fixbolt-engine --bench alloc` (dòng `allocations:` có `redact-mask 0 redact-scan 0`, mọi case cũ vẫn 0); `cargo clippy --all-targets -- -D warnings`; `cargo fmt --check`; `scripts/check-indexing-debt.sh`, `scripts/check-no-crate-root-allow.sh`, `scripts/check-lint-config.sh` | 1 |
-| 3 | **Đảo ngược, từng cái một**, mỗi cái viết câu FAIL mong đợi trước, chạy, trích đỏ, khôi phục, trích xanh: R1 bỏ lời gọi `mask` trong `msglog::write_loop`; R2 bỏ nhánh bí mật trong `journal::write_loop` (`Async`); R3 bỏ nhánh bí mật trong `put` (`Fsync`); R4 che DATA chỉ tới SOH kế tiếp (bỏ độ dài khai báo); R5 tiêm `let _v: Vec<u8> = Vec::with_capacity(1);` vào `mask`; R6 bỏ điều kiện `35=A`/`BE` cho `96` | senior developer (opus), cùng agent | Như bước 2; mọi đảo ngược được khôi phục, `git diff` cuối cùng giống hệt trước bước 3 | R1 đỏ ở test log của `secrets_stay_off_disk`; R2 đỏ ở test journal `Async` và test qua socket; R3 đỏ ở test journal `Fsync`; R4 đỏ ở test "nửa sau SOH của `96`"; R5 `redact-mask` > 0; R6 đỏ ở test "`96` trong `News` giữ nguyên" | 2 |
+| 3 | **Đảo ngược, từng cái một**, mỗi cái viết câu FAIL mong đợi trước, chạy, trích đỏ, khôi phục, trích xanh: R1 bỏ lời gọi `mask` trong `msglog::write_loop`; R2 bỏ nhánh bí mật trong `journal::write_loop` (`Async`); R3 bỏ nhánh bí mật trong `put` (`Fsync`); R4 che DATA chỉ tới SOH kế tiếp (bỏ độ dài khai báo); R5 tiêm `let _v: Vec<u8> = std::hint::black_box(Vec::with_capacity(1));` vào `mask` (phải có `black_box`, xem *Sửa 1*); R6 bỏ điều kiện `35=A`/`BE` cho `96` | senior developer (opus), cùng agent | Như bước 2; mọi đảo ngược được khôi phục, `git diff` cuối cùng giống hệt trước bước 3 | R1 đỏ ở test log của `secrets_stay_off_disk`; R2 đỏ ở test journal `Async` và test qua socket; R3 đỏ ở test journal `Fsync`; R4 đỏ ở test "nửa sau SOH của `96`"; R5 `redact-mask` > 0; R6 đỏ ở test "`96` trong `News` giữ nguyên" | 2 |
 | 4 | **Tài liệu**, cùng commit với code: danh sách ở mục *Tài liệu phải cập nhật*; trang `docs/reference/` mới; ADR-0110 → `Accepted` (manager ghi dòng trạng thái) | developer (sonnet) | Chỉ các file `docs/`, `CHANGELOG.md` được liệt kê. **Không** sửa `crates/`, `STATUS.md` (manager viết) | `python3 scripts/check-links.py` xanh | 3 |
 | 5 | **Review + CI**: một senior review, context mới, được đưa plan này, ADR-0110 và các gate; manager kiểm từng phát hiện theo `CLAUDE.md` §12; PR nháp, CI xanh trên commit đóng, ghi run id | senior developer (opus) review; manager | — | CI xanh trên commit đóng, run id ghi vào *Nhật ký giao hàng* | 4 |
 
@@ -187,7 +187,7 @@ của cả hai luồng, phải 0. Không cần máy §9: đây là đếm, khôn
 | 2 | Không bí mật nào xuống đĩa | cùng lệnh, sau bước 2 | xanh; tiền đề dương cũng xanh (bí mật có trên dây; journal có `35=8`; log có `IN 35=A` với `554=` theo sau là dãy `*` cùng độ dài) |
 | 3 | Gửi lại trong cùng tiến trình vẫn đúng | test trong `secrets_stay_off_disk.rs`: client gửi `ResendRequest` cho số của `BE` | nhận lại `BE` có `43=Y` và `554=<S3>` nguyên văn |
 | 4 | Sau khởi động lại thì lấp khoảng trống | test mở lại `FileJournal` từ file | `get(seq_BE)` là `None`, `highest_out()` ≥ `seq_BE`; `journal::Reader` thấy `Record::OutboundMark { seq: seq_BE }` và không có `Record::Message` cho số đó |
-| 5 | Không cấp phát | `cargo bench -p fixbolt-engine --bench alloc` | `redact-mask 0 redact-scan 0`; R5 làm nó > 0 |
+| 5 | Không cấp phát | `cargo bench -p fixbolt-engine --bench alloc` | `redact-mask 0 redact-scan 0`; R5 (dạng `std::hint::black_box(Vec::with_capacity(1))`) làm nó > 0 |
 | 6 | Đảo ngược | bước 3, R1–R6 | từng cái đỏ đúng test đã ghi trước, rồi xanh lại |
 | 7 | Không phá gì đã có | các lệnh ở bước 2 | test có sẵn xanh **không sửa**; 59 / 59 (`cargo test -p fixbolt-session --test score`) vẫn nằm trong `cargo test --all` |
 
@@ -273,5 +273,43 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
 
 ## Nhật ký giao hàng
 
-*(Chưa bắt đầu. Manager ghi vào đây khi đóng từng bước: commit, gate đã chạy, CI run id, cái gì
-chưa chứng minh.)*
+*(Manager ghi vào đây khi đóng từng bước: commit, gate đã chạy, CI run id, cái gì chưa chứng
+minh.)*
+
+- **2026-09-23 — bước 1–3 xong, chưa commit** (worktree `fb-p3r3`, nhánh `plan/p3-redact-secrets`).
+  Bước 1 đỏ đúng như dự đoán: 4/4 test của `secrets_stay_off_disk` đỏ ở câu *"… holds the
+  secret …"*, còn nửa `Logon` của journal thì xanh ngay từ đầu. Sau bước 2 thì xanh. R1–R6 đỏ
+  đúng test đã ghi trước, rồi khôi phục (sha256 khớp bản trước bước 3). Có hai chỗ phải sửa
+  plan, ghi ở *Sửa 1*. Commit, CI run id: manager ghi khi đóng.
+
+## Sửa 1 — 2026-09-23
+
+**Plan tự mâu thuẫn ở một chỗ.** *Cách làm* mục 1 (và ADR-0110 quyết định 1) nói: bản tin không
+đọc được `35=` mà có `96=` thì che `96`. Nhưng bước 2 lại đòi `--test msglog` phải xanh **mà không
+sửa file test**. Hai test có sẵn trong `crates/engine/tests/msglog.rs` dùng đúng loại bản tin đó
+(không có `35=`, có `96=`), nên code mới che `96` và chúng đỏ:
+
+```text
+thread 'a_data_field_with_a_newline_stays_on_one_line' panicked at crates/engine/tests/msglog.rs:154:5:
+left: "20260903-10:32:07.120 IN  shard=0 conn=1 8=FIX.4.4\u{1}95=3\u{1}96=***\u{1}10=000\u{1}"
+thread 'a_backslash_in_a_data_field_round_trips' panicked at crates/engine/tests/msglog.rs:174:5:
+assertion `left == right` failed: the escaped line must decode back to the exact bytes that arrived
+```
+
+**Quyết định: thêm `35=B` (News) vào hai bản tin mẫu đó, không đổi câu kiểm nào.** Hai test ấy
+kiểm việc *escape* (xuống dòng, dấu `\`) trong một trường DATA, không kiểm chuyện bí mật. Chúng
+viết ra lúc log còn ghi nguyên văn mọi byte, và ADR-0110 cố ý bỏ hành vi đó cho bản tin không có
+`35=`. Có `35=B` thì `96` là nội dung, không bị che, nên test vẫn kiểm đúng điều nó định kiểm.
+Nửa còn lại (bản tin **không có** `35=` thì `96` **bị** che trong file log) giờ có test riêng:
+`secrets_stay_off_disk.rs::raw_data_on_a_frame_with_no_msg_type_is_masked_in_the_log`. Test
+này đã được đảo ngược thử: đổi luật thành "không có `35=` thì không che" thì nó đỏ. Phương án
+bị loại: bỏ luật che `96` khi không có `35=`. Làm vậy trái ADR-0110 đã chấp nhận, và frame rác
+sẽ bị che thiếu.
+
+**Sửa R5.** Viết đúng như bảng cũ (`let _v: Vec<u8> = Vec::with_capacity(1);`) thì bench vẫn in
+`redact-mask 0`: ở chế độ build của bench, trình biên dịch xoá luôn cặp cấp phát/giải phóng không
+ai dùng, nên phép đảo ngược không chứng minh gì. Viết `std::hint::black_box(Vec::with_capacity(1))`
+thì bench in `redact-mask 1000` và đỏ ở câu *"non-negotiable 1: the engine allocates nothing on
+the byte path"*. Bảng *Chia việc* và *Cách kiểm chứng* đã sửa theo dạng này. Bẫy này đã từng gặp
+một lần (`docs/reference/measured-costs.md`, mục *An injected allocation the optimiser can delete
+proves nothing*); lần này ghi thêm vào đó.
