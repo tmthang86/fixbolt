@@ -398,6 +398,14 @@ below describe what a first release would contain.
 
 ### Fixed
 
+- **`connect_and_serve` hears `Admin::shutdown` while it waits to reconnect.** The wait between a
+  lost or refused connection and the next dial skipped the engine's turn, which is where a
+  shutdown is noticed, so the stop was heard only when the reconnect timer fired —
+  `[measured 2026-09-23]` 26 s late with `ReconnectInterval=30`. The wait now goes round through
+  the turn on every wake of `Block`'s 100 ms timeout, and still sleeps: the stop returns within
+  about one timeout, and the waiting thread stays under a 20%-of-a-core ceiling and is found
+  sleeping (`crates/engine/tests/reconnect_wire.rs`, both asserted). Same for `connect_and_serve_tls`.
+
 - **A counterparty's TLS 1.3 KeyUpdate no longer kills the session.** ktls-core 0.0.5 answered
   a peer's KeyUpdate with an `InternalError` alert unless its `tls13-key-update` feature was on;
   this engine had not enabled it. A long-lived session under kTLS — against any peer that

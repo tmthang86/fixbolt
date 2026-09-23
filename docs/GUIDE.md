@@ -1558,6 +1558,12 @@ and only the second means you may have to reconcile sequence numbers by hand.
 5. **Your application is not consulted.** There is no "let the dispatcher drain" phase, so an
    out-of-band dispatcher can lose work it had already accepted.
 
+**An initiator waiting to redial stops too.** `connect_and_serve` between a lost connection and
+its next dial is asleep on the engine's 100 ms timeout, not on `ReconnectInterval`, so
+`admin.shutdown` returns it in about 100 ms with `sessions() == 0` — there is nobody to say
+goodbye to. Before 2026-09-23 it returned only when the redial timer fired
+(`crates/engine/tests/reconnect_wire.rs::a_dial_waiting_to_reconnect_stops_when_asked_not_when_the_timer_fires`).
+
 Two more entries from STATUS's *Not proven* matter here: **nothing authenticates the holder
 of an `Admin`** (who you pass that handle to is the whole of the access control), and
 **nothing stops accepting during a shutdown**, so a socket arriving in the grace period is

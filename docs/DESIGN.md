@@ -520,7 +520,11 @@ listener to the poller, so a connection is accepted on the connect rather than o
 timeout. A self-pipe wakes the poller for a reply produced on the application's thread, and
 the engine drains it after every wait, because an undrained pipe makes every subsequent `poll`
 return instantly: a working engine, burning a core. Pairing a blocking strategy with a
-transport that cannot name a source does not compile.
+transport that cannot name a source does not compile. `connect_and_serve`'s dial loop idles the
+same way while it waits to reconnect — on nothing but `Block`'s own timeout — and each wake goes
+through `turn`, so an `Admin::shutdown` is heard within one timeout rather than when the redial
+timer fires (`crates/engine/tests/reconnect_wire.rs`, the stop and the CPU both asserted;
+`dial` exists only in `standard`).
 
 **`wait::Yield` is neither mode.** It is `std::thread::yield_now()`, which yields the scheduler
 and does not block, so it burns its core without giving `hft` its tight poll. Its rustdoc says

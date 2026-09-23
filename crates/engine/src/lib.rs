@@ -2605,14 +2605,17 @@ fn dial<
                     // to. A `Shutdown` reporting zero sessions is the truth
                     // here, not a placeholder.
                     crate::reconnect::Next::Stop => return Ok(Shutdown::default()),
-                    crate::reconnect::Next::At(_) => {
-                        // Nothing to wait on but the clock. The wait strategy's
-                        // own timeout bounds it — this does not sleep on a
-                        // deadline it chose, which is what non-negotiable 4 is
-                        // about.
-                        engine.idle_with(&[]);
-                        continue;
-                    }
+                    // **Not yet: fall through, do not `continue`.** The wait
+                    // is the third idle arm at the bottom of this loop, and
+                    // the way there passes `engine.turn()` — where a
+                    // shutdown is noticed — and `shutdown_finished()` — where
+                    // it is returned. A `continue` here skipped both, so
+                    // `Admin::shutdown` was heard only when the policy said
+                    // `Now` again: `[measured 2026-09-23]` +26 s with
+                    // `ReconnectInterval=30`. Plan
+                    // `2026-09-23-phase-3-found-defects` row D2;
+                    // `tests/reconnect_wire.rs::a_dial_waiting_to_reconnect_stops_when_asked_not_when_the_timer_fires`.
+                    crate::reconnect::Next::At(_) => {}
                     crate::reconnect::Next::Now => match connect(addr) {
                         Ok(t) => match wrap(t) {
                             Some(t) => handshaking = Some((t, now)),
@@ -2710,6 +2713,17 @@ fn dial<
                     Some(source) => engine.idle_with(&[Interest::readable(source)]),
                     None => engine.idle(),
                 }
+            } else {
+                // **Nothing connected, nothing handshaking: the reconnect
+                // wait.** Nothing to wait on but the clock, and the wait
+                // strategy's own timeout bounds it — this does not sleep on a
+                // deadline it chose, which is what non-negotiable 4 is about.
+                // Each wake goes round through `turn()` above, so a shutdown is
+                // heard within one timeout rather than at the next dial.
+                //
+                // Deleting this arm is the reversal of
+                // `tests/reconnect_wire.rs::the_dial_loop_sleeps_rather_than_spins_while_it_waits_to_reconnect`.
+                engine.idle_with(&[]);
             }
         }
     }
