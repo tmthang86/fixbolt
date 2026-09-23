@@ -27,6 +27,12 @@
 # re-run -- green again. The expected FAIL line is printed by this script
 # itself before it runs, in the "=== reversal target" section below, so it
 # is on record before the edit is made.
+#
+# LC_ALL=C: bench-instructions.sh now sets this itself, but this file's own
+# `same()` comparisons and awk calls need it too -- a reviewer saw 6 FAIL
+# here under LC_ALL=en_DK.utf8 because mawk's printf spelled 0.02 as
+# `0,020000`, and the "en_DK locale" case below re-checks this end to end.
+export LC_ALL=C
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,6 +78,33 @@ same "same-work" "$(classify 0.010000 0.010000 0.100000)" \
   "spread exactly 0.01% and between exactly 0.1%: still same-work"
 
 echo
+echo "=== counter_ok / pct_fully_counted (pure)"
+
+# A finding against a first version of this script: it whitelisted only
+# `<not counted>` by name, so `<not supported>` (what perf prints on a
+# PMU-less VM) fell through untouched, was coerced by awk's + 0 into 0, and
+# both min/max/classify ran to a verdict on that -- same-work if both arms
+# read it, work-changed if only one did. counter_ok is a whitelist (a bare
+# non-zero integer), not a blocklist, precisely so a third spelling of
+# "no count" needs no third case here.
+same "0" "$(counter_ok 1000000000 && echo 0 || echo 1)" "a real count passes"
+same "1" "$(counter_ok '<not supported>' && echo 0 || echo 1)" \
+  "<not supported> (PMU-less VM) fails -- the reviewer's finding"
+same "1" "$(counter_ok '<not counted>' && echo 0 || echo 1)" "<not counted> fails"
+same "1" "$(counter_ok '' && echo 0 || echo 1)" "an empty field fails"
+same "1" "$(counter_ok '0' && echo 0 || echo 1)" "zero fails"
+same "1" "$(counter_ok '12abc' && echo 0 || echo 1)" "trailing garbage fails"
+
+same "0" "$(pct_fully_counted '100.00' && echo 0 || echo 1)" "100.00% passes"
+same "0" "$(pct_fully_counted '100' && echo 0 || echo 1)" "bare 100 passes"
+same "1" "$(pct_fully_counted '50.00' && echo 0 || echo 1)" \
+  "50.00% (multiplexed) fails -- the reviewer's finding"
+same "1" "$(pct_fully_counted '99.99' && echo 0 || echo 1)" "99.99% fails"
+same "1" "$(pct_fully_counted '' && echo 0 || echo 1)" "an empty percent field fails"
+same "1" "$(pct_fully_counted '<not supported>' && echo 0 || echo 1)" \
+  "<not supported> as a percent field fails"
+
+echo
 echo "=== end to end, a stub perf"
 
 FIXDIR=$(mktemp -d)
@@ -114,6 +147,32 @@ case "$mode" in
     echo "1000000000,,instructions:u,100000,100.00,," >&2
     echo "400000000,,cycles:u,100000,100.00,,"          >&2
     exit 1
+    ;;
+  not_supported_both)
+    # A PMU-less VM: perf still exits 0, but the counter field itself says
+    # so, for both arms.
+    echo "<not supported>,,instructions:u,100000,0.00,," >&2
+    echo "<not supported>,,cycles:u,100000,0.00,,"        >&2
+    exit 0
+    ;;
+  not_supported_one)
+    if [ "$arm" = "arm-a" ]; then
+      echo "1000000000,,instructions:u,100000,100.00,," >&2
+      echo "400000000,,cycles:u,100000,100.00,,"          >&2
+    else
+      echo "<not supported>,,instructions:u,100000,0.00,," >&2
+      echo "<not supported>,,cycles:u,100000,0.00,,"        >&2
+    fi
+    exit 0
+    ;;
+  multiplexed)
+    # Real counts, but only 50.00% of the run's time was actually counted --
+    # the two events shared the PMU, and this figure is a scaled estimate,
+    # not the same execution's instructions and cycles both counted
+    # throughout.
+    echo "1000000000,,instructions:u,100000,50.00,," >&2
+    echo "400000000,,cycles:u,100000,50.00,,"          >&2
+    exit 0
     ;;
   same_work)
     if [ "$arm" = "arm-a" ]; then instr=1000000000; else instr=1000500000; fi
@@ -182,7 +241,7 @@ same "1" "$(grep -c '^verdict: unstable$' "$LASTOUT")" "unstable case: verdict l
 
 rc=$(run_case missing_counter "$FAKE_PERF" -n 2 -c 0 "$ARM_A" "$ARM_B")
 same "2" "$rc" "missing/zero counter: exit 2"
-same "1" "$(grep -c 'missing or zero counter' "$LASTOUT")" "missing/zero counter: message printed"
+same "1" "$(grep -c 'missing, zero, or non-numeric counter' "$LASTOUT")" "missing/zero counter: message printed"
 
 rc=$(run_case workload_exit1 "$FAKE_PERF" -n 2 -c 0 "$ARM_A" "$ARM_B")
 same "2" "$rc" "workload exit 1: exit 2"
@@ -207,6 +266,49 @@ rc=$(run_case same_work "bash $FAKE_PERF" -n 3 -c 0 "$ARM_A" "$ARM_B")
 same "0" "$rc" "PERF as a multi-word command (bash <script>): exit 0"
 same "1" "$(grep -c '^verdict: same-work$' "$LASTOUT")" "PERF as a multi-word command: verdict line"
 
+# The reviewer's four findings, end to end: `<not supported>` on both arms,
+# `<not supported>` on one arm, a multiplexed 50.00% run, and `-n 1`.
+
+rc=$(run_case not_supported_both "$FAKE_PERF" -n 2 -c 0 "$ARM_A" "$ARM_B")
+same "2" "$rc" "<not supported> on both arms: exit 2, not same-work rc=0"
+same "1" "$(grep -c 'missing, zero, or non-numeric counter' "$LASTOUT")" \
+  "<not supported> on both arms: refused by name"
+
+rc=$(run_case not_supported_one "$FAKE_PERF" -n 2 -c 0 "$ARM_A" "$ARM_B")
+same "2" "$rc" "<not supported> on one arm: exit 2, not work-changed"
+same "1" "$(grep -c 'missing, zero, or non-numeric counter' "$LASTOUT")" \
+  "<not supported> on one arm: refused by name"
+
+rc=$(run_case multiplexed "$FAKE_PERF" -n 2 -c 0 "$ARM_A" "$ARM_B")
+same "2" "$rc" "multiplexed (50.00%) counters: exit 2"
+same "1" "$(grep -c 'multiplexed or unreadable percent-of-time-counted' "$LASTOUT")" \
+  "multiplexed (50.00%) counters: refused by name"
+
+# -n 1: rejected before any perf call at all -- an unstable verdict could
+# never fire with one run per arm, so accepting -n 1 would silently drop a
+# whole verdict, not just narrow the sample.
+out=$("$here/bench-instructions.sh" -n 1 -c 0 "$ARM_A" "$ARM_B" 2>&1)
+rc=$?
+same "2" "$rc" "-n 1: exit 2 (usage), not a same-work/unstable run with one sample"
+same "1" "$(printf '%s\n' "$out" | grep -c '^usage:')" "-n 1: usage message printed"
+
+# The locale the reviewer found this under: mawk's printf spells 0.02 as
+# `0,020000` under LC_ALL=en_DK.utf8, which used to break every numeric
+# comparison downstream (spread_pct, between_pct, classify all read a comma
+# where they expected a decimal point). bench-instructions.sh's own
+# `export LC_ALL=C` must make this locale irrelevant end to end.
+if locale -a 2>/dev/null | grep -qx 'en_DK.utf8'; then
+  rc=$(LC_ALL=en_DK.utf8 run_case same_work "$FAKE_PERF" -n 3 -c 0 "$ARM_A" "$ARM_B")
+  same "0" "$rc" "en_DK.utf8 caller locale: exit 0, same as LC_ALL=C"
+  same "1" "$(grep -c '^verdict: same-work$' "$LASTOUT")" "en_DK.utf8 caller locale: verdict line"
+  same "2" "$(grep -c 'spread=0.000000%' "$LASTOUT")" \
+    "en_DK.utf8 caller locale: both arms' spread printed with a decimal point, not a comma"
+  same "0" "$(grep -c '0,0' "$LASTOUT")" \
+    "en_DK.utf8 caller locale: no comma-decimal anywhere in the output"
+else
+  echo "skip  en_DK.utf8 not installed on this machine (locale -a) -- not a self-test result either way"
+fi
+
 echo
 echo "=== reversal target"
 echo "bench-instructions.sh:43  SAME_WORK_THRESHOLD_PCT=0.1"
@@ -215,6 +317,18 @@ echo "  FAIL  want [work-changed] got [same-work]  work-changed case: verdict li
 echo "(0.2% <= 1%, so the same 'work_changed' fixture above reads same-work)."
 echo "Run this script again after that one-line edit and confirm exactly that"
 echo "line goes red and nothing else does; then restore 0.1 and confirm green."
+
+echo
+echo "Second reversal target: bench-instructions.sh's \`export LC_ALL=C\`."
+echo "Expected FAIL when that line is removed, before running (en_DK.utf8"
+echo "installed; skip otherwise):"
+echo "  FAIL  want [1] got [0]  en_DK.utf8 caller locale: verdict line"
+echo "and/or:"
+echo "  FAIL  want [0] got [>0]  en_DK.utf8 caller locale: no comma-decimal anywhere in the output"
+echo "(mawk's printf spells the spread/between figures with a comma under"
+echo "LC_ALL=en_DK.utf8 once the script no longer forces LC_ALL=C, corrupting"
+echo "classify()'s arithmetic or at minimum the printed figures)."
+echo "Restore the line and confirm green again."
 
 echo
 echo "ok scripts/check-bench-instructions.sh pass $pass   fail $fail"

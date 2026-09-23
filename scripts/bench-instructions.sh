@@ -18,25 +18,48 @@
 # ~2-3% a +10% move of one case would add to a whole-process count.
 #
 # Usage: scripts/bench-instructions.sh [-n N] [-c CPU] A B
-#   -n N   runs per arm, interleaved A,B,A,B,... (default 3)
+#   -n N   runs per arm, interleaved A,B,A,B,... (default 3, minimum 2 --
+#          with one run an arm's own spread is always 0 and `unstable` can
+#          never fire, which is not a stricter gate, it is a dead one)
 #   -c CPU taskset core to pin both arms to (default 0)
 #
 # Reads perf as ${PERF:-perf} and holds no `sudo` of its own -- ADR-0093's
 # gate reads every committed `sudo`; the caller passes PERF="sudo -n perf"
 # when kernel.perf_event_paranoid requires it for an unprivileged process.
+# Sets FIXBOLT_BENCH_COUNT_ONLY=1 for both arms (ADR-0102 decision 2): a bench
+# binary built at a commit whose committed `benches/baselines.tsv` line no
+# longer matches this desk still runs and prints every case, but does not
+# assert `OVER`/`UNDER BASELINE` or a missing line and exits 0 -- the case
+# this tool exists for. Without that variable a stale-baseline binary panics
+# (exit 101) before `perf` can finish counting it, which used to read as a
+# hard refusal below on 12 of 13 arms in one P3 run that was never actually
+# unsound, only unmeasured.
 #
-# Refuses (exit 2) when a counter is missing, zero, or `<not counted>`, or
-# when a workload exits non-zero -- perf-record-exits-zero-when-sudo-cannot-
-# find-the-workload.md has a `perf stat` twin, and a silent zero would read
-# as "no work" instead of "did not run".
+# Refuses (exit 2) when: a counter is missing, zero, or anything that is not
+# a bare non-zero integer -- `<not counted>` and `<not supported>` (a PMU-less
+# VM) both fail the same regex, not a blocklist of known-bad strings, because
+# a blocklist only ever grows by one incident at a time; when the "percent of
+# time counted" field (perf stat -x,'s 5th field) is under 100.00 for either
+# counter, i.e. the run was multiplexed and the two counts did not come from
+# the same execution; or when a workload exits non-zero -- perf-record-exits-
+# zero-when-sudo-cannot-find-the-workload.md has a `perf stat` twin, and a
+# silent zero would read as "no work" instead of "did not run".
 #
 # Exit codes: 0 same-work, 3 work-changed, 2 unstable or any hard error
-# (missing/zero/<not counted> counter, workload exit != 0, bad usage).
+# (missing/zero/non-numeric/multiplexed counter, workload exit != 0, bad
+# usage, -n below 2).
 #
 # The verdict math (spread_pct, between_pct, classify) is pure and sourced
 # with BENCH_INSTRUCTIONS_SOURCE_ONLY=1 by
 # scripts/check-bench-instructions.sh -- same shape as
 # scripts/compare-w2w-procedures.sh (COMPARE_SOURCE_ONLY=1).
+#
+# LC_ALL=C: awk's printf "%.6f" below goes through the C library's decimal
+# formatting, which some locales spell with a comma (`0,020000`) -- seen
+# under LC_ALL=en_DK.utf8, breaking every numeric comparison downstream. The
+# figures this script reports are ASCII in every locale, not a presentation
+# choice a caller's environment should be able to change.
+export LC_ALL=C
 set -uo pipefail
 
 # Not derived -- see the header comment above (ADR-0102 decision 1).
@@ -78,9 +101,28 @@ classify() {
     }'
 }
 
+# A counter field is only trusted when it is a bare non-zero integer --
+# whitelisting the shape rather than blocklisting known-bad strings, so
+# `<not supported>` (a PMU-less VM), `<not counted>`, an empty field, and
+# anything else perf might one day spell its refusal as all fail the same
+# check. Pure.
+counter_ok() { # counter_ok <field>
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" != 0 ]
+}
+
+# The "percent of time counted" field (perf stat -x,'s 5th column) must be a
+# number and must read 100(.00...): under 100 the counter was multiplexed
+# with another event and its count is a scaled estimate, not the same
+# execution's instructions and cycles both counted throughout. Pure.
+pct_fully_counted() { # pct_fully_counted <field>
+  [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+  awk -v p="$1" 'BEGIN { exit !(p + 0 >= 100) }'
+}
+
 # Sourced by check-bench-instructions.sh's pure-function cases, which want
-# spread_pct / between_pct / classify and none of the CLI or perf-running
-# below -- same guard shape as compare-w2w-procedures.sh:59.
+# spread_pct / between_pct / classify / counter_ok / pct_fully_counted and
+# none of the CLI or perf-running below -- same guard shape as
+# compare-w2w-procedures.sh:59.
 if [ "${BENCH_INSTRUCTIONS_SOURCE_ONLY:-0}" = 1 ]; then
   # shellcheck disable=SC2317 # reachable when sourced
   return 0 2>/dev/null || exit 0
@@ -99,7 +141,9 @@ while getopts ":n:c:" opt; do
 done
 shift $((OPTIND - 1))
 
-[[ "$N" =~ ^[0-9]+$ ]] && [ "$N" -ge 1 ] || usage
+# N >= 2: with one run, min == max always, spread_pct is always 0, and
+# `unstable` is unreachable regardless of what the machine actually did.
+[[ "$N" =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] || usage
 [[ "$CPU" =~ ^[0-9]+$ ]] || usage
 [ $# -eq 2 ] || usage
 A=$1
@@ -116,14 +160,21 @@ command -v taskset >/dev/null 2>&1 || { echo "taskset not found (util-linux)" >&
 # writes a diagnostic to stderr and returns non-zero. The workload's own
 # stdout is discarded here -- this script counts instructions, it does not
 # read a case's ns/op (that is P1's stdout capture, done by hand).
+# `counter_ok` / `pct_fully_counted` are defined above, with the other pure
+# functions, so check-bench-instructions.sh can unit-test them directly.
 run_one() { # run_one <bin>
-  local bin=$1 out rc instr cycles v
+  local bin=$1 out rc instr cycles pct_instr pct_cycles v
   # $PERF_BIN is deliberately unquoted: the caller passes PERF="sudo -n perf"
   # as a space-separated command, not a single executable name (the same
   # shape scripts/check-sudo-names-what-root-can-find.sh reads off ADR-0093's
-  # committed `sudo` lines), so it must word-split here.
+  # committed `sudo` lines), so it must word-split here. `env
+  # FIXBOLT_BENCH_COUNT_ONLY=1` sits right before `$bin`, after `taskset`, so
+  # it reaches the bench binary regardless of whether `sudo` resets the
+  # environment of the commands it wraps (`sudo VAR=val cmd` survives
+  # env_reset; `env VAR=val` immediately before the final exec does not need
+  # to rely on that at all).
   # shellcheck disable=SC2086
-  out=$($PERF_BIN stat -x, -e instructions:u,cycles:u -- taskset -c "$CPU" "$bin" 2>&1 1>/dev/null)
+  out=$($PERF_BIN stat -x, -e instructions:u,cycles:u -- taskset -c "$CPU" env FIXBOLT_BENCH_COUNT_ONLY=1 "$bin" 2>&1 1>/dev/null)
   rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "workload exited $rc: $bin" >&2
@@ -132,14 +183,21 @@ run_one() { # run_one <bin>
   fi
   instr=$(printf '%s\n' "$out" | awk -F, '$3 == "instructions:u" {print $1}' | tail -n1)
   cycles=$(printf '%s\n' "$out" | awk -F, '$3 == "cycles:u" {print $1}' | tail -n1)
+  pct_instr=$(printf '%s\n' "$out" | awk -F, '$3 == "instructions:u" {print $5}' | tail -n1)
+  pct_cycles=$(printf '%s\n' "$out" | awk -F, '$3 == "cycles:u" {print $5}' | tail -n1)
   for v in "$instr" "$cycles"; do
-    case "$v" in
-      '' | *'<not counted>'* | 0)
-        echo "missing or zero counter for $bin:" >&2
-        printf '%s\n' "$out" >&2
-        return 1
-        ;;
-    esac
+    if ! counter_ok "$v"; then
+      echo "missing, zero, or non-numeric counter for $bin (read: '$v'):" >&2
+      printf '%s\n' "$out" >&2
+      return 1
+    fi
+  done
+  for v in "$pct_instr" "$pct_cycles"; do
+    if ! pct_fully_counted "$v"; then
+      echo "multiplexed or unreadable percent-of-time-counted for $bin (read: '$v', need 100.00):" >&2
+      printf '%s\n' "$out" >&2
+      return 1
+    fi
   done
   echo "$instr $cycles"
 }
