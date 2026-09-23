@@ -116,7 +116,8 @@ with all eight of its recommendations as proposed; the plan is
 [plans/2026-09-23-phase-3-scope.md](plans/2026-09-23-phase-3-scope.md). The published crates are
 `fixbolt-codec`, `-dict`, `-session`, `-engine`, `-sbe` and `fixbolt`; the owner runs
 `cargo publish`. The candidates it leaves out — kernel bypass, SIMD, clustering, HA,
-replication — stay where §5 and ADR-0045 / ADR-0074 put them.
+replication — stay out of phase 3; bypass (Onload over AF_XDP) and SIMD are phase 4's, each behind
+a kill line (ADR-0098), and clustering, HA and replication stay in §5.
 
 Scope: make the engine something a stranger can `cargo add`, read, trust and upgrade. It moves
 §3's largest gap — a track record of zero — the only way that gap moves, by being downloadable.
@@ -156,9 +157,12 @@ commit, with a CI run id.
 | 8 | The API is watched | `cargo semver-checks --baseline-version 0.1.0`, blocking in CI |
 | — | Phases 1 and 2 still hold | 59 / 59 in process and on a socket; FIXT 179 / 180 with its pinned divergence; `libquickfix` interop 7 / 7; allocation benches 0 |
 
-### Phase 4: the owner's five items, each behind a kill line — *Proposed — ADR-0098, awaiting owner approval*
+### Phase 4: the owner's five items, each behind a kill line — *Accepted — ADR-0098, 2026-09-23*
 
-**Nothing below is approved or built, and nothing starts before phase 3 closes.** Proposed by
+**Approved by the owner on 2026-09-23, not yet built; nothing starts before phase 3 closes.**
+All eight of the plan's questions were answered as recommended — SQLite, not Postgres; Onload
+over AF_XDP, no TCP stack of this project's own; no `ef_vi` card; SQPOLL an `hft` arm only.
+Decided by
 [ADR-0098](decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md),
 with [ADR-0099](decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)
 (supersedes ADR-0077 decision 2 and ADR-0074 decision 1) and
@@ -180,7 +184,7 @@ line that removes it if it does not pay. A removed item is a completed item.
 DPDK (never); `io_uring` zero-copy receive; SQPOLL in `standard`; Postgres unless its own ADR is
 accepted (the `postgres` crate carries a Tokio runtime); a web UI of this project's own; HA.
 
-**Phase 4 exit criteria (proposed).** Each a command that passes or fails on the closing commit,
+**Phase 4 exit criteria.** Each a command that passes or fails on the closing commit,
 with a CI run id; the measured rows quote `scripts/check-machine.sh` from the desk.
 
 | # | Criterion | Gate |
@@ -331,18 +335,20 @@ criteria 2, 3, 4 and 6 exist because of this paragraph.
 
 Out unless a new ADR reverses them:
 
-- **Kernel bypass** (DPDK, OpenOnload, `ef_vi`). *Proposed to narrow by ADR-0098 / ADR-0099,
-  awaiting owner approval: Onload over AF_XDP would leave this list as a measured second row
-  beside a kernel figure; DPDK stays never and `ef_vi` stays out without hardware. Until
-  approved, the bullet stands as written.* Not before an ordinary TCP path has been
-  measured and found to be the limit; [DESIGN.md §8](DESIGN.md) puts that limit at 10–20 µs.
-  If an ADR ever reverses this, the order is fixed: Onload (engine unchanged), then `ef_vi` as
-  a second `Transport`, DPDK never because it ships no TCP stack. Plaintext only; it excludes
-  TLS (D11). STATUS item 14.
+- **Kernel bypass, except Onload over AF_XDP** (DPDK, `ef_vi`, a userspace TCP stack of this
+  project's own). *Narrowed 2026-09-23 by
+  [ADR-0098](decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
+  and [ADR-0099](decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md):*
+  Onload over AF_XDP left this list as phase 4's measured bypass arm — engine unchanged, `hft`
+  only, published only as a second labelled row beside a kernel-TCP figure from the same boot,
+  and removed if it misses its kill line. The rest stays out: DPDK never, because it ships no
+  TCP stack; `ef_vi` as a second `Transport` only once a Solarflare / X2-class NIC exists here;
+  no TCP stack of our own. Bypass is plaintext only; it excludes TLS (D11). STATUS item 14.
 - **Clustering, HA, replication.**
-- **Metrics dashboards, web UIs.** *Proposed to narrow by ADR-0098, awaiting owner approval: a
-  Prometheus-format exporter and a committed Grafana dashboard would leave this list; a web UI of
-  this project's own would stay. Until approved, the bullet stands as written.*
+- **A web UI of this project's own.** *Narrowed 2026-09-23 by ADR-0098 item 5:* a
+  Prometheus-format exporter on its own thread (`fixbolt-metrics`) and a committed Grafana
+  dashboard definition left this list for phase 4; Grafana is the UI, and building one here
+  stays a non-goal.
 - **Code generation for languages other than Rust.**
 - **Matching engine, order book, risk.** This is a protocol engine.
 - **Record retention, immutability, tamper evidence and search.**
@@ -356,7 +362,7 @@ Out unless a new ADR reverses them:
 
 | # | Question | Status |
 |---|---|---|
-| 1 | Does the headline positioning stay "the fastest acceptor on kernel TCP" now that the engine is bidirectional? | **Answered by [ADR-0077](decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)**: acceptor-first stays, but "the fastest" is retired from every headline in favour of *a FIX 4.4 acceptor on kernel TCP whose latency is a published, reproduced number*; a superlative may appear only beside the pair that supports it |
+| 1 | Does the headline positioning stay "the fastest acceptor on kernel TCP" now that the engine is bidirectional? | **Answered by [ADR-0077](decisions/ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)**: acceptor-first stays, but "the fastest" is retired from every headline in favour of *a FIX 4.4 acceptor on kernel TCP whose latency is a published, reproduced number*; a superlative may appear only beside the pair that supports it. **Decision 2 superseded 2026-09-23 by [ADR-0099](decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)**: kernel TCP stays the headline, and a kernel-bypass figure is published only as a second labelled row measured in the same boot |
 | 2 | Which plan owns repeating groups? | **Answered:** [their own plan](plans/2026-08-27-repeating-groups.md), after `codec` step 1 |
 | 3 | Does SBE ride a tag=value session, or does FIXP enter scope? | **Answered by [ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md)**: SBE enters phase 2 as an encoding with no session of its own; FIXP is its own phase, its own plan and its own ADR |
 | 4 | One view type or several, once encodings stop having tags on the wire? | **Answered by [ADR-0079](decisions/ADR-0079-one-view-per-encoding-and-one-trait-over-them.md)**: several view types, one per encoding, held under one `Encoding` trait; `MessageView` and `codec`'s public API today are unchanged |

@@ -1,7 +1,10 @@
 # ADR-0099 — Kernel TCP stays the default and the headline; a bypass figure is a second, labelled row
 
-- **Status**: **Proposed — 2026-09-23**, with [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
-  (phase 4). Accepted or rejected together with it. On acceptance it **supersedes
+- **Status**: **Accepted — 2026-09-23, by the owner**, with
+  [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
+  (its Q2: *yes*, and the positioning sentence is rewritten to match — `CLAUDE.md`,
+  `README.md`, `DESIGN.md` §1, `PRD.md`, `INTRODUCTION.md` §5; Q3: bypass is Onload over AF_XDP
+  only, no TCP stack of this project's own; Q5: no `ef_vi` card in phase 4). It **supersedes
   [ADR-0077](ADR-0077-acceptor-first-stays-and-fastest-is-said-only-beside-a-reproduced-pair.md)
   decision 2** and **[ADR-0074](ADR-0074-kernel-bypass-io-uring-and-the-logon-hop-stay-unmeasured-by-decision.md)
   decision 1**; their other decisions stand, and their text is not edited beyond a status line

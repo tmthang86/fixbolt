@@ -1,10 +1,12 @@
 # ADR-0100 — SIMD is reopened as an experiment whose kill line is written before the code
 
-- **Status**: **Proposed — 2026-09-23**, with [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
-  (phase 4). Accepted or rejected together with it. On acceptance it **supersedes
-  [ADR-0045](ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md) decision
-  1** (*declined*). ADR-0045 decisions 2, 3 and 4 stand and are used below; its text is not
-  edited beyond a status line naming this ADR.
+- **Status**: **Accepted — 2026-09-23, by the owner**, with
+  [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
+  (its Q1: the kill line is written first and a killed experiment counts as done; Q6: the ≥ 2 %
+  round-trip clause stays, with the density arm; Q7: the 15 % / 2 % / 3 % numbers stand). It
+  **supersedes [ADR-0045](ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
+  decision 1** (*declined*). ADR-0045 decisions 2, 3 and 4 stand and are used below; its text is
+  not edited beyond a status line naming this ADR.
 - **Date**: 2026-09-23
 - **Deciders**: Tran Manh Thang (chose SIMD for phase 4, 2026-09-23). Written by the architect
   (Opus).

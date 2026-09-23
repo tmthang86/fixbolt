@@ -1,6 +1,6 @@
 # Phase 4: năm hạng mục anh chọn, mỗi cái có một vạch "không đáng thì bỏ"
 
-> **Loại:** Plan · **Ngày:** 2026-09-23 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-23 · **Trạng thái:** Đã duyệt (anh duyệt 2026-09-23, cả tám câu theo khuyến nghị)
 > **Phạm vi:** phạm vi phase 4 — đề xuất bởi [ADR-0098](../decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md), kèm [ADR-0099](../decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md) và [ADR-0100](../decisions/ADR-0100-simd-is-reopened-as-an-experiment-whose-kill-line-is-written-before-the-code.md); `PRD.md` §2 *Phase 4*
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
@@ -182,7 +182,7 @@ của một crate đã publish).
 
 | Bước | Kết quả | Người làm (đề xuất) | Phụ thuộc |
 |---|---|---|---|
-| 0 | ADR-0098/0099/0100 được duyệt; nếu anh chọn Postgres thì thêm ADR Postgres | architect | anh duyệt; phase 3 xong |
+| 0 | ADR-0098/0099/0100 đã được duyệt 2026-09-23 (anh chọn SQLite, không có ADR Postgres) — bước này chỉ còn kiểm phase 3 đã đóng | manager | phase 3 xong |
 | 1 | `fixbolt-metrics`: exporter trên luồng riêng, hai số mới trong `Snapshot`, test mọi series của dashboard có thật, case alloc | senior developer (đụng `engine`'s `Snapshot`) | 0 |
 | 2 | `tools/grafana/fixbolt.json` + tài liệu; cặp `w2w` scrape bật/tắt trên máy bàn | developer (sonnet) + manager chạy đo | 1 |
 | 3 | `fixbolt-store-sqlite`: writer thread, gom lô, test sập-rồi-khôi-phục, case alloc | senior developer | 0 |
@@ -281,6 +281,20 @@ có thể cần một boot nữa.
 
 ## Anh cần quyết
 
+> **Đã quyết 2026-09-23** (anh trả lời trong hội thoại), cả tám câu theo khuyến nghị:
+> **Q1** có — vạch bỏ viết trước khi viết code, hạng mục bị bỏ vẫn tính là xong.
+> **Q2** có — ADR-0099 được duyệt, và câu định vị được viết lại cho khớp (kernel TCP vẫn là
+> tiêu đề; số bypass chỉ là dòng thứ hai có nhãn, đo cùng boot) trong `CLAUDE.md`, `README.md`,
+> `DESIGN.md` §1, `PRD.md`, `INTRODUCTION.md` §5.
+> **Q3** không tự viết stack TCP — bypass chỉ là Onload trên AF_XDP.
+> **Q4** SQLite (không mở ADR Postgres).
+> **Q5** không mua card Solarflare / `ef_vi` trong phase 4.
+> **Q6** giữ điều kiện "≥ 2 % vòng khứ hồi", kèm nhánh density.
+> **Q7** giữ nguyên các con số vạch như đề xuất.
+> **Q8** SQPOLL ở `hft` chỉ là một nhánh đo, không bao giờ mặc định.
+> ADR-0098, ADR-0099, ADR-0100 chuyển sang *Accepted* cùng ngày; ADR-0077, ADR-0074, ADR-0045 mỗi
+> cái thêm đúng một dòng status nêu quyết định nào bị thay.
+
 1. **Duyệt nguyên tắc "mỗi hạng mục có vạch bỏ viết trước; bị bỏ vẫn tính là xong"?**
    *Khuyến nghị: có.* Không có nó thì ADR-0045 và ADR-0074 bị lật mà không có gì thay chỗ.
 2. **Duyệt ADR-0099 — tiêu đề vẫn là kernel TCP, số bypass chỉ là dòng thứ hai có nhãn?**
@@ -305,4 +319,4 @@ có thể cần một boot nữa.
 
 ## Nhật ký giao hàng
 
-*(Chưa có — plan đang chờ duyệt, và chưa bắt đầu trước khi phase 3 đóng.)*
+*(Chưa có — plan đã duyệt 2026-09-23; chưa bắt đầu, và không bắt đầu trước khi phase 3 đóng.)*

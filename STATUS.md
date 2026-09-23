@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
+Last updated: **2026-09-23, later** — **phases 3 and 4 are scoped and accepted by the owner (ADR-0097, ADR-0098–0100); the positioning sentence now carries a second, labelled bypass row (ADR-0099)**. Branch `plan/phase-3-prd`, PR [#96](https://github.com/tmthang86/fixbolt/pull/96), docs only. See *Start here* below. Before that: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
 built but has not run**: PRs [#87](https://github.com/tmthang86/fixbolt/pull/87) (merge `a451831`,
 closing commit `ed03886`, run
 [`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), 14 of 14) and
@@ -89,6 +89,37 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-23, later: phases 3 and 4 are scoped and accepted; nothing is built
+
+Branch `plan/phase-3-prd` (worktree `../fb-phase3`), PR [#96](https://github.com/tmthang86/fixbolt/pull/96), **docs only** — no crate touched, nothing measured.
+
+### What was decided
+
+* **Phase 3 — "dependable by a stranger"**, [ADR-0097](docs/decisions/ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)
+  Accepted, owner answers Q1–Q8 as recommended. Plan: [2026-09-23-phase-3-scope](docs/plans/2026-09-23-phase-3-scope.md), nine rows in *Chia việc*.
+* **Phase 4 — the owner's five items, each behind a kill line written before the code**,
+  [ADR-0098](docs/decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
+  Accepted: metrics exporter + Grafana JSON, SQLite store, `io_uring`, Onload over AF_XDP, SIMD (SWAR first).
+  [ADR-0099](docs/decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)
+  supersedes ADR-0077 decision 2 and ADR-0074 decision 1; [ADR-0100](docs/decisions/ADR-0100-simd-is-reopened-as-an-experiment-whose-kill-line-is-written-before-the-code.md)
+  supersedes ADR-0045 decision 1. Phase 4 does not start before phase 3 closes.
+* **`CLAUDE.md`'s positioning sentence changed** (ADR-0099); `README.md`, `DESIGN.md` §1, `INTRODUCTION.md` §5 and `PRD.md` §5/§6 aligned.
+
+### Next — the first executable action
+
+Verify PR #96 is merged and its CI run green, then brief the architect for phase 3 row 1: the
+dictionary-source ADR and the Orchestra ↔ QuickFIX diff spike (measure only; no build change).
+Rows 3, 4, 5 may run beside it (disjoint crates).
+
+### Not proven
+
+* **The redaction gap** (`554=` / `96=` reaching the log and journal) is a grep (0 hits for redaction in `crates/`), not a run.
+* **`igb` AF_XDP zero-copy on the desk** is a `/proc/kallsyms` read; no XSK socket was bound.
+* **The kill-line numbers** other than `io_uring`'s 3 % (≈ 3 × the 0.9 % procedure spread) are the architect's settings, reasoned in ADR-0098, not measured.
+* Item 101 (open) is unchanged by this work.
+
+---
 
 ## Start here — 2026-09-23 (boot F): items 51, 85, 89, 96, 99, 100 closed, `--strict` green on the desk, one new item (101), and the desk goes back to the desktop line and powers off
 

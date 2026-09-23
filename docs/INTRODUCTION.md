@@ -114,7 +114,9 @@ The full survey, with licences and trade-offs, is in [reference/prior-art.md](re
 ## 5. How fixbolt is positioned
 
 `fixbolt` is an **acceptor-first**, pure-Rust FIX 4.4 engine built for the lowest latency
-achievable on ordinary kernel TCP.
+achievable on ordinary kernel TCP. Kernel TCP is the headline; a kernel-bypass figure is only ever
+a second, labelled row beside a kernel-TCP figure from the same boot
+([ADR-0099](decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)).
 
 - **The session layer is pure.** The state machine does no heap allocation, no system calls,
   no locking and no socket operations. Time enters as a tick. This is what lets the 59

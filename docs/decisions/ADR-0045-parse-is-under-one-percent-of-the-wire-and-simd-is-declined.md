@@ -1,6 +1,7 @@
 # ADR-0045 — Parse is under 1% of the wire, and SIMD/SWAR is declined
 
 - **Status**: Accepted — 2026-09-02
+- **Superseded in part**: **Decision 1 superseded by [ADR-0100](ADR-0100-simd-is-reopened-as-an-experiment-whose-kill-line-is-written-before-the-code.md)** (2026-09-23). Decisions 2, 3 and 4 stand.
 - **Date**: 2026-09-02
 - **Deciders**: Tran Manh Thang
 - **Related**: [ADR-0003](ADR-0003-message-representation.md) — the layout decision that made

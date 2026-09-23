@@ -1,10 +1,18 @@
 # ADR-0098 — Phase 4 is the owner's five items, each entering behind a measurement that can kill it
 
-- **Status**: **Proposed — 2026-09-23. Awaiting the owner's approval**; nothing is built from it
-  until then, and nothing in it starts before phase 3 ([ADR-0097](ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md))
-  has closed. Explained for the owner in
-  [plans/2026-09-23-phase-4-scope](../plans/2026-09-23-phase-4-scope.md), which carries the open
-  questions. Revisions before acceptance are recorded in this file.
+- **Status**: **Accepted — 2026-09-23, by the owner**, with ADR-0099 and ADR-0100, all eight
+  questions of [plans/2026-09-23-phase-4-scope](../plans/2026-09-23-phase-4-scope.md) answered
+  as recommended. Nothing in it starts before phase 3
+  ([ADR-0097](ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md))
+  has closed. The owner's answers, in conversation 2026-09-23:
+  Q1 **yes** — every item's kill line is written before its code, and a killed item counts as
+  done; Q2 **yes** — ADR-0099 is accepted and the positioning sentence is rewritten to match it
+  (kernel TCP stays the headline; a bypass figure is a second labelled row measured in the same
+  boot); Q3 **no TCP stack of this project's own** — bypass is Onload over AF_XDP only; Q4
+  **SQLite** (no Postgres ADR is opened); Q5 **no Solarflare / `ef_vi` card** in phase 4; Q6
+  **the ≥ 2 % round-trip clause stays**, with the density arm (ADR-0100 decision 3); Q7 **the
+  kill-line numbers stand as proposed** (3 %, 25 %, 10 %, 15 %, 2 %, 3 %, 50 000 msg/s × 60 s);
+  Q8 **SQPOLL in `hft` is measured as an arm only, never a default**.
 - **Date**: 2026-09-23
 - **Deciders**: Tran Manh Thang. **The contents were chosen by the owner** (2026-09-23, in
   conversation): kernel bypass / AF_XDP, `io_uring`, SIMD, a database-backed store, a dashboard.
