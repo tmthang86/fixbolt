@@ -1,6 +1,6 @@
 # Phase 4, hàng 3 (và quy trình đo của hàng 4): store SQLite
 
-> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đề xuất
+> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đã duyệt (manager duyệt 2026-09-24 theo uỷ quyền 2026-09-18)
 > **Phạm vi:** phase 4, hàng 3 của bảng *Chia việc* trong
 > [2026-09-23-phase-4-scope.md](2026-09-23-phase-4-scope.md), cộng quy trình đo của hàng 4 (hàng 4
 > chạy ở một PR sau, xem mục *Hàng 4*); hạng mục 4 và vạch bỏ của
@@ -10,8 +10,9 @@
 > (hình dạng store),
 > [ADR-0181](../decisions/ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md)
 > (ba "tay cầm" công khai engine phải mở ra),
-> [ADR-0182](../decisions/ADR-0182-the-sqlite-store-is-born-publish-shaped-behind-a-default-feature-and-joins-the-lockstep-release-only-when-its-kill-line-passes.md)
-> (feature, publish, lockstep).
+> [ADR-0182](../decisions/ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md)
+> (feature, gia nhập nhóm phát hành bằng tag). Phase 3 đóng bằng tag `v0.1.0` (ADR-0161, đang
+> viết); **không publish lên crates.io**.
 
 > Tên file luôn tiếng Anh: `docs/plans/YYYY-MM-DD-<topic>.md`.
 > Nội dung viết tiếng Việt, ngôn ngữ dễ hiểu — xem `CLAUDE.md` §6.
@@ -22,7 +23,8 @@
 Anh chọn SQLite làm store dạng database cho phase 4 (câu hỏi 4 của plan phạm vi), và yêu cầu
 vạch bỏ được viết trước code (câu hỏi 1). Vạch đó là: **luồng engine cấp phát 0 lần; độ trễ
 wire p50 nằm trong band so với `FileJournal` `Async`; ghi 50 000 bản tin/giây suốt 60 giây mà
-không rớt bản ghi nào.** Không đạt thì crate ở lại trong repo nhưng **không publish**.
+không rớt bản ghi nào.** Không đạt thì crate ở lại trong repo nhưng **không vào nhóm crate được phát hành bằng tag**
+(phase 3 đóng bằng tag `v0.1.0`, ADR-0161; không có kế hoạch publish lên crates.io).
 
 Hôm nay engine có hai cách giữ bản tin đã gửi: `MemJournal` (chỉ trong RAM) và `FileJournal`
 (RAM + file). Người dùng muốn tra lịch sử bằng SQL thì chưa có gì. Store SQLite là **`FileJournal`
@@ -79,7 +81,8 @@ chúng ra (ADR-0181).
 - WAL phình mãi nếu checkpoint không chạy được vì tranh khoá —
   <https://phiresky.github.io/blog/2020/sqlite-performance-tuning/>.
 - rusqlite 0.40.2 (2026-08-08, MIT): feature `bundled` biên dịch SQLite 3.53.2 bằng `cc`; không
-  khai `rust-version`, README nói MSRV là *"bản stable mới nhất lúc phát hành"*;
+  khai `rust-version`, README nói MSRV là *"bản stable mới nhất lúc phát hành"*; workspace
+  khai **`rust-version = "1.89"`** (MSRV của mình, crate mới thừa kế);
   `libsqlite3-sys` khai `links = "sqlite3"` — <https://github.com/rusqlite/rusqlite>, crates.io.
   `Connection` là `Send` không `Sync` — docs.rs.
 - Chèn theo lô với prepared statement dùng lại: 100 triệu dòng trong 34,3 giây, **khi đã tắt
@@ -96,7 +99,8 @@ bàn đang ở dòng grub desktop, không phải §9): máy `tmt-B450-I-AORUS-PR
 `7.0.0-31-generic`, NVMe ext4; WAL + NORMAL + EXCLUSIVE, blob 200 byte, 512 dòng mỗi transaction,
 một prepared statement giữ suốt: 3 000 000 dòng trong **5,640 s và 5,485 s** (~530 000
 dòng/giây), database 648 MB. Kết nối thứ hai vào cùng file, `busy_timeout` 0 → `database is
-locked` ngay lập tức. Crate thử build được trên Rust 1.88.0 và 1.98.0. Cây phụ thuộc: `bitflags`,
+locked` ngay lập tức. Crate thử build được trên Rust 1.88.0 và 1.98.0 (1.89.0 chưa cài trên máy nên chưa thử đúng
+bản đó; 1.88 < 1.89 nên MSRV 1.89 của workspace không bị rusqlite 0.40.2 phá). Cây phụ thuộc: `bitflags`,
 `fallible-iterator`, `fallible-streaming-iterator`, `smallvec`, `libsqlite3-sys` (+ `cc`,
 `pkg-config`, `vcpkg`, `shlex`, `find-msvc-tools` lúc build) — không runtime async.
 
@@ -138,8 +142,9 @@ ba thứ này, để hai journal chạy chung một đoạn code. Chỉ thêm, k
 - **Mở lại** nạp dòng `session` và `N` bản tin mới nhất vào `MemJournal`.
 - `released()` (cho `Recovery::ready`), `progress()` (số bản ghi đã commit, số outbound cao nhất
   đã commit), `close()`.
-- Manifest đủ khuôn publish của ADR-0160 nhưng **`publish = false`** tới khi hàng 4 cho kết quả
-  đạt (ADR-0182).
+- Manifest đủ khuôn phát hành của ADR-0160 (thừa kế version và `rust-version = "1.89"` của
+  workspace) nhưng **`publish = false`** — tức là đứng ngoài nhóm crate phát hành bằng tag —
+  tới khi hàng 4 cho kết quả đạt (ADR-0182).
 
 **C. Công cụ đo cho hàng 4, dựng luôn ở hàng này**: `examples/soak.rs` (chạy 50 000 msg/s × N
 giây, tự kiểm từng dòng) và nhánh `--journal sqlite-async` trong `tools/w2w` sau feature `sqlite`.
@@ -183,7 +188,7 @@ commit. Cột *Gate* là lệnh manager chạy lại.
 
 | Bước | Kết quả | Người làm | File được sửa / không được sửa | Gate | Phụ thuộc |
 |---|---|---|---|---|---|
-| 1 | **Ba tay cầm của engine (ADR-0181).** Test đỏ trước: `crates/engine/tests/writer_hooks.rs` — `a_ticket_retired_twice_is_counted_once`, `finish_without_retire_changes_no_count`, `wait_for_retired_writers_waits_for_a_ticket_finished_on_another_thread` (luồng phụ `finish` sau 50 ms: `wait` trả `true`, đã trôi ≥ 50 ms), `released_turns_true_only_when_its_releaser_releases`, `idle_is_reachable_from_outside_the_crate`; các test trong file tự tuần tự hoá bằng một `Mutex` tĩnh (biến đếm là toàn tiến trình). Đỏ = lỗi biên dịch, trích nguyên văn. Rồi code: `WriterTicket`, `Releaser`, `Released::pair`, `ring::Idle` công khai; `FileJournal` chuyển sang dùng chúng | senior developer (opus) | Sửa: `crates/engine/src/{journal.rs, ring.rs}`, `crates/engine/tests/writer_hooks.rs` (mới), `CHANGELOG.md`. **Không** sửa: file nào khác trong `crates/engine/src`, mọi test/bench có sẵn, `crates/session/` | `cargo test -p fixbolt-engine --test writer_hooks`; **không sửa mà vẫn xanh**: `cargo test -p fixbolt-engine --test one_appender --test after_serving --test retire --test writer_idle --test journal --test on_disk --test engine_recovery --test secrets_stay_off_disk`; `cargo bench -p fixbolt-engine --bench alloc` (case `retire` 0 và có chạy); `cargo test --all`; `cargo test --no-default-features`; `cargo clippy --all-targets -- -D warnings`; `cargo fmt --check`; `cargo semver-checks -p fixbolt-engine --baseline-rev origin/main` (không break); `scripts/check-indexing-debt.sh`; `scripts/check-no-crate-root-allow.sh`. Đảo ngược: R1 `finish` hạ đếm không qua CAS → đỏ ở `a_ticket_retired_twice_is_counted_once`/`finish_without_retire…`; R2 `retire` không tăng đếm → đỏ ở `wait_for_retired_writers_waits…` | duyệt plan + ba ADR |
+| 1 | **Ba tay cầm của engine (ADR-0181).** Test đỏ trước: `crates/engine/tests/writer_hooks.rs` — `a_ticket_retired_twice_is_counted_once`, `finish_without_retire_changes_no_count`, `wait_for_retired_writers_waits_for_a_ticket_finished_on_another_thread` (luồng phụ `finish` sau 50 ms: `wait` trả `true`, đã trôi ≥ 50 ms), `released_turns_true_only_when_its_releaser_releases`, `idle_is_reachable_from_outside_the_crate`; các test trong file tự tuần tự hoá bằng một `Mutex` tĩnh (biến đếm là toàn tiến trình). Đỏ = lỗi biên dịch, trích nguyên văn. Rồi code: `WriterTicket`, `Releaser`, `Released::pair`, `ring::Idle` công khai; `FileJournal` chuyển sang dùng chúng | senior developer (opus) | Sửa: `crates/engine/src/{journal.rs, ring.rs}`, `crates/engine/tests/writer_hooks.rs` (mới), `CHANGELOG.md`. **Không** sửa: file nào khác trong `crates/engine/src`, mọi test/bench có sẵn, `crates/session/` | `cargo test -p fixbolt-engine --test writer_hooks`; **không sửa mà vẫn xanh**: `cargo test -p fixbolt-engine --test one_appender --test after_serving --test retire --test writer_idle --test journal --test on_disk --test engine_recovery --test secrets_stay_off_disk`; `cargo bench -p fixbolt-engine --bench alloc` (case `retire` 0 và có chạy); `cargo test --all`; `cargo test --no-default-features`; `cargo clippy --all-targets -- -D warnings`; `cargo fmt --check`; `cargo semver-checks -p fixbolt-engine --baseline-rev origin/main` (không break); `scripts/check-indexing-debt.sh`; `scripts/check-no-crate-root-allow.sh`. Đảo ngược: R1 `finish` hạ đếm không qua CAS → đỏ ở `a_ticket_retired_twice_is_counted_once`/`finish_without_retire…`; R2 `retire` không tăng đếm → đỏ ở `wait_for_retired_writers_waits…` | phase 3 đóng bằng tag `v0.1.0` (ADR-0161); plan + ba ADR đã duyệt |
 | 2 | **Khung crate + test đỏ.** Manifest đủ khuôn ADR-0160 với `publish = false` và feature `sqlite` (ADR-0182); `src/lib.rs` có kiểu và hàm công khai, thân hàm trả lỗi `Unsupported` (không `panic`, không `todo!`) để test biên dịch được và đỏ ở khẳng định. Test (mọi file mở đầu `#![cfg(feature = "sqlite")]`): `tests/store.rs` — `a_reopened_store_answers_what_it_was_told`, `a_reused_number_keeps_the_newest_bytes`, `reopen_loads_only_the_last_n_into_the_ring`, `a_second_open_of_a_held_database_is_refused_at_once` (`WouldBlock`, < 100 ms), `a_database_of_another_session_is_refused`, `a_retired_writer_commits_everything_then_releases_then_is_counted_done`, `a_message_carrying_a_secret_leaves_only_its_number` (đọc bytes của `.db` **và** `-wal` sau khi đóng; tiền đề dương: bản tin `35=8` có trong file), `a_record_larger_than_the_ring_is_counted_and_put_still_answers_true`, `a_failed_commit_is_counted_in_unwritten` (dùng `max_db_pages` nhỏ → `SQLITE_FULL`), `the_writer_sleeps_when_idle` (theo cách `crates/engine/tests/writer_idle.rs` làm); `tests/crash.rs` — `a_killed_process_resumes_from_what_it_committed` (chạy lại chính binary test làm tiến trình con qua biến môi trường, con in `committed <n>` mỗi khi `progress()` tăng, cha `Child::kill()` (SIGKILL) khi ≥ 5 000, mở lại: `highest_out` ≥ số cuối đã in, mọi `seq` từ 1 tới `highest_out` có mặt và đúng từng byte, `PRAGMA integrity_check` = `ok`, `Resumed::from_journal` cho `next_out = highest_out + 1`); `tests/serve.rs` — qua socket với `serve_with_recovery`, chép khuôn `crates/engine/tests/on_disk.rs:470-520` và `secrets_stay_off_disk.rs:430-470`: `a_session_resumed_from_the_database_replays_what_it_sent` (lần chạy hai: `ResendRequest` nhận lại `43=Y` đúng byte), `secrets_through_a_real_logon_stay_out_of_the_database`, `a_reconnect_while_the_writer_flushes_is_parked_then_admitted` (khuôn `one_appender.rs:362`, `ready` trả lời bằng `released()`) | senior developer (opus), cùng agent | Tạo: `crates/store-sqlite/{Cargo.toml, README.md, LICENSE-MIT, LICENSE-APACHE, src/lib.rs, tests/store.rs, tests/crash.rs, tests/serve.rs}`; sửa: `Cargo.toml` (members), `scripts/check-no-optional-deps.sh`. **Không** sửa: `crates/engine/`, `crates/session/`, `.github/` | `cargo test -p fixbolt-store-sqlite` **đỏ**, trích nguyên văn, câu FAIL mong đợi viết trước (mục *Cách kiểm chứng* #1); `cargo build -p fixbolt-store-sqlite --no-default-features` xanh; `scripts/check-no-optional-deps.sh` xanh; `cargo test --all --no-default-features` không biên dịch `libsqlite3-sys` (grep output `Compiling libsqlite3-sys` → không có) | 1 |
 | 3 | **Code store (ADR-0180).** `src/journal.rs` (`SqliteJournal`, cài `Journal`, `open`, `released`, `progress`, `close`, `Drop`), `src/writer.rs` (vòng ghi, gom lô, mark gộp, bí mật, lỗi lô, dừng/đóng/release/finish), `src/schema.rs` (pragma, tạo/kiểm schema và định danh, nạp lại). Struct `SqliteJournal` không chứa kiểu `rusqlite`. Đảo ngược, mỗi cái viết câu FAIL trước: R1 bỏ nhánh bí mật trong writer → đỏ ở `a_message_carrying_a_secret…` và `secrets_through_a_real_logon…`; R2 `busy_timeout` 5000 → đỏ ở `a_second_open…` (thời gian); R3 bỏ kiểm định danh → đỏ ở `a_database_of_another_session…`; R4 `INSERT` thay `INSERT OR REPLACE` → đỏ ở `a_reused_number…`; R5 `retire` không lấy vé → đỏ ở `a_retired_writer_commits_everything…` | senior developer (opus), cùng agent | Tạo/sửa: `crates/store-sqlite/src/{lib.rs, journal.rs, writer.rs, schema.rs}`. **Không** sửa test của bước 2 (sửa test cho xanh là thất bại), `crates/engine/`, `crates/session/` | `cargo test -p fixbolt-store-sqlite` xanh, chạy 3 lần liền (crash và serve không được chập chờn); `cargo test --all`; `cargo test --no-default-features`; `cargo clippy --all-targets -- -D warnings`; `cargo clippy -p fixbolt-store-sqlite --no-default-features --all-targets -- -D warnings`; `cargo fmt --check`; `scripts/check-indexing-debt.sh`; `scripts/check-no-crate-root-allow.sh`; `scripts/check-lint-config.sh`; `scripts/check-no-optional-deps.sh`; R1–R5 đỏ đúng chỗ rồi xanh lại | 2 |
 | 4 | **Case alloc.** `crates/store-sqlite/benches/alloc.rs` (`harness = false`): bộ cấp phát đếm **theo luồng** (cờ `thread_local!` khởi tạo `const`, chỉ luồng đang đo được đếm) — tự kiểm ngay trong bench: cấp phát trên luồng khác trong cửa sổ → 0, trên luồng này → 1. Năm case: `sqlite-put`, `sqlite-mark-in`, `sqlite-mark-out`, `sqlite-mark-active`, `sqlite-retire`; mỗi case có khẳng định "đường có chạy" (dòng đã vào database / `writers_retired()` tăng). In một dòng `allocations: sqlite-put 0 …`. Đảo ngược R6: `std::hint::black_box(Vec::<u8>::with_capacity(1))` trong `put` → `sqlite-put` > 0 | senior developer (opus), cùng agent | Tạo: `crates/store-sqlite/benches/alloc.rs`; sửa: `crates/store-sqlite/Cargo.toml` (`[[bench]]`). Không sửa gì khác | `cargo bench -p fixbolt-store-sqlite --bench alloc` (năm số 0, trích dòng `allocations:`); `scripts/bench.sh` liệt kê và chạy target mới (trích dòng của nó); R6 đỏ rồi xanh | 3 |
@@ -230,9 +235,11 @@ so với nhánh `file-async` (ngưỡng ADR-0068 quyết định 2); dòng alloc
 p99 và p99.9 được ghi lại, không phải vạch (ADR-0098 chỉ đặt vạch ở p50).
 
 **4c. Áp phán quyết.** Đạt cả 4a, 4b và bước 4 của plan này (alloc 0) → ADR-0182 quyết định 3:
-bỏ `publish = false`, thêm tên vào ba danh sách script, thêm case build `sqlite` vào
-`check-packaged-build.sh`, ghi số vào `measured-costs.md`, ADR-0180 ghi kết quả. Hụt bất kỳ vạch
-nào → ADR-0182 quyết định 4: giữ `publish = false`, cặp số vào `measured-costs.md`, ADR-0180
+crate vào nhóm phát hành bằng tag — bỏ `publish = false`, thêm tên vào ba danh sách script, thêm
+case build `sqlite` vào `check-packaged-build.sh` (trên 1.98.0 và `rust-version` 1.89), ghi số
+vào `measured-costs.md`, ADR-0180 ghi kết quả; crate ra mắt ở tag kế tiếp sau `v0.1.0`
+(ADR-0161). Không publish lên crates.io. Hụt bất kỳ vạch
+nào → ADR-0182 quyết định 4: giữ `publish = false` (ngoài nhóm phát hành), cặp số vào `measured-costs.md`, ADR-0180
 ghi kết quả. Cả hai đều là "xong" (câu hỏi 1).
 
 ## Cách kiểm chứng
@@ -270,7 +277,7 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
       bản tin mang bí mật được lấp khoảng trống", trỏ test
 - [ ] `docs/best-practices-standard.md`, `docs/best-practices-hft.md` — store chỉ thêm việc cho
       luồng ghi; ghim lõi cho luồng ghi là ngoài phạm vi
-- [ ] `CHANGELOG.md` — bốn item công khai mới của engine; crate mới (chưa publish)
+- [ ] `CHANGELOG.md` — bốn item công khai mới của engine; crate mới (chưa vào nhóm phát hành bằng tag)
 - [ ] `docs/reference/` — mỗi bất ngờ gặp trong lúc dựng, kèm test canh
 - [ ] `docs/reference/measured-costs.md` — **hàng 4**, không phải hàng này
 - [ ] `STATUS.md` — manager viết khi hàng đóng
@@ -294,7 +301,7 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
 | Test crash chập chờn (tiến trình con, thời điểm kill) | chạy 3 lần liền ở bước 3; khẳng định chỉ dùng số con đã in, không dùng thời gian |
 | `--no-default-features` làm test biên dịch thành rỗng rồi "xanh" | `cargo test --all` (feature bật) chạy chúng; bước 2 trích tên từng test đã chạy |
 | C bị biên dịch trong job `no-default-features` | `check-no-optional-deps.sh` ba dòng mới; grep `Compiling libsqlite3-sys` |
-| MSRV của rusqlite tăng lặng lẽ khi `cargo update` | chưa publish thì vô hại; khi lật cờ, job `package` build trên `rust-version` (ADR-0182 quyết định 3) |
+| MSRV của rusqlite tăng lặng lẽ khi `cargo update` | chưa vào tag nào thì vô hại; khi vào nhóm phát hành, job `package` build trên `rust-version` = 1.89 (ADR-0182 quyết định 3) |
 | Soak chạy trên tmpfs (`/tmp` của máy bàn là tmpfs) → số vô nghĩa | soak từ chối tmpfs; R-kiểm ở bước 5 |
 | Build lại giữa boot đo làm layout đổi | hàng 4b build sẵn trước boot (ADR-0090) |
 
@@ -306,11 +313,12 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
 | wire p50 lệch > 5 % dù luồng engine làm y hệt | thấp | cặp đo cho biết; nếu lệch thì đó là tranh chấp cache/bộ nhớ của luồng ghi — ghi vào `measured-costs.md`, vạch áp dụng |
 | Đổi `FileJournal` sang ba tay cầm làm vỡ một hành vi mà test không thấy | trung bình | tám binary test không sửa + case `retire` + review senior; ADR-0181 *Consequences* |
 | Thêm C vào mọi build mặc định làm CI chậm hơn | chắc chắn, nhỏ | chấp nhận (ADR-0182 *Consequences*) |
-| Hàng 4b phải chờ boot §9 của hàng 7 | chắc chắn | crate ở trạng thái `publish = false` tới lúc đó; không chặn hàng nào khác |
+| Hàng 4b phải chờ boot §9 của hàng 7 | chắc chắn | crate đứng ngoài nhóm phát hành (`publish = false`) tới lúc đó; không chặn hàng nào khác |
 
 ## Ngoài phạm vi
 
 - Postgres, MySQL, ODBC — anh chọn SQLite, không mở ADR Postgres.
+- Publish lên crates.io — không có kế hoạch (ADR-0161); crate chỉ vào nhóm phát hành bằng tag.
 - Một database dùng chung cho nhiều session (ADR-0180 *Options not taken*).
 - Chế độ "ghi xong database mới gửi" — không bao giờ (bất biến 4).
 - Dọn dòng cũ, giới hạn thời gian giữ lịch sử.

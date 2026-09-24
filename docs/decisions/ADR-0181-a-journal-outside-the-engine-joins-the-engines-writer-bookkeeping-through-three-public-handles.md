@@ -90,7 +90,7 @@ share with the engine are private to `crates/engine/src/journal.rs` and `ring.rs
 
 **Bad — and accepted**
 
-- **Four more public items on a published crate**, which `cargo semver-checks` now holds
+- **Four more public items on a released crate** (tagged, ADR-0161), which `cargo semver-checks` now holds
   stable. A later redesign of the writer bookkeeping is a breaking change.
 - **`FileJournal`'s internals change** in a PR whose subject is another crate. The eight engine
   test binaries and the `retire` alloc case above are the guard; a reviewer must see them run

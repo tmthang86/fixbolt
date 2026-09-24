@@ -19,7 +19,7 @@
   [ADR-0155](ADR-0155-a-recovery-learns-its-writer-let-go-from-the-writer-not-from-the-filesystem.md);
   drafted with it: [ADR-0181](ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md)
   (the engine hooks this store needs) and
-  [ADR-0182](ADR-0182-the-sqlite-store-is-born-publish-shaped-behind-a-default-feature-and-joins-the-lockstep-release-only-when-its-kill-line-passes.md)
+  [ADR-0182](ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md)
   (its feature gate and release). `DESIGN.md` D7.
 
 ## Context
