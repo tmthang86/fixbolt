@@ -1115,3 +1115,17 @@ going red at the referee. Neither run printed the summary line.
   acceptor role in FIXP — the role `ADR-0077` positions this engine on for FIX 4.4.
 
 ---
+
+## 12. A stranger installs 0.1.0 from its git tag, and the API is held against it `[added 2026-09-24]`
+
+ADR-0097 exit criteria 7 and 8 as amended by [ADR-0161](decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)
+and [ADR-0162](decisions/ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md).
+
+| Criterion | Command | Where | Result |
+|---|---|---|---|
+| 7 — a stranger builds and runs it | `scripts/stranger-check.sh --from git --tag v0.1.0` | CI job `stranger-git`, run [36018953370](https://github.com/tmthang86/fixbolt/actions/runs/36018953370) on `4b1c945`; desk `tmt-B450-I-AORUS-PRO-WIFI`, 2026-09-24 | `fixbolt resolved to git+https://github.com/tmthang86/fixbolt?tag=v0.1.0#890c7850…`, `LOGON OK`, `LOGOUT OK`, `stranger-check: OK` |
+| 8 — the API is held | `scripts/check-semver-against-tag.sh` (blocking) | CI job `semver`, same run | `baseline v0.1.0`, six crates × `196 checks`, `OK`; reversal on the desk: renaming `fixbolt_codec::checksum` → `failure function_missing`, exit 100 |
+
+The tag `v0.1.0` is on `890c785` (main CI run [36011477652](https://github.com/tmthang86/fixbolt/actions/runs/36011477652), 19/19)
+and is locked by the GitHub ruleset "release tags are immutable (ADR-0161)". Not a crates.io upload: nothing here says
+anything about crates.io.
