@@ -33,7 +33,7 @@ declared until all of these are true:
 Neither condition is a phase-3 exit criterion; both are read off this file, not off `STATUS.md`,
 because a released API's promise belongs beside the releases it binds.
 
-## [0.1.0] — <date the tag was pushed>
+## [0.1.0] — 2026-09-24
 
 Released as the git tag `v0.1.0`; not published to crates.io
 ([ADR-0161](docs/decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)).

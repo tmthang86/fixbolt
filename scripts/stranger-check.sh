@@ -323,7 +323,13 @@ elif [[ "${MODE}" == "git" ]]; then
 
   echo "== cargo add --git ${GIT_URL} --tag ${TAG} fixbolt (no [patch] — cloned straight from GitHub) =="
   add_log="${scratch}/add.log"
-  if ! cargo add --git "${GIT_URL}" --tag "${TAG}" fixbolt --manifest-path "${scratch}/Cargo.toml" >"${add_log}" 2>&1; then
+  # `--color never`: CARGO_TERM_COLOR=always (this file's own workflow sets
+  # it) wraps `Compiling`/`Adding` in ANSI escapes that the plain-text greps
+  # below never match — see docs/reference/cargo-output-colour-defeats-plain-
+  # text-parsing.md, the same trap scripts/check-indexing-debt.sh already
+  # paid for once. `--color` on the command line overrides the environment
+  # variable, so this is not cosmetic.
+  if ! cargo add --color never --git "${GIT_URL}" --tag "${TAG}" fixbolt --manifest-path "${scratch}/Cargo.toml" >"${add_log}" 2>&1; then
     cat "${add_log}" >&2
     echo "stranger-check: FAIL — could not add fixbolt from ${GIT_URL} at tag ${TAG}" >&2
     exit 1
@@ -336,13 +342,45 @@ elif [[ "${MODE}" == "git" ]]; then
   # that does not exist at all (the wrong-tag reversal above) must fail with
   # that cargo/git error, not with a doc mismatch that would otherwise fire
   # first regardless of which tag is wrong.
-  doc_tag="$(grep -oE 'tag = "[^"]+"' "${ROOT}/docs/GETTING-STARTED.md" | head -1 | sed -E 's/tag = "([^"]+)"/\1/')"
-  if [[ -z "${doc_tag}" ]]; then
-    echo "stranger-check: FAIL — docs/GETTING-STARTED.md names no tag = \"...\" install line" >&2
-    exit 1
-  fi
-  if [[ "${doc_tag}" != "${TAG}" ]]; then
-    echo "stranger-check: FAIL — docs/GETTING-STARTED.md names tag ${doc_tag}, this run checks ${TAG}" >&2
+  #
+  # Senior review of PR #112 finding F5: the first cut read only the FIRST
+  # `tag = "…"` in docs/GETTING-STARTED.md — a second, drifted `--tag vX` or
+  # `tag = "vX"` anywhere else in that file, or in README.md, went unread.
+  # This reads every occurrence of either spelling in both files and demands
+  # every one of them name the same tag this run was asked to check.
+  if ! python3 - "${ROOT}/docs/GETTING-STARTED.md" "${ROOT}/README.md" "${ROOT}" "${TAG}" <<'PY'
+import re
+import sys
+
+getting_started, readme, root, expected = sys.argv[1:5]
+pattern = re.compile(r'--tag[ \t]+(v[0-9][0-9A-Za-z.+-]*)|tag[ \t]*=[ \t]*"(v[0-9][0-9A-Za-z.+-]*)"')
+
+found_any = False
+fails = []
+for path in (getting_started, readme):
+    rel = path[len(root) + 1 :] if path.startswith(root + "/") else path
+    with open(path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, start=1):
+            for m in pattern.finditer(line):
+                tag_value = m.group(1) or m.group(2)
+                found_any = True
+                if tag_value != expected:
+                    fails.append(
+                        f"stranger-check: FAIL — {rel}:{lineno} names tag {tag_value}, this run checks {expected}"
+                    )
+
+if not found_any:
+    print(
+        "stranger-check: FAIL — docs/GETTING-STARTED.md names no tag = \"...\" install line",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+if fails:
+    for line in fails:
+        print(line, file=sys.stderr)
+    sys.exit(1)
+PY
+  then
     exit 1
   fi
 else
@@ -359,7 +397,7 @@ else
   } >"${scratch}/Cargo.toml"
 
   echo "== cargo add fixbolt@${REGISTRY_VERSION} (no [patch] — the real crates.io index) =="
-  if ! cargo add "fixbolt@${REGISTRY_VERSION}" --manifest-path "${scratch}/Cargo.toml"; then
+  if ! cargo add --color never "fixbolt@${REGISTRY_VERSION}" --manifest-path "${scratch}/Cargo.toml"; then
     echo "stranger-check: FAIL — could not select fixbolt = \"${REGISTRY_VERSION}\" from the" >&2
     echo "    registry. Expected RED until the owner has run 'cargo publish'" >&2
     echo "    (RELEASING.md, ADR-0097 exit criterion 5) — this is not a bug in" >&2
@@ -370,7 +408,10 @@ fi
 
 echo "== cargo build --manifest-path ${scratch}/Cargo.toml =="
 build_log="${scratch}/build.log"
-if ! cargo build --manifest-path "${scratch}/Cargo.toml" >"${build_log}" 2>&1; then
+# `--color never`, and it is not cosmetic — see the comment on the `cargo
+# add --git` call above. This is the log the --from git source checks below
+# grep for a plain-text `Compiling fixbolt v… (…)` line.
+if ! cargo build --color never --manifest-path "${scratch}/Cargo.toml" >"${build_log}" 2>&1; then
   echo "stranger-check: FAIL — the pasted docs/GETTING-STARTED.md code did not build:" >&2
   cat "${build_log}" >&2
   exit 1
@@ -386,14 +427,6 @@ fi
 # --- --from git only: prove the build actually came from GitHub at this tag,
 #     not from a local path (ADR-0161 decision 4, plan row 8b reversal (a)) --
 if [[ "${MODE}" == "git" ]]; then
-  compiling_line="$(grep -E '^ *Compiling fixbolt v[0-9][0-9A-Za-z.+-]* \(' "${build_log}" | head -1)"
-  expected_needle="(${GIT_URL}?tag=${TAG}#"
-  if [[ -z "${compiling_line}" || "${compiling_line}" != *"${expected_needle}"* ]]; then
-    found_src="$(printf '%s' "${compiling_line}" | sed -E 's/^.*\(([^)]*)\)[[:space:]]*$/\1/')"
-    echo "stranger-check: FAIL — fixbolt was compiled from ${found_src:-<unknown source>}, not from ${GIT_URL}?tag=${TAG}" >&2
-    exit 1
-  fi
-
   # The expected sha comes from THIS checkout, not from GitHub again — a
   # tag this checkout has never fetched cannot be verified, so that is
   # exit 2 (the script cannot run the check), not a FAIL of fixbolt itself.
@@ -403,11 +436,66 @@ if [[ "${MODE}" == "git" ]]; then
     exit 2
   fi
   expected_source="git+${GIT_URL}?tag=${TAG}#${tag_sha}"
-  if ! grep -qF "source = \"${expected_source}\"" "${scratch}/Cargo.lock"; then
-    echo "stranger-check: FAIL — ${scratch}/Cargo.lock does not pin fixbolt to source ${expected_source}" >&2
+
+  # Senior review of PR #112 finding F4: the first cut checked only the
+  # `fixbolt` package's own "Compiling" line and its own Cargo.lock entry —
+  # an outside `[patch]` retargeting `fixbolt-codec` alone (leaving `fixbolt`
+  # itself resolved from GitHub) stayed green. Every `fixbolt*` package that
+  # actually resolved into the scratch crate's OWN Cargo.lock (not a fixed
+  # list of six — `fixbolt-sbe` is absent by default, the `sbe` feature is
+  # off) must both appear in the build log compiling from this exact source
+  # and be pinned to it in the lock file. Cargo.lock is TOML; read with
+  # `tomllib`, the same way check-release-versions.sh and
+  # check-semver-against-tag.sh already read manifests, never with a
+  # line-oriented grep that a reformatted lock file could slip past.
+  if ! python3 - "${build_log}" "${scratch}/Cargo.lock" "${GIT_URL}" "${TAG}" "${expected_source}" <<'PY'
+import re
+import sys
+import tomllib
+
+build_log_path, lock_path, url, tag, expected_source = sys.argv[1:6]
+
+with open(lock_path, "rb") as f:
+    lock = tomllib.load(f)
+fixbolt_pkgs = [p for p in lock.get("package", []) if p.get("name", "").startswith("fixbolt")]
+if not fixbolt_pkgs:
+    print(f"stranger-check: FAIL — no fixbolt* package found in {lock_path} at all", file=sys.stderr)
+    sys.exit(1)
+
+text = open(build_log_path, encoding="utf-8", errors="replace").read()
+compiling_re = re.compile(
+    r"^[ \t]*Compiling (fixbolt[A-Za-z0-9_-]*) v[0-9][0-9A-Za-z.+-]* \(([^)]*)\)[ \t]*$",
+    re.M,
+)
+compiled_from = {m.group(1): m.group(2) for m in compiling_re.finditer(text)}
+
+expected_needle = f"{url}?tag={tag}#"
+fails = []
+for pkg in fixbolt_pkgs:
+    name = pkg["name"]
+
+    paren = compiled_from.get(name)
+    if paren is None:
+        fails.append(f"stranger-check: FAIL — no 'Compiling {name} v...' line in the build log")
+    elif expected_needle not in paren:
+        fails.append(f"stranger-check: FAIL — {name} was compiled from {paren}, not from {url}?tag={tag}")
+
+    source = pkg.get("source")
+    if source != expected_source:
+        fails.append(
+            f"stranger-check: FAIL — {lock_path} does not pin {name} to source {expected_source} (has {source!r})"
+        )
+
+if fails:
+    for line in fails:
+        print(line, file=sys.stderr)
+    sys.exit(1)
+
+print(f"stranger-check: {len(fixbolt_pkgs)} fixbolt* package(s) resolved to {expected_source}: {', '.join(sorted(compiled_from))}")
+PY
+  then
     exit 1
   fi
-  echo "stranger-check: fixbolt resolved to ${expected_source}"
 fi
 
 PORT="$(python3 -c 'import socket

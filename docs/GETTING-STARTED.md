@@ -22,7 +22,9 @@ either — API documentation is `cargo doc --open` in your own checkout of the d
 
 `fixbolt-dict` ships QuickFIX's FIX 4.4 dictionary inside the crate itself (`spec/FIX44.xml`,
 under [`NOTICE`](../NOTICE)), so there is nothing else to fetch and no `vendor/` checkout: the
-`cargo add` line above is the whole install, with nothing but GitHub reachable
+`cargo add` line above is the whole install, with nothing but GitHub and crates.io reachable (the
+tree itself comes from GitHub; a handful of ordinary dependencies such as `roxmltree` and `libc`
+still come from crates.io the normal way) — no `vendor/` checkout either way
 ([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)).
 
 ---

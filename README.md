@@ -75,8 +75,10 @@ This is the whole install unless a later ADR decides to publish; there is no doc
 
 `crates/dict` ships QuickFIX's FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 dictionaries inside the crate
 itself, at `crates/dict/spec/`, under [`NOTICE`](NOTICE) — so `fixbolt-dict`, and everything
-built on top of it (including `fixbolt`), builds with **nothing but GitHub** reachable: no
-`vendor/` checkout, no external toolchain (ADR-0104). Two steps to a running acceptor:
+built on top of it (including `fixbolt`), builds with **nothing but GitHub and crates.io**
+reachable (the tree itself comes from GitHub at the tag; a handful of ordinary dependencies such
+as `roxmltree` and `libc` still come from crates.io the normal way): no `vendor/` checkout, no
+external toolchain (ADR-0104). Two steps to a running acceptor:
 [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
 ### Support level

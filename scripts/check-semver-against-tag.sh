@@ -135,7 +135,15 @@ log="$(mktemp)"
 trap 'rm -f "${log}"' EXIT
 
 echo "== cargo semver-checks --workspace --baseline-rev ${TAG} =="
-cargo semver-checks --workspace --baseline-rev "${TAG}" >"${log}" 2>&1
+# `--color never`: CARGO_TERM_COLOR=always (ci.yml's own workflow-level
+# setting) wraps `Checking`/`Checked` in ANSI escapes that the plain-text
+# regex below never matches — every crate then reads as "did not appear in
+# cargo-semver-checks output at all", which is indistinguishable from a real
+# missing crate without reading the raw log. `--color` on the command line
+# overrides the environment variable; see docs/reference/cargo-output-
+# colour-defeats-plain-text-parsing.md, the trap scripts/stranger-check.sh's
+# `--from git` mode and scripts/check-indexing-debt.sh both paid for too.
+cargo semver-checks --workspace --baseline-rev "${TAG}" --color never >"${log}" 2>&1
 cargo_status=$?
 cat "${log}"
 
