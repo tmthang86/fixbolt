@@ -4,9 +4,12 @@
   recorded verbatim in *Context*. The manager accepts it under that decision; the owner may refuse
   it. On acceptance it **supersedes
   [ADR-0097](ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)
-  Q5** (*the owner runs `cargo publish`*) **and ADR-0097 decision 7's exit criteria 7 and 8** (both
-  read from crates.io), and **ADR-0160 decision 6's second sentence and decision 7's "after the
-  publish it compares against the registry"** — the two places ADR-0160 said what happens after an
+  Q5** (*the owner runs `cargo publish`*), **ADR-0097 decision 2's steps (iv) "the first publish"
+  and (v) "the post-publish check"** (now: the tag, and the check against the tag), **and ADR-0097
+  decision 7's exit criteria 7 and 8** (both read from crates.io), and **ADR-0160 decision 6's
+  third sentence** ("After the publish, the same script runs with the patch removed and
+  `cargo add fixbolt@<version>` instead") **and decision 7's "after the publish it compares against
+  the registry"** — the two places ADR-0160 said what happens after an
   upload. Everything else in ADR-0097 and ADR-0160 stands, in particular ADR-0160 decisions 1–5
   and 8: the six crates stay publish-shaped.
 - **Date**: 2026-09-24
@@ -47,8 +50,9 @@ worktree of `main` `094bfc3` with no `vendor/`:
 
 1. **A named package is found anywhere in the repository.** `cargo add --git
    https://github.com/tmthang86/fixbolt --rev 094bfc3` with **no name** fails: `error: multiple
-   packages found at …: fixbolt, fixbolt-attr-scan, fixbolt-codec, … fixbolt-w2w` (15 names — every
-   workspace member, `publish = false` or not) `To disambiguate, run cargo add --git … <package>`.
+   packages found at …: fixbolt, fixbolt-attr-scan, fixbolt-codec, … fixbolt-w2w` (15 names: cargo
+   scans the whole tree, so beside the 12 workspace members, `publish = false` or not, it lists
+   the three packages outside the workspace — `spikes/fixp-probe`, `fuzz`, `spikes/ktls`) `To disambiguate, run cargo add --git … <package>`.
    With the name `fixbolt`: `Updating git repository` `https://github.com/tmthang86/fixbolt`,
    `Adding fixbolt (git) to dependencies`, features `+ standard - sbe`, and the manifest line
    `fixbolt = { git = "https://github.com/tmthang86/fixbolt", rev = "094bfc3", version = "0.1.0" }`
@@ -68,7 +72,10 @@ worktree of `main` `094bfc3` with no `vendor/`:
    dependency 'fixbolt'`, `unable to update https://github.com/tmthang86/fixbolt?tag=v9.9.9`,
    `failed to find tag 'v9.9.9'` (cargo prints backticks where this line shows single quotes).
 5. **cargo-semver-checks against a git revision works with no `vendor/`, and an unchanged
-   `0.1.0` runs every lint.** `cargo semver-checks --workspace --baseline-rev HEAD` prints, for each
+   `0.1.0` runs the lints that apply to a minor release** — 196 of 0.50.0's 254. The 58 skipped are
+   lints whose finding a minor release already permits, or lints at level `allow` (the `retain` in
+   `src/check_release.rs` keeps a lint only if the assumed release level does not already support
+   its required update). `cargo semver-checks --workspace --baseline-rev HEAD` prints, for each
    of the six published crates and no other, `Checking <crate> v0.1.0 -> v0.1.0 (no change; assume
    minor)`, `Checked [...] 196 checks: 196 pass, 58 skip`, `Summary no semver update required`;
    exit 0. `--baseline-rev v9.9.9` exits 101: `error: couldn't parse revision: "v9.9.9^{tree}"`,
@@ -83,7 +90,7 @@ worktree of `main` `094bfc3` with no `vendor/`:
 
 | Source | What it says | Bearing |
 |---|---|---|
-| <https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html> (*Specifying dependencies from git repositories*) | "Cargo fetches the git repository at that location and traverses the file tree to find Cargo.toml file for the requested crate anywhere inside the git repository" (example: `regex-lite` and `regex-syntax` from `rust-lang/regex`); `branch`, `tag`, `rev` select the commit, none means the default branch's latest; "Cargo locks the commits of git dependencies in Cargo.lock file at the time of their addition and checks for updates only when you run cargo update"; "crates.io does not allow packages to be published with dependencies on code published outside of crates.io itself" (dev-dependencies excepted) | How `fixbolt` resolves inside a 15-member repository (measured, fact 1); a `tag` is a name resolved at lock time, the lockfile holds the sha; **a stranger's own crate that depends on fixbolt by git cannot be published to crates.io** |
+| <https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html> (*Specifying dependencies from git repositories*) | "Cargo fetches the git repository at that location and traverses the file tree to find Cargo.toml file for the requested crate anywhere inside the git repository" (example: `regex-lite` and `regex-syntax` from `rust-lang/regex`); `branch`, `tag`, `rev` select the commit, none means the default branch's latest; "Cargo locks the commits of git dependencies in Cargo.lock file at the time of their addition and checks for updates only when you run cargo update"; "crates.io does not allow packages to be published with dependencies on code published outside of crates.io itself" (dev-dependencies excepted) | How `fixbolt` resolves inside a repository holding 15 packages — 12 workspace members and three outside it (measured, fact 1); a `tag` is a name resolved at lock time, the lockfile holds the sha; **a stranger's own crate that depends on fixbolt by git cannot be published to crates.io** |
 | <https://doc.rust-lang.org/cargo/commands/cargo-add.html> | `--git <url>`, `--tag <tag>`, `--rev <sha>`, `--branch <branch>`; synopsis `cargo add [options] --git url [crate…]` | The page does not say how a multi-package repository is disambiguated; fact 1 measured it |
 | <https://github.com/obi1kenobi/cargo-semver-checks> (README) | Default baseline is crates.io; `--baseline-rev <REV>` "Git revision to lookup for a baseline" — "will walk up the current directory until it finds a .git/ directory to resolve the revision and extract the corresponding worktree"; `--baseline-root`, `--baseline-rustdoc`; "unpublished crates should use alternative baseline approaches like git revisions or local directories" | `--baseline-rev v0.1.0` is the documented route for a crate never uploaded; it needs the tag in the local clone |
 | <https://raw.githubusercontent.com/obi1kenobi/cargo-semver-checks/v0.50.0/src/check_release.rs> | `classify_minimum_semver_version_change`: equal versions → `get_minimum_version_change` (`(0, _)` → Minor); a `0.y` minor change → Major; test `classify_zerover_same_version` asserts 0.1.0 vs 0.1.0 → Minor | Fact 6: an unchanged version is checked in full, a `0.(y+1)` bump skips everything |
@@ -127,7 +134,11 @@ equivalent for git-only crates (docs.rs builds only crates.io uploads).
    **blocking**, through a wrapper that fails unless each of the six published crates printed a
    `Checked … N checks` line with N > 0 (fact 6). The one exception the wrapper allows: when the
    workspace version differs from the tag's version (a deliberate `0.2.0` bump), it passes and
-   prints that the skip is by design. The baseline literal moves to the new tag in the pull request
+   prints that the skip is by design. Both versions are read from the manifest, the way
+   `scripts/check-release-versions.sh` reads it: the tag's from `git show <tag>:Cargo.toml`, the
+   working tree's from `Cargo.toml`, each as `[workspace.package] version` parsed with `tomllib` —
+   never inferred from cargo-semver-checks' own `(major change)` wording, which is output formatting
+   and not a contract. The baseline literal moves to the new tag in the pull request
    that follows each new tag, together with the page's install line (decision 4).
 6. **ADR-0160 stays.** Six crates, lockstep, `=` pins, `include`, licence copies, `rust-version`,
    docs.rs metadata; the `package` job, `cargo publish --workspace --dry-run` and
