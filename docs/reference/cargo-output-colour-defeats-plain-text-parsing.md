@@ -53,7 +53,7 @@ green:
 
 ```sh
 CARGO_TERM_COLOR=always scripts/stranger-check.sh --from git --tag v0.1.0        # must stay green
-CARGO_TERM_COLOR=always scripts/check-semver-against-tag.sh v0.1.0              # must stay green
+CARGO_TERM_COLOR=always scripts/check-semver-against-tag.sh                     # must stay green (no argument since ADR-0162)
 ```
 
 Removing the `--color never` flag from either script's cargo invocation, then re-running the

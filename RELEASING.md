@@ -83,18 +83,22 @@ literal everywhere it is hard-coded, so the page, the CI gates and the release a
 one:
 
 - `docs/GETTING-STARTED.md` and `README.md`'s install lines (`--tag v0.1.0` / `tag = "v0.1.0"`).
-- `.github/workflows/ci.yml`'s `semver` job (`scripts/check-semver-against-tag.sh v0.1.0`) and
-  `stranger-git` job (`scripts/stranger-check.sh --from git --tag v0.1.0`).
+- `.github/workflows/ci.yml`'s `stranger-git` job (`scripts/stranger-check.sh --from git --tag v0.1.0`).
+  The `semver` job is **not** on this list: `scripts/check-semver-against-tag.sh` takes no
+  argument and derives its baseline — the newest `vX.Y.Z` tag `HEAD` descends from
+  ([ADR-0162](docs/decisions/ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md)) —
+  so it moves to the new tag by itself once the tag is on `main`'s history.
 - `docs/CONFORMANCE.md` — the run id of this PR's own CI (`stranger-git` and `semver` both
   green against the NEW tag) and of the `push` to `main` right after it merges.
 
-Until this PR merges, `stranger-git` and `semver` on `main` still check the OLD tag — that is
-expected, not a defect, because the new tag is what this PR itself is introducing.
+Until this PR merges, `stranger-git` on `main` still checks the OLD tag — that is expected, not
+a defect, because the new tag is what this PR itself is introducing.
 
 ### 6. Tell the manager
 
 The manager confirms `scripts/stranger-check.sh --from git --tag v0.1.0` and
-`scripts/check-semver-against-tag.sh v0.1.0` are both green on the desk and in CI, and writes the
+`scripts/check-semver-against-tag.sh` (no argument; its first line names the baseline it chose,
+`baseline vX.Y.Z = highest of: …`) are both green on the desk and in CI, and writes the
 run ids into `docs/CONFORMANCE.md` and `STATUS.md`.
 
 ## Publishing to crates.io, if ever

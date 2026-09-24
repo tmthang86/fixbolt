@@ -156,7 +156,7 @@ commit, with a CI run id.
 | 5 | `Decimal` ([ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)) | `cargo test -p fixbolt-codec decimal`; its `benches/alloc.rs` case reads 0, proven by injection |
 | 6 | Second engine family | `scripts/interop.sh` against QuickFIX/J, both roles, 7 / 7, plaintext and TLS, blocking in CI |
 | 7 | A stranger can depend on it | a scratch crate outside the tree, `cargo add fixbolt --git https://github.com/tmthang86/fixbolt --tag v0.1.0`, `GETTING-STARTED.md`'s code verbatim, one Logon / Logout, proof the build came from GitHub at that tag; exits 0 (ADR-0161 decision 4) |
-| 8 | The API is watched | `scripts/check-semver-against-tag.sh v0.1.0` (`cargo semver-checks --baseline-rev v0.1.0`, asserting a real comparison ran), blocking in CI (ADR-0161 decision 5) |
+| 8 | The API is watched | `scripts/check-semver-against-tag.sh`, no argument (`cargo semver-checks --baseline-rev` the newest release tag `HEAD` descends from — `v0.1.0` today — asserting a real comparison ran), blocking in CI (ADR-0161 decision 5, [ADR-0162](decisions/ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md)) |
 | — | Phases 1 and 2 still hold | 59 / 59 in process and on a socket; FIXT 179 / 180 with its pinned divergence; `libquickfix` interop 7 / 7; allocation benches 0 |
 
 ### Phase 4: the owner's five items, each behind a kill line — *Accepted — ADR-0098, 2026-09-23*

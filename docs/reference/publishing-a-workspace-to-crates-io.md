@@ -253,15 +253,54 @@ the tag resolvable in the LOCAL checkout (`git rev-parse <tag>^{commit}`) —
 default) never has the tag to begin with, so the CI job needs
 `fetch-depth: 0` the same way the old `origin/main`-baseline job already did.
 
-**Guard:** `scripts/check-semver-against-tag.sh` reads, per published crate,
-the `Checked […] N checks: …` line cargo-semver-checks itself prints, and
-fails unless N > 0 — unless the workspace's own manifest version already
-differs from the tag's (a deliberate bump), read with `tomllib`, never
-inferred from cargo-semver-checks' own `(major change)` wording. Reversal:
-adding `--release-type major` to the wrapper's own invocation reads `FAIL
-semver: fixbolt-codec ran 0 checks against v0.1.0`; a tag the checkout has
-never fetched reads `FAIL — tag <tag> is not resolvable in this checkout` and
-exits 2, distinct from a real assertion failure.
+Three more sit behind those two, found in the senior review of PR #112
+(finding F3) and in building its fix, row 8b' `[measured 2026-09-24]`:
+
+- **A hard-coded baseline goes stale and stays green.** With `v0.1.0`
+  written into `ci.yml`, a later `v0.2.0` tag and a `main` at `0.2.0` make
+  the wrapper compare `0.2.0` against `v0.1.0`: a major-level bump, every
+  lint skipped, six `NOTE` lines, `OK`, exit 0 — on every pull request, until
+  somebody remembers to edit the literal. Reproduced in a throwaway clone
+  with the pre-ADR-0162 script. And "the version differs" was too wide an
+  excuse: `0.1.0` -> `0.1.1` is a minor-level comparison that does run
+  lints, so 0 checks there means something else broke, yet the old wrapper
+  printed `NOTE` and `OK` for it too (forced with `--release-type major`).
+- **A tag created in a `git worktree` is a real tag of the repository.**
+  Worktrees share `refs/tags/` with the main checkout (ADR-0162
+  *Research*), so a reversal that tags `v0.2.0` "just in the worktree" leaves
+  a real `v0.2.0` behind, one `git push --tags` away from publishing it.
+  Scenarios that create tags run in a separate `git clone` outside the
+  project tree, with `git remote remove origin` straight after cloning.
+- **`git clone --no-tags --branch <b> <local path>` still brings tags.**
+  git 2.53.0 on the desk: cloning this repository with `--no-tags --branch
+  plan/p3-close-8b`, by path or by `file://`, left `v0.1.0` in the clone;
+  the same clone without `--branch` had no tags. A "no tags" scenario built
+  that way silently tests the tagged case. Clone without `--branch`, then
+  `git checkout -b <b> origin/<b>`, and print `git tag -l` before trusting
+  it.
+
+**Guard:** `scripts/check-semver-against-tag.sh` takes no argument and
+derives the baseline — the newest `vX.Y.Z` tag in `git tag --merged HEAD`,
+compared as integers ([ADR-0162](../decisions/ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md)
+rules 1–2), printed first as `baseline v0.1.0 = highest of: v0.1.0`. It
+reads, per published crate, the `Checked […] N checks: …` line
+cargo-semver-checks itself prints, and fails unless N > 0 — unless the
+workspace version is a major-level bump over the baseline by Cargo's rule
+(rule 4), both versions read with `tomllib`, never inferred from
+cargo-semver-checks' own `(major change)` wording. Regression tests are the
+row 8b' reversals, run by hand in throwaway clones (the plan's *Nhật ký
+giao hàng* quotes each): `v0.2.0` tagged on HEAD at `0.2.0` reads `baseline
+v0.2.0 = highest of: v0.1.0, v0.2.0` and six N > 0; the same with the
+baseline forced to `v0.1.0`, or with `v0.2.0` on an unmerged side commit,
+reads `FAIL semver: tag v0.2.0 exists for workspace version 0.2.0 but the
+baseline is v0.1.0`; `0.1.1` with `--release-type major` reads `FAIL semver:
+fixbolt-codec ran 0 checks against v0.1.0 — 0.1.0 → 0.1.1 is not a
+major-level bump`; `0.2.0` untagged reads six `NOTE … major-level bump` and
+exits 0; `v0.3.0` on a `0.1.0` commit reads `FAIL semver: tag v0.3.0 points
+at a commit whose workspace version is 0.1.0`; a clone with no tags exits 2,
+`no release tag reachable from HEAD`. What it still cannot see: a clone
+missing only the NEWEST tag derives an older baseline without complaint —
+the printed baseline line is the only place that shows.
 
 ## Sources
 
