@@ -46,6 +46,15 @@ fix50sp2 = ["fixbolt-dict/fix50sp2", "fixbolt-session/fix50sp2"]
 # optional `libc` `standard` and `affinity` take. One tree, still.
 tls = ["dep:rustls", "dep:ktls-core", "dep:libc"]
 
+# ADR-0190, phase 4 row 5. **Off by default and it must stay off**, the same
+# promise `tls` makes: `--no-default-features` and the default build see no
+# `io-uring` crate, and `mod transport::uring` is gated on this feature in
+# `transport.rs`, not only here (non-negotiable 6). It reuses the one optional
+# `libc` (`shutdown(2)`, errno constants) rather than a second syscall tree.
+# The `io-uring` dependency itself is Linux-only below, so on any other target
+# this feature turns on `libc` and nothing else.
+io-uring = ["dep:io-uring", "dep:libc"]
+
 [dependencies]
 fixbolt-codec = { version = "=0.1.0", path = "../codec" }
 fixbolt-dict = { version = "=0.1.0", path = "../dict" }
@@ -72,6 +81,16 @@ rustls = { version = "0.23.43", default-features = false, features = [
 # plain non-blocking socket with no async runtime, under four conditions that
 # `scripts/check-ktls-on-a-plain-socket.sh` re-proves on the kernel of the day.
 ktls-core = { version = "0.0.5", features = ["shim-rustls", "tls13-key-update"], optional = true }
+
+# ADR-0190 decision 6. The `io-uring` crate, `>= 0.7.15`: the first release
+# carrying tokio-rs/io-uring #408 (`submit()` under `DEFER_TASKRUN` now sets
+# `GETEVENTS`). This transport calls `Submitter::enter` directly rather than
+# `submit()`, so #408 is not what makes it correct — the floor is there so no
+# caller of this crate's tree ever links a release with that bug. It pulls
+# `bitflags` and `cfg-if` (MIT OR Apache-2.0), no async runtime, and runs no
+# bindgen unless its own `overwrite` feature is on, which nothing here turns on.
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { version = "0.7.15", optional = true }
 
 # The 59 acceptance definitions are this crate's gate too — the same files,
 # through a real socket rather than a closure (CLAUDE.md §2 rule 3).
@@ -162,4 +181,4 @@ harness = false
 # `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
 # `feature(doc_cfg)` at the crate root so each gated item shows its feature.
 [package.metadata.docs.rs]
-features = ["standard", "affinity", "tls", "fix50sp2"]
+features = ["standard", "affinity", "tls", "fix50sp2", "io-uring"]

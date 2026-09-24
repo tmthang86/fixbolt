@@ -17,6 +17,14 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::rc::Rc;
 
+// ADR-0190 decision 1, non-negotiable 6: the feature gates the `mod`
+// declaration itself, not only the manifest. `target_os = "linux"` on top,
+// because `io_uring` is a Linux interface and the `io-uring` dependency is
+// Linux-only — elsewhere the module does not exist, so code written against
+// it fails to compile rather than failing at startup.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+pub mod uring;
+
 /// What one read or write did.
 ///
 /// Fieldless but for the byte count and an `ErrorKind`, both `Copy` — nothing
