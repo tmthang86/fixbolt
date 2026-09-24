@@ -218,11 +218,8 @@ impl Producer {
     /// Whether a record of `len` bytes would be accepted by the next
     /// [`Producer::push`].
     ///
-    /// **Stays true until that push**: this end is the only one that writes,
-    /// and the consumer only ever frees room. A retiring journal asks this
-    /// before it tells its writer whether `STOP` was pushed, so the writer
-    /// can never pop `STOP` before it has been told (ADR-0153 decision 3's
-    /// order, kept under ADR-0181).
+    /// `push`'s own check. Crate-private: no retire protocol depends on it
+    /// (ADR-0181 *Revision 1*, decision 5).
     pub(crate) fn fits(&self, len: usize) -> bool {
         HEADER.saturating_add(len) <= self.free()
     }

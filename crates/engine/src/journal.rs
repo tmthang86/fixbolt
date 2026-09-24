@@ -939,7 +939,9 @@ pub enum TicketState {
     /// the first time the queue is found empty **after reading this**, then
     /// [`WriterTicket::finish`]. Every record was queued before it was said.
     RetiredStopWhenDry,
-    /// Retired, and the writer has finished.
+    /// The writer has finished — retired first, or stopped before anyone
+    /// retired it. Nothing leaves this state, and a later
+    /// [`WriterTicket::retire`] counts nothing.
     Finished,
 }
 
@@ -951,19 +953,25 @@ pub enum TicketState {
 /// Make one where the journal is opened — **never on the engine thread**: it
 /// is one `Arc` — and give a clone to the writer thread. Then:
 ///
-/// - the journal's [`Journal::retire`], on the engine thread, calls
-///   [`WriterTicket::retire`] **before** its stop record is visible to the
-///   writer, passing whether that record will fit (decide it first, push it
-///   after). A writer that pops a stop record then always reads a retired
-///   ticket; pushed the other way round it can stop, finish an unretired
-///   ticket (which lowers nothing), and leave the count raised for good;
-/// - the writer calls [`WriterTicket::state`] when its queue runs dry, and
-///   [`WriterTicket::finish`] as its **last act**, after its data is durable
-///   and its file closed and after its [`Releaser::release`].
+/// - the journal's [`Journal::retire`], on the engine thread, pushes its
+///   one-byte stop record **once**, then calls [`WriterTicket::retire`] with
+///   whether that push succeeded, then detaches the writer, and pushes
+///   nothing after;
+/// - the writer stops at a popped stop record. When a pop finds its queue
+///   empty it reads [`WriterTicket::state`]; told
+///   [`TicketState::RetiredStopWhenDry`], it pops **once more** and stops
+///   only if that pop is empty too — state first, then the empty queue;
+/// - stopping, the writer makes its data durable, closes its storage, calls
+///   [`Releaser::release`] and then [`WriterTicket::finish`], its **last
+///   act**.
 ///
-/// A count can never be lowered without having been raised, nor twice:
-/// `finish` lowers it only by moving a retired ticket to
-/// [`TicketState::Finished`], once, by compare-and-swap.
+/// **No order of that push and that retire strands the count.** It is raised
+/// only by a `retire` that moves *running* to retired, and lowered only by a
+/// `finish` that moves a retired ticket to [`TicketState::Finished`]; each
+/// happens at most once, by compare-and-swap. A writer that pops the stop
+/// record and finishes before the engine's `retire` finishes a *running*
+/// ticket, which lowers nothing, and the `retire` that follows then counts
+/// nothing. ADR-0181 decision 1, *Revision 1*.
 /// `crates/engine/tests/writer_hooks.rs` holds each half; [`FileJournal`]
 /// uses nothing else, so its eight test binaries hold it too.
 #[derive(Debug, Clone)]
@@ -983,17 +991,19 @@ impl WriterTicket {
     }
 
     /// Retire the writer this ticket belongs to: **engine thread**. `true`
-    /// the first time, which counts the writer among those
-    /// [`wait_for_retired_writers`] waits for and in [`writers_retired`];
-    /// `false`, changing nothing, on every later call.
+    /// when this call moved the ticket from *running*, which counts the
+    /// writer among those [`wait_for_retired_writers`] waits for and in
+    /// [`writers_retired`]; `false`, counting nothing, on a ticket already
+    /// retired or already finished — including one whose writer stopped and
+    /// finished before this call.
     ///
-    /// `stop_pushed` says whether the journal's stop record will be in the
-    /// writer's queue — decided before it is pushed, see the type's rustdoc.
-    /// `false` tells the writer to stop the first time its queue runs dry.
+    /// `stop_pushed` is the result of the journal's one push of its stop
+    /// record, made just before this call. `false` tells the writer to stop
+    /// the first time its queue runs dry.
     ///
     /// Atomics only: no system call, no allocation, no loop. The count is
     /// raised **before** the state is published, so the writer's `finish`
-    /// can never come first (ADR-0153 decision 3).
+    /// can never lower it first (ADR-0153 decision 3).
     pub fn retire(&self, stop_pushed: bool) -> bool {
         let to = if stop_pushed {
             RETIRED
@@ -1006,9 +1016,9 @@ impl WriterTicket {
             .compare_exchange(RUNNING, to, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            // Already retired: take back the raise above, which nobody
-            // could have paid off, since `finish` lowers only for the state
-            // this call failed to publish.
+            // Already retired, or finished: take back the raise above,
+            // which nobody could have paid off, since `finish` lowers only
+            // for the state this call failed to publish.
             RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
             return false;
         }
@@ -1027,17 +1037,20 @@ impl WriterTicket {
         }
     }
 
-    /// The writer's **last act**: a retired ticket becomes
-    /// [`TicketState::Finished`] and the count is lowered, once. On a ticket
-    /// never retired, or already finished, it does nothing.
+    /// The writer's **last act**: the ticket becomes
+    /// [`TicketState::Finished`], once, by compare-and-swap. From a retired
+    /// state it lowers the count; from *running* it lowers nothing — the
+    /// writer stopped before anyone retired it — and every later
+    /// [`WriterTicket::retire`] counts nothing. On a finished ticket it does
+    /// nothing.
     pub fn finish(&self) {
-        let finished = self
+        if let Ok(was) = self
             .0
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
-                (s == RETIRED || s == RETIRED_STOP_WHEN_DRY).then_some(FINISHED)
+                (s != FINISHED).then_some(FINISHED)
             })
-            .is_ok();
-        if finished {
+            && was != RUNNING
+        {
             RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
         }
     }
@@ -1434,19 +1447,15 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
         let (Some(ticket), Some(writer)) = (self.ticket.as_ref(), self.writer.take()) else {
             return;
         };
-        // Whether `STOP` will fit, asked **before** the writer is told: this
-        // thread is the ring's only producer, so the answer holds until the
-        // push below. The ticket counts the writer and then tells it; `STOP`
-        // is pushed only after, so a writer that pops `STOP` already reads
-        // itself retired and uncounts itself. Told `RetiredStopWhenDry`
-        // instead — after every record this journal pushed — the writer that
-        // then finds the ring empty has written them all.
-        // `STOP` is one byte.
-        let fits = self.to_writer.as_ref().is_some_and(|p| p.fits(1));
-        let _ = ticket.retire(fits);
-        if fits && let Some(p) = self.to_writer.as_mut() {
-            let _ = p.push(&[&[STOP]]);
-        }
+        // *The rule for a journal*, ADR-0181 decision 1: push `STOP` once,
+        // then retire with the push's result. A writer that pops `STOP` and
+        // finishes before the `retire` below finishes a *running* ticket,
+        // which lowers nothing, and the `retire` then counts nothing. Told
+        // `RetiredStopWhenDry` instead — after every record this journal
+        // pushed — the writer that then finds the ring empty has written them
+        // all.
+        let pushed = self.to_writer.as_mut().is_some_and(|p| p.push(&[&[STOP]]));
+        let _ = ticket.retire(pushed);
         // Detached: nobody joins it; `wait_for_retired_writers` waits for it.
         drop(writer);
         self.to_writer = None;

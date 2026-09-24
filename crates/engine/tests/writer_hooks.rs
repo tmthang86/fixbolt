@@ -80,7 +80,6 @@ fn finish_without_retire_changes_no_count() {
         count_is_zero(),
         "finishing a ticket nobody retired lowered nothing"
     );
-    assert_eq!(never_retired.state(), TicketState::Running);
 
     // With one real writer outstanding, the unretired ticket's finish must not
     // pay that writer's count off for it.
@@ -94,6 +93,28 @@ fn finish_without_retire_changes_no_count() {
     );
     retired.finish();
     assert!(count_is_zero(), "and released once it finishes itself");
+}
+
+/// The engine pushes `STOP` first and retires after (ADR-0181 *Revision 1*),
+/// so the writer can pop it, stop and finish while its ticket still reads
+/// *running*. That `finish` must close the ticket, or the `retire` that follows
+/// raises a count no writer is left to lower.
+#[test]
+fn a_retire_after_the_writer_finished_counts_nothing() {
+    let _serial = serial();
+    assert!(count_is_zero(), "premise: no retired writer outstanding");
+
+    let ticket = WriterTicket::new();
+    ticket.finish();
+    let counted = ticket.retire(true);
+    assert!(
+        count_is_zero(),
+        "a retire after the writer finished left the count raised: nothing will ever lower it"
+    );
+    assert!(!counted, "that retire says it counted nothing");
+    assert_eq!(ticket.state(), TicketState::Finished);
+    assert!(!ticket.retire(false), "nor does any later one");
+    assert!(count_is_zero());
 }
 
 #[test]
