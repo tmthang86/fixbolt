@@ -1,6 +1,6 @@
 # ADR-0181 — A journal outside the engine joins the engine's writer bookkeeping through three public handles, and `FileJournal` uses the same three
 
-- **Status**: **Proposed — 2026-09-24, revised in place the same day** (see *Revision 1*).
+- **Status**: **Proposed — 2026-09-24, revised in place the same day, twice** (see *Revision 1*, *Revision 2*).
   Written by the architect (Opus) for row 3 of
   [docs/plans/2026-09-23-phase-4-scope.md](../plans/2026-09-23-phase-4-scope.md), planned in
   [docs/plans/2026-09-24-p4-sqlite-store.md](../plans/2026-09-24-p4-sqlite-store.md) step 1.
@@ -41,6 +41,27 @@ The state machine argument is in decision 1; `doc.rust-lang.org`'s atomic pages 
 when read on 2026-09-24, so it rests on the `compare_exchange` / `fetch_update` semantics the
 step-1 code already relies on, not on a fresh citation.
 
+## Revision 2 — 2026-09-24, after the Revision 1 fix round (`8d6b21c`)
+
+**What building it found** (senior developer): with *push `STOP`, then `retire`*, a writer that
+pops `STOP` and calls `finish()` before the engine thread's compare-and-swap leaves the ticket
+*finished*; `retire` then returns `false` and, as Revision 1 wrote it, **counts nothing at all** —
+so `writers_retired()` (*"every writer `Journal::retire` has let go, finished or not"*) does not
+rise. Three things read that counter and lose to the race: the liveness check of the `retire`
+case in `crates/engine/benches/alloc.rs` (`retired_after == retired_before + 1`, shown red with a
+5 ms delay injected between push and retire; unaided the window is tens of nanoseconds on the
+engine thread against at least two syscalls on the writer — a rare flake on a loaded two-vCPU
+runner), `writers_retired`'s own rustdoc, and the plan's step-4 case `sqlite-retire`.
+
+**Changed** — decision 1, taking the developer's proposal: the two counters answer two different
+questions and Revision 1 had tied them together. `RETIRED_WRITERS` (what
+`wait_for_retired_writers` waits for) counts **writers still to finish**; `WRITERS_RETIRED`
+(`writers_retired()`) counts **retire acts**. A ticket gains a fifth, internal state,
+*finished, never retired*. `finish` from *running* moves there (not to *finished*); the first
+`retire` that meets it moves it to *finished*, raises `WRITERS_RETIRED` by one, leaves
+`RETIRED_WRITERS` alone and returns `false`. `TicketState` (public) is unchanged: `state()`
+reports the internal state as `Finished`. The rule for a journal is unchanged.
+
 ## Context
 
 `[read 2026-09-24, main 094bfc3]` Three mechanisms a journal with its own writer thread must
@@ -62,8 +83,9 @@ share with the engine are private to `crates/engine/src/journal.rs` and `ring.rs
 ## Decision
 
 1. **`fixbolt_engine::journal::WriterTicket`** — a `Clone` handle over one `Arc<AtomicU8>`
-   allocated where the journal is opened (never on the engine thread), with four states:
-   *running*, *retired*, *retired, stop when dry*, *finished*.
+   allocated where the journal is opened (never on the engine thread), with five states:
+   *running*, *retired*, *retired, stop when dry*, *finished, never retired* (internal: `state()`
+   reports it as `TicketState::Finished`), *finished* (*Revision 2*).
    - `WriterTicket::new() -> Self`.
    - `retire(&self, stop_pushed: bool) -> bool` — **engine thread**: atomics only, no syscall, no
      allocation, no spin. The first call moves *running* → *retired* (or *retired, stop when
@@ -76,10 +98,44 @@ share with the engine are private to `crates/engine/src/journal.rs` and `ring.rs
      *retired* or *retired, stop when dry* it lowers the count; **from *running* it lowers
      nothing** (the writer stopped before anyone retired it), and every later `retire` then
      fails its compare-and-swap, returns `false` and counts nothing (*Revision 1*).
-   The count is raised only by a `retire` that moved *running* → *retired…*, and lowered only by
-   a `finish` that moved *retired…* → *finished*; each transition happens at most once. It can
-   therefore never be lowered without having been raised, nor twice, **nor stay raised after the
-   writer has finished, whatever the order of the engine's push and its `retire`.**
+     **Revision 2:** from *running*, `finish` moves to *finished, never retired*, lowering
+     nothing.
+
+   **The two counters, exactly (Revision 2).** Every transition below happens at most once per
+   ticket, by compare-and-swap (atomics only, no syscall, no allocation):
+
+   | Call | From | To | `RETIRED_WRITERS` (waited for) | `WRITERS_RETIRED` (`writers_retired()`) | returns |
+   |---|---|---|---|---|---|
+   | `retire(pushed)` | *running* | *retired* / *retired, stop when dry* | +1, **before** the state is published | +1 | `true` |
+   | `retire(pushed)` | *finished, never retired* | *finished* | unchanged | +1 | `false` |
+   | `retire(pushed)` | any other | unchanged | unchanged (a speculative +1 is taken back) | unchanged | `false` |
+   | `finish()` | *retired* / *retired, stop when dry* | *finished* | −1 | unchanged | — |
+   | `finish()` | *running* | *finished, never retired* | unchanged | unchanged | — |
+   | `finish()` | any other | unchanged | unchanged | unchanged | — |
+
+   Hence, **whatever the interleaving of the engine's push, its `retire` and the writer's
+   `finish`**: `RETIRED_WRITERS` is raised only by a retire that found the writer still running
+   and lowered only by that writer's finish — never lowered without having been raised, never
+   twice, never left raised after the writer finished; and **the first `retire` of a ticket
+   raises `writers_retired()` by exactly one**, whether the writer had already finished or not.
+   `retire`'s return value says only *"this call left a writer for `wait_for_retired_writers`
+   to wait for"*; nothing may use it as evidence that a retire happened.
+
+   **What the code and its checks must satisfy (Revision 2):**
+
+   - `writers_retired()`'s rustdoc stays true as written: *every writer `Journal::retire` has let
+     go, finished or not; only rises*.
+   - `crates/engine/benches/alloc.rs` case `retire` keeps its liveness assertion unchanged —
+     `writers_retired()` after `== before + 1` around exactly one `Journal::retire` — and it now
+     holds deterministically. The fix is proven by re-running that bench **with the 5 ms delay
+     between push and retire injected** (green, where it was red), then without it (green).
+   - `crates/engine/tests/writer_hooks.rs` holds the new row: push `STOP`, let the writer
+     `finish` first, then `retire(true)` → returns `false`, `writers_retired()` rose by exactly
+     one, a second `retire` raises nothing, `wait_for_retired_writers(Duration::ZERO)` is `true`.
+     Reversal: drop the *finished, never retired* state (finish from *running* goes straight to
+     *finished*) → red on that test's `writers_retired()` assertion.
+   - The step-4 case `sqlite-retire` of the store plan proves its path live by
+     `writers_retired()` rising by one, never by `retire`'s return value.
 
    **The rule for a journal** (`FileJournal` and any journal outside the crate — the step-3
    SQLite store follows it word for word):
@@ -126,6 +182,13 @@ share with the engine are private to `crates/engine/src/journal.rs` and `ring.rs
 - **The store keeps its own count and its own `wait_for_…` function.** Every `serve*` caller
   would have to call a second function after serving, which the compiler cannot require;
   `GUIDE.md` would carry a rule that is one call away from being forgotten. Rejected.
+- **Count `WRITERS_RETIRED` in `Journal::retire` itself, outside the ticket (Revision 2).**
+  Works for `FileJournal`, but every journal outside the crate would have to remember to do it,
+  and the counter is private; the ticket is the one place every journal already calls. Rejected.
+- **Make `retire` return `true` on a finished-never-retired ticket (Revision 2).** Callers could
+  then read the return value as *"retired"*, but `true` would stop meaning *"something to wait
+  for"*, and the Revision 1 test asserting `false` would change meaning. Rejected; the counter,
+  not the return value, is the evidence.
 - **Make `Producer::fits` public (Revision 1).** It would keep the first draft's
   *decide, then push* order working outside the crate, but it adds a public item whose only
   purpose is to make an order safe that `finish`-from-*running* makes safe for every order, and
@@ -148,6 +211,9 @@ share with the engine are private to `crates/engine/src/journal.rs` and `ring.rs
 - **`FileJournal`'s internals change** in a PR whose subject is another crate. The eight engine
   test binaries and the `retire` alloc case above are the guard; a reviewer must see them run
   unmodified.
+- **A fifth ticket state no one outside sees (Revision 2).** `TicketState` has four variants
+  and the atomic has five values; a reader of the code must know that *finished, never retired*
+  is reported as `Finished`. The price of keeping the public type unchanged.
 - **A ticket finished from *running* hides a mistake.** A writer that stops on its own before
   retirement (a `close()`, or a bug) turns every later `retire` into a no-op that returns
   `false`; the count stays correct, but nothing reports that the retire came too late. The
