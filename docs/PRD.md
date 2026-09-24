@@ -193,7 +193,7 @@ with a CI run id; the measured rows quote `scripts/check-machine.sh` from the de
 |---|---|---|
 | 1 | Nothing new built by default | `cargo build --workspace --no-default-features`; `scripts/check-no-optional-deps.sh` |
 | 2 | `io_uring` verdict applied | kept: `--features io-uring --test wire` 59 / 59, both mode scripts pass and are tripped by the wrong mode, alloc 0; killed: feature absent, pair in `measured-costs.md` |
-| 3 | Bypass verdict applied | kept: second labelled row in `DESIGN.md` §8 beside its kernel twin, 59 / 59 under `onload`; killed: negative pair in `measured-costs.md` |
+| 3 | Bypass verdict applied | kept: second labelled row in `DESIGN.md` §8 beside its kernel twin, 59 / 59 under `onload`; killed: negative pair in `measured-costs.md`; **cannot run: the failing gate's evidence in its place** ([ADR-0203](decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)) |
 | 4 | SIMD verdict applied | `bench.sh --strict` A/B quoted; kept: differential fuzz and Miri on the SWAR arm green; killed: code absent |
 | 5 | The store recovers | `cargo test -p fixbolt-store-sqlite` with a crash-and-recover test; engine-thread alloc 0; the throughput run quoted |
 | 6 | The exporter stays off the hot path | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |

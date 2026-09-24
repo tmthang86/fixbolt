@@ -13,9 +13,12 @@
   **the ≥ 2 % round-trip clause stays**, with the density arm (ADR-0100 decision 3); Q7 **the
   kill-line numbers stand as proposed** (3 %, 25 %, 10 %, 15 %, 2 %, 3 %, 50 000 msg/s × 60 s);
   Q8 **SQPOLL in `hft` is measured as an arm only, never a default**.
-- **Item 4 dropped**: kernel bypass (Onload over AF_XDP) dropped at probe gate G1 on 2026-09-24,
+- **Item 2 (kernel bypass) dropped**: Onload over AF_XDP dropped at probe gate G1 on 2026-09-24,
   before any stack came up — see [ADR-0201](ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md)
-  *Result*. Per this ADR's Q1, the dropped item counts as done. Items 1, 2, 3 and 5 stand.
+  *Result*. Per this ADR's Q1, the dropped item counts as done. Items 1, 3, 4 and 5 stand.
+- **Partly superseded by [ADR-0203](ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)**
+  (2026-09-24): for an item that cannot run, the failing gate's evidence stands in for "the pair
+  that killed it" in *Decision* and for "the negative pair" in exit criterion 3.
 - **Date**: 2026-09-23
 - **Deciders**: Tran Manh Thang. **The contents were chosen by the owner** (2026-09-23, in
   conversation): kernel bypass / AF_XDP, `io_uring`, SIMD, a database-backed store, a dashboard.

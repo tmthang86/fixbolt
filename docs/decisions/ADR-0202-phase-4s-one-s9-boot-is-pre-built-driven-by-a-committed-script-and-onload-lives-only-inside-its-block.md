@@ -2,12 +2,12 @@
 
 - **Status**: Proposed — 2026-09-24, with
   [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md).
-  **Note, 2026-09-24 — the Onload block will not run.** Onload over AF_XDP was dropped at the probe
-  (ADR-0201 *Result*). Decisions 1, 2 and 5 stand for the boot, which now measures the `io_uring`
-  A/B (row 5) and the SQLite-store `w2w` pair (row 4, step 4b). Decision 3's order loses its Onload
-  block: procedure 1 is the `io_uring` block then the store pair, the bench rotation fills the gap,
-  procedure 2 reverses both. Decision 4 is carried out early: Onload is uninstalled from the desk
-  before the boot, and the boot checks that no `onload` or `sfc_resource` module is loaded.
+  **Revised in place 2026-09-24** (senior review of PR #111): Onload over AF_XDP was dropped at the
+  probe (ADR-0201 *Result*), so decisions 1–4 are rewritten for a boot that measures the `io_uring`
+  A/B (phase-4 row 5) and the SQLite-store `w2w` pair (row 4, step 4b) only; decision 5 is
+  unchanged. The superseded text of decisions 1–4 named an Onload block, `FIXBOLT_BYPASS` values, a
+  `turn`/`density` rotation of two binaries between the procedures, and Onload's uninstall after
+  the boot. Stays Proposed until the preparing PR (7a) merges.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus).
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
@@ -35,30 +35,32 @@ the desk is taken on.
 
 ## Decision
 
-1. **One boot serves both rows, and it compiles nothing.** Every binary is built before the reboot
-   from the merge commit of the preparing pull request, in worktrees under `../fb-p4-boot/`, one per
-   feature set (`io-uring` on and off are two worktrees — ADR-0090 decision 2), with sha256 in
+1. **One boot serves rows 5 and 4b, and it compiles nothing.** Every binary is built before the
+   reboot from the merge commit of the preparing pull request, in worktrees under `../fb-p4-boot/`,
+   one per feature set (ADR-0090 decision 2): `uring` (`affinity,io-uring`) and `sqlite`
+   (`affinity,sqlite`). Each A/B takes both arms **from one binary**, so the flag is the only
+   variable: K and U are the `uring` build without and with `--transport uring`; the `turn`/`density`
+   cases `…, kernel` and `…, uring` live in the `uring` bench binary, paired by suffix; the store
+   pair is the `sqlite` build with `--journal file-async` and `--journal sqlite-async`. sha256 go in
    `MANIFEST.txt`; the Mac's `w2w` is built at the same commit and its sha256 recorded. The boot
    checks the hashes before and after.
 2. **A committed driver runs the boot unattended.** `scripts/boot-p4.sh` runs the blocks below in
-   order, reads `scripts/check-machine.sh` before each block with the `FIXBOLT_BYPASS` value that
-   block needs, stops on a red row, and keeps every output under `target/boot-p4-evidence/` (never
+   order, reads `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` before each block, stops on a red row, and keeps every output under `target/boot-p4-evidence/` (never
    `/tmp`, which is tmpfs on the desk). Its `sudo -n` lines follow ADR-0093. It is rehearsed on the
    desktop line with `RUNS=2` before the reboot, and that rehearsal's output is labelled *not a
    figure*. The manager launches it and makes no tool call until it exits.
-3. **The order, and why.** Procedure 1: the `io_uring` block (control and `io_uring`, `hft` with
-   acceptor stamps, then `standard`), then the Onload block (twin, then Onload). Between the
-   procedures, the `turn.rs`/`density.rs` rotation for `io_uring` fills ADR-0068's thirty-minute
-   gap. Procedure 2: the Onload block first (Onload, then twin), then the `io_uring` block reversed
-   — so no arm always runs first. Procedure 2's Onload block runs **only if procedure 1 met every
-   clause** (ADR-0200 decision 3).
-4. **Onload is present only inside its block.** Installed before the boot (the probe needs it), it
-   must not load at boot: the boot's first `check-machine.sh` runs with `FIXBOLT_BYPASS=absent` and
-   FAILs on a loaded `onload` or `sfc_resource` module. The Onload block loads the modules
-   (`onload_tool reload`), registers the NIC, runs, unregisters, and unloads. The `io_uring` block
-   runs with the modules absent. **After the boot, whatever the verdict, Onload is uninstalled**
-   (`onload_uninstall`): the desk measures, it does not deploy, and a KEEP is published through
-   `docs/hft-playbook.md`, not through a desk that carries the modules.
+3. **The order, and why.** Each procedure holds every arm the two kill lines read, because the
+   `io_uring` kill line's clause (b) needs the idle `turn` at N = 16 **in both procedures**.
+   Procedure 1: the `io_uring` w2w block (K, U, U′, S in `hft` with acceptor stamps, then `standard`
+   Mac-side), the `turn`/`density` bench from the `uring` binary pinned to the engine core, then the
+   store pair (`hft:app` with acceptor stamps, `standard:app` Mac-side). At least thirty minutes pass
+   (ADR-0068 decision 1), checked by the driver against the clock, with the machine idle. Procedure
+   2 runs the same blocks in reverse order, and the arms inside each block in reverse order — so no
+   arm always runs first.
+4. **Onload is not on the desk during the boot.** It was uninstalled after the probe
+   (`onload_uninstall`, plan step 6.6a); the boot's first action checks that no `onload` or
+   `sfc_resource` module is loaded and that `/etc/modprobe.d/onload.conf` is gone. A kernel carrying
+   foreign modules is a different machine for every figure taken on it.
 5. **The reboot is the handoff.** Before it: the preparing PR is merged with its CI run id named,
    `STATUS.md` *Start here* names the boot's first action and a do-not list, the §9 grub line
    (`/etc/default/grub.fixbolt-s9-bootf-20260923` — never `grub.fixbolt-s9`, which carries
@@ -68,15 +70,15 @@ the desk is taken on.
 
 **Good**
 
-- One reboot for two hot-path items; every `io_uring` and Onload arm shares the boot's machine state.
-- The boot's only live decision is procedure 2's Onload block, and it is made by a script from a
-  rule written here.
+- One reboot for two items (`io_uring` and the store pair); every arm shares the boot's machine state.
+- The boot has no live decision: every block runs in both procedures, in an order written here.
+  *(Revised 2026-09-24: before the drop, procedure 2's Onload block was the one live decision.)*
 - The desk comes out of the phase with the kernel it went in with.
 
 **Bad — and accepted**
 
-- **A long boot.** Two procedures of up to twelve arm-sets of twenty runs plus a bench rotation is
-  four to six hours on the desk, unattended; a failure early in the night costs the rest.
+- **A long boot.** Two procedures, each with the `io_uring` arms, a bench run and the store pair, is
+  several hours on the desk, unattended; a failure early in the night costs the rest.
 - **The Onload modules are built and loaded on the owner's desktop before the boot** (the probe),
   from a tree not at release quality. Secure Boot is off on the desk
   (`mokutil --sb-state`, read 2026-09-24), so an unsigned module loads; a crash in it is a crash of

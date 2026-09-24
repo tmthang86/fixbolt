@@ -1,6 +1,11 @@
 # ADR-0201 — Onload on the I211 runs without hardware flow filters, one channel count holds for the whole boot, and the control path leaves the cable
 
-- **Status**: Proposed — 2026-09-24, with
+- **Status**: **Deprecated — 2026-09-24, never accepted**: Onload over AF_XDP was dropped at the
+  probe's gate G1 before any decision below could be exercised; the *Result* section stands as the
+  record of that drop ([ADR-0203](ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)). **Revised in place 2026-09-24, third time**
+  (senior review of PR #111): *Result* corrected — the filter and queue variants never reached the
+  RSS check; the errno values are replaced by the `I/O error` lines the evidence holds; Onload issue
+  #257 cited as precedent; *Sources* completed. History: Proposed — 2026-09-24, with
   [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md). Decision 1
   is confirmed or replaced by that plan's step 6.1 probe, whose output is quoted into this ADR's
   *Result* before it is accepted. **Revised in place 2026-09-24**: *Result so far* added — the first
@@ -113,16 +118,23 @@ limiting the device to one queue or by NIC filters (<https://docs.kernel.org/net
 **Dropped, 2026-09-24, at the probe's gate G1 — before any stack existed, so before any decision
 here could be tried.** Per ADR-0098 and its Q1, a dropped item counts as done.
 
-| Attempt | Onload | Stopped at | Line, verbatim |
+| Attempt | Onload | Stopped at | Excerpt (`…` marks elided text) |
 |---|---|---|---|
 | 1 | `v9.0.2` (`9f330e7058`) | build | `src/lib/efhw/af_xdp.c:375:28: error: passing argument 2 of ‘kernel_bind’ from incompatible pointer type … expected ‘struct sockaddr_unsized *’` |
 | 2 | `174b947d0b9b7b77439463afbabf8a7e417b3706` (`v9_2`, untagged; `git merge-base --is-ancestor 268f1d4c8a HEAD` true) | registering `enp9s0` | `` [sfc efhw] af_xdp_rss_get_support: enp9s0 does not support `get_rxfh_key_size` operation `` then `[sfc efrm] ?: ERROR: hardware init failed rc=-95` |
 
 Attempt 2 built and installed (`onload_install: Install complete.`) and its modules loaded. The
-registration failed identically with default filters, with `enable_af_xdp_flow_filters=0`, and with
-`ethtool -L enp9s0 combined 1`; afterwards writing `register` returned errno 114 (`EALREADY`) and
-`unregister` errno 16 (`EBUSY`), and `onload_tool unload --onload-only` removed the modules. The
-channel count was restored to 2. Evidence on the desk, not committed:
+**first** registration, with default filters and two queues, failed with the two lines above, and
+Onload added the NIC anyway (`[onload] oo_nic_add: ifindex=2 oo_index=0 flags=0 alternate=-1` at
+`5123.778185`). Every later write — `unregister`; `register` after
+`enable_af_xdp_flow_filters=0` and `ethtool -L enp9s0 combined 1`; `unregister`; `register` —
+printed only `sh: 1: echo: echo: I/O error`, and the five copies of the `af_xdp_rss_get_support`
+line in the log all carry the timestamp `5123.778141`: **the variants of decision 1 never reached
+the RSS check**, because the NIC was left half-registered. That they would fail the same way is
+established from Onload's source, not from a run: `af_xdp_rss_get_support` reads only the driver's
+`ethtool_ops` (`get_rxfh_indir_size`, `get_rxfh_key_size`), which neither the filter parameter nor
+the channel count changes. `onload_tool unload --onload-only` removed the modules
+(`oo_nic_remove` at `5218.812979`); `ethtool -L enp9s0 combined 2` restored the channel count. Evidence on the desk, not committed:
 `target/p4-probe/{onload_install.txt, onload_install-v9_2.txt, probe-v9_2.txt, after-v9_2.txt}`.
 
 **Why no Onload version fixes it on this kernel.** Onload's `af_xdp_rss_get_support`
@@ -131,9 +143,12 @@ channel count was restored to 2. Evidence on the desk, not committed:
 `af_xdp_nic_init_hardware` returns that error. The desk's `igb` (`7.0.0-31-generic`) has the first and
 not the second — `ethtool -x enp9s0`, read before the probe, already printed `RSS hash key: Operation
 not supported`. Linux added the operation to `igb` in commits `dfaf57ef99cf`, `1ae67b2b28bc` (*"igb:
-expose RSS key via ethtool get_rxfh"*) and `e3c94e9782a7`, first in **`v7.3-rc1`** (not in `v7.2`).
-**Searched Onload's issues for `get_rxfh_key_size` and found nothing**; the nearest reports of
-"hardware init failed" are on virtual NICs (vmxnet3 #257, virtio-net #270).
+expose RSS key via ethtool get_rxfh"*, the commit that adds `get_rxfh_key_size`) and
+`e3c94e9782a7`, first in **`v7.3-rc1`** (not in `v7.2`). **Precedent:** Onload issue
+[#257](https://github.com/Xilinx-CNS/onload/issues/257) (vmxnet3, 2025-01-14) shows the same two
+lines, `af_xdp_rss_get_support: ens160 does not support get_rxfh_key_size operation` and
+`hardware init failed rc=-95`, followed by `oo_nic_add`; #270 (virtio-net) reports "hardware init
+failed" on another virtual NIC.
 
 **What would reopen it:** a measurement NIC whose driver provides both RSS key operations and AF_XDP
 zero-copy — for example `igb` on a kernel ≥ 7.3 — **and** an Onload that builds on that kernel (its
@@ -144,5 +159,10 @@ key. Reopening needs a new plan; ADR-0200 holds the measurement design it would 
 
 Read 2026-09-24: <https://docs.kernel.org/networking/af_xdp.html>; Onload `src/lib/efhw/af_xdp.c`,
 `src/lib/efhw/af_xdp_bpf.c` (master); Linux `drivers/net/ethernet/intel/igb/igb_ethtool.c` (master);
-<https://github.com/Xilinx-CNS/onload/issues/10>, `/issues/139`, `/issues/70`. On the desk,
-read-only: `ethtool -l|-x|-k enp9s0`, `ip -4 -br addr`, `tailscale status`.
+<https://github.com/Xilinx-CNS/onload/issues/10>, `/issues/139`, `/issues/257`, `/issues/270`;
+Onload `src/lib/efhw/af_xdp.c` at `v9.0.2`, at `174b947d0b` and on `master`
+(`af_xdp_rss_get_support`); GitHub compare `Xilinx-CNS/onload` `268f1d4c8a...v9_2` (ahead 269,
+behind 0); Linux commit `1ae67b2b28bc` *"igb: expose RSS key via ethtool get_rxfh"* (with
+`dfaf57ef99cf`, `e3c94e9782a7`), first tag containing it `v7.3-rc1`. On the desk, read-only:
+`ethtool -l|-x|-k enp9s0`, `ip -4 -br addr`, `tailscale status`; the probe's own output
+`target/p4-probe/{before.txt, onload_install.txt, onload_install-v9_2.txt, probe-v9_2.txt, after-v9_2.txt}`.

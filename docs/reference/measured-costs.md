@@ -4983,7 +4983,7 @@ a `--stamp software` arm of some later boot if the number is ever needed.
 
 ## Onload over AF_XDP: dropped at G1, no latency pair exists — 2026-09-24
 
-`[cost 2026-09-24]` Phase 4 item 4 (kernel bypass, ADR-0098). Two attempts, both stopped before
+`[cost 2026-09-24]` Phase 4's kernel-bypass item (ADR-0098 item 2; `PRD.md` §2 phase 4 row 4). Two attempts, both stopped before
 any stack was up, so **no wire number was ever produced and none is published here** — this
 entry is the record of the attempt, not a measurement.
 
@@ -4991,24 +4991,33 @@ entry is the record of the attempt, not a measurement.
 `enp9s0`), kernel `7.0.0-31-generic`, the desktop grub line in force
 ([DESIGN.md §9](../DESIGN.md)).
 
-| Attempt | Onload | Stopped at | Line, verbatim |
+| Attempt | Onload | Stopped at | Excerpt (`…` marks elided text) |
 |---|---|---|---|
 | 1 | `v9.0.2` (`9f330e7058`) | build, before any registration | `src/lib/efhw/af_xdp.c:375:28: error: passing argument 2 of 'kernel_bind' from incompatible pointer type … expected 'struct sockaddr_unsized *'` |
 | 2 | `174b947d0b9b7b77439463afbabf8a7e417b3706` (`v9_2`, untagged) | registering `enp9s0`, hardware init | `` [sfc efhw] af_xdp_rss_get_support: enp9s0 does not support `get_rxfh_key_size` operation `` then `[sfc efrm] ?: ERROR: hardware init failed rc=-95` |
 
 Attempt 1 installed nothing and touched no module; the NIC was never modified. Attempt 2 built
-and loaded, failed registration identically with default filters, with
-`enable_af_xdp_flow_filters=0`, and with `ethtool -L enp9s0 combined 1`; `onload_tool unload`
-returned the machine to `combined 2` with no module loaded. **Cause:** the desk's `igb` driver
+and loaded; its **first** registration (default filters, two queues) failed with the two lines above,
+and Onload still added the NIC (`[onload] oo_nic_add: ifindex=2 oo_index=0` at the same timestamp).
+Every later write — `unregister`, then `register` after `enable_af_xdp_flow_filters=0` and
+`ethtool -L enp9s0 combined 1`, then `unregister` and `register` again — printed only
+`sh: 1: echo: echo: I/O error`, and `dmesg` shows no second `af_xdp_rss_get_support` line (all five
+copies in the log carry the timestamp `5123.778141`): the NIC was left half-registered, and **the
+filter and queue variants never reached the RSS check**. That they would have failed the same way is
+read from Onload's source, not from a run: `af_xdp_rss_get_support` looks only at the driver's
+`ethtool_ops`. `onload_tool unload --onload-only` removed the modules (`oo_nic_remove` at
+`5218.812979`); `ethtool -L enp9s0 combined 2` restored the channel count. **Cause:** the desk's `igb` driver
 answers `get_rxfh_indir_size` but not `get_rxfh_key_size` — `ethtool -x enp9s0` already read
 `RSS hash key: Operation not supported` before either attempt — and Onload's
 `af_xdp_rss_get_support` refuses to initialise without both, on every version checked
-(`v9.0.2`, the `v9_2` pin, `master`). Full detail, sources and the two evidence logs' paths:
+(`v9.0.2`, the `v9_2` pin, `master`). The same two lines are on record for a vmxnet3 NIC in
+Onload issue [#257](https://github.com/Xilinx-CNS/onload/issues/257) (2025-01-14). Full detail, sources and the two evidence logs' paths:
 [ADR-0201](../decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md)
 *Result*.
 
-**No latency pair exists for this item, and none is owed.** Both attempts stopped at G1, before
-the AF_XDP stack ever came up, so there is nothing to compare against the kernel-TCP twin —
-unlike an item that runs and loses, this one never ran. The trap this cost, and the guard that
+**No latency pair exists for this item, and none can on this kernel.** Both attempts stopped at G1,
+before any AF_XDP stack came up, so there is nothing to compare against the kernel-TCP twin —
+unlike an item that runs and loses, this one never ran. ADR-0098 asks for "the pair that killed it";
+[ADR-0203](../decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md) lets this gate record stand in its place for an item that cannot run. The trap this cost, and the guard that
 now watches for it on any future NIC, is
 [onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks](onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md).

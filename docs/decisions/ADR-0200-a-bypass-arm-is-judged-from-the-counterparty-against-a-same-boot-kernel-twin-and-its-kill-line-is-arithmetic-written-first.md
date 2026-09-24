@@ -1,6 +1,9 @@
 # ADR-0200 — A bypass arm is judged from the counterparty against a same-boot kernel twin, on one instrument, and its kill line is arithmetic written before the boot
 
-- **Status**: Proposed — 2026-09-24, with
+- **Status**: **Deprecated — 2026-09-24, never accepted**: the item it serves (ADR-0098 item 2,
+  Onload over AF_XDP) was dropped at the probe's gate G1 before any arm could run (ADR-0201
+  *Result*; [ADR-0203](ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)). Kept unedited below as the measurement design a
+  reopening would start from. History: Proposed — 2026-09-24, with
   [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md).
   **Revised in place 2026-09-24** (Proposed, so revised rather than superseded — `CLAUDE.md` §5): the
   owner answered that plan's Q1 and Q2 in conversation the same day. Q1 = **measure** (option A), so
@@ -13,8 +16,7 @@
   gate G1 on the desk's I211 (`hardware init failed rc=-95`: `igb` on `7.0.0-31` lacks
   `get_rxfh_key_size`; ADR-0201 *Result*). No arm this ADR describes was measured, decision 4's
   prediction was never tested, and none of its instruments (the `FIXBOLT_BYPASS` rows,
-  `BYPASS=onload`, `bypass-verdict.sh`, `check-wire-under-onload.sh`) is built. The ADR stays
-  Proposed as the design a reopening would start from.
+  `BYPASS=onload`, `bypass-verdict.sh`, `check-wire-under-onload.sh`) is built.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus) for rows 6 and 7 of
   [plans/2026-09-23-phase-4-scope](../plans/2026-09-23-phase-4-scope.md).
