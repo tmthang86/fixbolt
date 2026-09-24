@@ -1,6 +1,6 @@
 # Phase 4, hàng 6 và 7: dụng cụ đo cho Onload trên AF_XDP, và boot §9 duy nhất đo cả `io_uring` lẫn Onload
 
-> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đề xuất
+> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đã duyệt (anh trả lời Q1, Q2 ngày 2026-09-24; manager duyệt phần còn lại theo uỷ quyền 2026-09-18)
 > **Phạm vi:** hàng 6 và 7 của bảng *Chia việc* trong [phase-4-scope](2026-09-23-phase-4-scope.md);
 > kèm [ADR-0200](../decisions/ADR-0200-a-bypass-arm-is-judged-from-the-counterparty-against-a-same-boot-kernel-twin-and-its-kill-line-is-arithmetic-written-first.md),
 > [ADR-0201](../decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md),
@@ -336,7 +336,7 @@ chạy song song sau 6.1.
 
 | Bước | Kết quả — file tạo / sửa (và **không** đụng) | Người làm | Gate | Xong khi | Reversal | Phụ thuộc |
 |---|---|---|---|---|---|---|
-| 6.0 | Plan này + ADR-0200/0201/0202 được duyệt; anh trả lời Q1, Q2 | anh | — | có câu trả lời | — | — |
+| 6.0 | Plan này + ADR-0200/0201/0202 được duyệt; anh trả lời Q1, Q2 (**xong 2026-09-24**: Q1 = A, Q2 = đồng ý cả ba) | anh | — | có câu trả lời | — | phase 3 đóng bằng tag `v0.1.0` (ADR-0161) |
 | 6.1 | **Cài Onload + thăm dò** (dòng desktop). Không file repo nào; output vào `target/p4-probe/` | developer (sonnet) — lệnh viết sẵn trong brief; build hỏng trên kernel 7.0 thì **dừng và báo** | các lệnh ở *Cách làm* 6.1, quote nguyên văn | có output cho G1–G5; manager xếp cổng và điền *Result* của ADR-0201 | — | 6.0 |
 | 6.2 | `scripts/check-machine.sh` (khối `FIXBOLT_BYPASS`), `scripts/check-machine-verdicts.sh` (ca mới, có output thật của 6.1). **Không đụng** dòng nào đang có | developer (sonnet) | `scripts/check-machine-verdicts.sh`; `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` **không** đặt `FIXBOLT_BYPASS` → danh sách tên dòng giống hệt trước khi sửa (`grep -E '^(PASS\|FAIL\|\? \? \?)' \| cut -c8-30`, so với bản chụp trước) | ca mới xanh; 17 tên dòng cũ không đổi | đổi `xdpdrv` thành `xdpgeneric` trong ca fixture → ca `xdp mode` đỏ, nêu tên ca | 6.1 |
 | 6.3 | `scripts/w2w-baseline.sh` (nhánh `BYPASS=onload`), `scripts/check-w2w-baseline-summary.sh` (ca `zc`, ca bộ đếm), danh sách của `scripts/check-sudo-names-what-root-can-find.sh`. **Không đụng** `tools/w2w` | developer (sonnet) | `scripts/check-w2w-baseline-summary.sh`; `scripts/check-sudo-names-what-root-can-find.sh`; `BYPASS=onload WIRE_NIC=enp9s0 … scripts/w2w-baseline.sh` → bị từ chối trước khi chạy | ca xanh; lời từ chối quote được | ca `ss` có `zc:0` → FAIL đúng tên; ca bộ đếm tăng 22 000 → FAIL | 6.1 |
@@ -418,6 +418,15 @@ chạy song song sau 6.1.
 | Phía Mac nhiễu lớn (macOS, không ghim) che mất chênh lệch nhỏ | Cao | đó là thước ADR-0098 chọn; ADR-0200 ghi rõ độ lớn của nó |
 
 ## Anh cần quyết
+
+> **Đã quyết 2026-09-24** (anh trả lời trong hội thoại), cả hai câu theo khuyến nghị:
+> **Q1** A — **đo**: cài Onload, thăm dò (6.1), làm hàng 6, đo trong boot của hàng 7.
+> **Q2** đồng ý cả ba cách đọc: (a) p99 Onload ≤ p99 twin × 1,05; (b) phải đạt ở **cả hai path**
+> (`admin`, `app`) trong **cả hai procedure**; (c) 59/59 dưới `onload` = bộ test `wire` chạy qua
+> loopback đã tăng tốc (`EF_TCP_*_LOOPBACK=1`), đường AF_XDP qua cáp chứng minh bằng các lần chạy `w2w`.
+> Ba cách đọc này đã được gộp vào ADR-0200 quyết định 3 và 5 (sửa tại chỗ, ghi lần sửa — ADR vẫn
+> *Proposed*). Phần còn lại của plan do manager duyệt theo uỷ quyền 2026-09-18.
+> Phase 3 đóng bằng tag `v0.1.0` (ADR-0161), không publish lên crates.io.
 
 **Q1. Onload: đo trong boot, hay bỏ ngay dựa trên phép tính?**
 

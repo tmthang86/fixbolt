@@ -1,9 +1,14 @@
 # ADR-0200 — A bypass arm is judged from the counterparty against a same-boot kernel twin, on one instrument, and its kill line is arithmetic written before the boot
 
 - **Status**: Proposed — 2026-09-24, with
-  [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md). Decision 3's
-  reading of "p99 no worse" and decision 5's reading of "59 / 59 under `onload`" wait on that plan's
-  *Anh cần quyết* Q2; decision 4 waits on Q1.
+  [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md).
+  **Revised in place 2026-09-24** (Proposed, so revised rather than superseded — `CLAUDE.md` §5): the
+  owner answered that plan's Q1 and Q2 in conversation the same day. Q1 = **measure** (option A), so
+  decision 4's prediction is tested by the boot, not taken as the result. Q2 = the three readings the
+  plan recommended, now written into decisions 3 and 5 as the owner's: (a) p99 no worse = within
+  ADR-0068's 5 %; (b) both paths in both procedures; (c) the corpus over Onload-accelerated loopback.
+  Before this revision decisions 3 and 5 stated the same readings as the architect's proposal,
+  awaiting Q2.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus) for rows 6 and 7 of
   [plans/2026-09-23-phase-4-scope](../plans/2026-09-23-phase-4-scope.md).
@@ -92,10 +97,11 @@ the arithmetic of each clause, and what the numbers already on record say about 
    - p50 clause: `(K_p50 − O_p50) / K_p50 ≥ 0.10`;
    - p99 clause: `O_p99 ≤ K_p99 × 1.05` — "no worse" read as "not worse by more than the
      reproduction band" (ADR-0068 decision 2's 5 %), the same band ADR-0098 item 1 names for
-     `io_uring`'s p99;
+     `io_uring`'s p99 — **the owner's reading, Q2 (a), 2026-09-24**;
    - zero-copy clause: every Onload run passed decision 2's `zc:1` read;
    - corpus clause: decision 5.
-   **Kept** only if every clause holds for **both paths in both procedures**. **Dropped** as soon as
+   **Kept** only if every clause holds for **both paths in both procedures** (**the owner's reading,
+   Q2 (b), 2026-09-24**). **Dropped** as soon as
    one procedure fails a clause: a failing A/B is one procedure, labelled A/B, and published as a
    difference (ADR-0068 decision 4) — the second procedure is not run for a result it cannot
    change. The verdict is printed by `scripts/bypass-verdict.sh` from the four
@@ -113,9 +119,10 @@ the arithmetic of each clause, and what the numbers already on record say about 
    the Intel driver (<https://arxiv.org/html/2402.10513v1>); one public Onload-on-AF_XDP A/B was
    **16 % slower** than the kernel (<https://github.com/Xilinx-CNS/onload/issues/139>). This is a
    prediction, not a result: the boot measures it, and the record says whether the measurement
-   confirmed it. If the owner prefers to record the drop on this arithmetic without a boot, that is
-   the plan's Q1, option B.
-5. **"59 / 59 under `onload`" means the corpus runs through Onload's own TCP.** The wire test binary,
+   confirmed it. The owner chose to measure (plan Q1 = A, 2026-09-24) rather than record the drop
+   on this arithmetic without a boot.
+5. **"59 / 59 under `onload`" means the corpus runs through Onload's own TCP** (**the owner's
+   reading, Q2 (c), 2026-09-24**). The wire test binary,
    pre-built, runs under `onload` with `EF_TCP_SERVER_LOOPBACK=1`, `EF_TCP_CLIENT_LOOPBACK=1` (both
    ends are in one process, so one stack) and `EF_NO_FAIL=0`, by
    `scripts/check-wire-under-onload.sh`, which also reads the kernel's `Tcp: PassiveOpens` before
@@ -150,8 +157,9 @@ the arithmetic of each clause, and what the numbers already on record say about 
   it. That is the instrument ADR-0098 chose; this ADR does not replace it, it states its size.
 - The twin is not the published §6 configuration: no observer, and the channel count ADR-0201 sets.
   Its numbers are an A/B arm, never a figure.
-- Decision 3's p99 reading and decision 5's corpus reading are interpretations of an accepted kill
-  line; they are the owner's to confirm (plan Q2), and until then this ADR stays Proposed.
+- Decision 3's p99 and two-path readings and decision 5's corpus reading are interpretations of an
+  accepted kill line, confirmed by the owner (plan Q2, 2026-09-24) but written here, not in
+  ADR-0098, whose substance is not edited; a reader of ADR-0098 alone does not see them.
 - The segment-counter guard is a count bound over the whole machine, not a per-connection proof;
   other TCP traffic on the desk during a run could raise it, never lower it, so it can only produce
   a false FAIL.
