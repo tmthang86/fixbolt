@@ -642,6 +642,30 @@ jobs:
       - name: The instruction-count verdict rule, its stub self-test
         run: scripts/check-bench-instructions.sh
 
+      # ADR-0171 decision 5: nothing in the toolchain sees a series renamed
+      # inside a JSON blob, and Grafana's own "export for sharing" shape
+      # carries `__inputs` / `${DS_PROMETHEUS}`, which file provisioning
+      # cannot fill in (grafana/grafana#10786). This is the dashboard-shape
+      # oracle: valid JSON, no `__inputs`, no `${DS_`, every panel and target
+      # on the `${datasource}` template variable, every target has an `expr`,
+      # panel ids unique. It does not know whether a queried series exists —
+      # that is `cargo test -p fixbolt-metrics --test dashboard` above (part
+      # of `cargo test --all`), which scrapes a real fixture and compares
+      # names.
+      - name: The Grafana dashboard names no data source and every panel has an expr
+        run: python3 scripts/check-grafana-dashboard.py
+
+      # ADR-0171 decision 4: `promtool check metrics` is the format's own
+      # oracle, not this crate's encoder read back by itself. A pinned
+      # Prometheus release (version and SHA-256 in the script) is fetched
+      # into `target/`, never the repository tree, and checked against the
+      # release's own `sha256sums.txt` before it runs a single byte — the
+      # same pattern `scripts/interop-qfj.sh` uses for a pinned JVM oracle
+      # (ADR-0130). No `--allow-skip` here: on this runner, absence of
+      # `promtool` is a real gate failure, not an accepted local shortcut.
+      - name: The Prometheus exposition format, checked by promtool
+        run: scripts/check-metrics-format.sh
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning
