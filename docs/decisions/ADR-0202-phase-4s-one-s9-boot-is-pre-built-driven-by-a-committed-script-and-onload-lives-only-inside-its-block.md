@@ -12,7 +12,9 @@
   for 7a.1, PR #113): decision 1 now names what the pre-build must also do and who does it — the
   file capability on both `w2w`, never a `nosuid` mount, the driver's `build` subcommand, the Mac's
   manual build recorded in `BUILD-INFO.txt` — and says the store pair's one-binary reading overrides
-  the store plan's step 4b, which named two binaries.
+  the store plan's step 4b, which named two binaries. Same day, after the senior review of PR #113:
+  capability checked before and after every arm; the build commit is the merge commit of the
+  preparing PR, built after it merges and before the docs-only handoff; the timer refusal; exit 1.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus).
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
@@ -58,9 +60,14 @@ the desk is taken on.
    Mac's `w2w` is built by hand at the same commit, before `build`, with the commands in the
    script's header. No binary that needs the capability is built or run from a `nosuid` mount
    (`/tmp`, the scratchpad): the kernel ignores file capabilities there although `getcap` shows
-   them. `run` refuses before anything runs (exit 2) on a missing manifest or build record, a
-   missing capability or a `nosuid` mount, and stops (exit 3) when the Mac's HEAD or `w2w` sha256
-   differs from `BUILD-INFO.txt`, or when a hash or a capability changes before or after any arm.
+   them. The build commit is the merge commit of the preparing PR on `main`: the PR merges with CI
+   green first, the binaries are built from that commit, and only then is the handoff (docs only)
+   committed. `run` refuses before anything runs (exit 2) on a missing manifest or build record, a
+   missing capability or a `nosuid` mount, a build commit that is not on `origin/main` (outside a
+   rehearsal), or a timer due within 12 hours plus the boot's length (naming each); it checks every
+   binary's sha256 **and** every `w2w`'s capability before **and** after every arm, and stops
+   (exit 3) when either changes or when the Mac's HEAD or `w2w` sha256 differs from
+   `BUILD-INFO.txt`. A boot that runs to its end with a failed arm exits 1, naming the arms.
 2. **A committed driver runs the boot unattended.** `scripts/boot-p4.sh` runs the blocks below in
    order, reads `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` before each block, stops on a red row, and keeps every output under `target/boot-p4-evidence/` (never
    `/tmp`, which is tmpfs on the desk). Its `sudo -n` lines follow ADR-0093. It is rehearsed on the

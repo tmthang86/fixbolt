@@ -345,6 +345,16 @@ khối đầu và nêu tên dòng `eee`).** Tên "Sửa 4" vì "Sửa 3" đã l�
    cho `sqlite-async`); ADR-0202 quyết định 1 và hàng 7 viết một binary `sqlite`. Driver theo
    ADR-0202: **một binary `sqlite`, hai arm chỉ khác cờ `--journal`** — đúng một biến. Ở đây *4b* của
    plan store được đọc qua ADR-0202; manager báo architect hàng 4 để *4b* viết cùng như vậy.
+   **Ghi cho plan store** (`docs/plans/2026-09-24-p4-sqlite-store.md` *4b*, đã ở `main`, không sửa ở
+   PR này): cặp store của boot là **một binary `sqlite`**, `--journal file-async` ↔
+   `--journal sqlite-async` (ADR-0202 quyết định 1) — *4b* còn phải sửa cho khớp.
+
+*Review PR #113 (2026-09-25), gộp vào Sửa 4:* cửa sổ timer tính cả độ dài boot (7b bước 5); tắt EEE và
+chờ ssh **trước** coalescing/IRQ (7b bước 3–4); IRQ của NIC ghim `0-4`, để lõi 5 — lõi observer của U′
+và S — không nhận ngắt NIC (không chỗ nào khác trong plan này hay ADR-0190 R6 cần lõi 5 trong mặt nạ;
+`check-machine.sh` chỉ đòi IRQ không rơi vào lõi cô lập, nên không đổi); thêm exit 1 (7b bước 8);
+capability kiểm trước **và sau** mỗi arm (ADR-0202 quyết định 1); thứ tự 7a: merge → build từ commit
+merge trên `origin/main` → handoff → reboot (7a bước 3–7).
 6. **Build do driver làm; Mac build tay.** `BOOT_ROOT=../fb-p4-boot scripts/boot-p4.sh build` dựng cả
    hai worktree, `MANIFEST.txt` và `BUILD-INFO.txt`; `w2w` của Mac build tay theo lệnh ở đầu script,
    **trước** `build`, để `BUILD-INFO.txt` ghi `mac_head` / `mac_w2w_sha256`. `run` từ chối nếu HEAD
@@ -363,8 +373,11 @@ khối đầu và nêu tên dòng `eee`).** Tên "Sửa 4" vì "Sửa 3" đã l�
    - **Procedure 2**: cùng các khối, thứ tự khối đảo ngược và thứ tự arm trong mỗi khối đảo ngược.
    - Cuối: `check-machine.sh` lần cuối.
 2. Diễn tập driver trên dòng desktop với `RUNS=2` — output ghi *không phải số đo*.
-3. Build sẵn (ADR-0090 quyết định 2, ADR-0202 quyết định 1; *Sửa 4* điều 1, 2, 6), theo đúng thứ tự:
-   1. Mac: build `w2w` ở commit merge của 7a bằng hai lệnh ở đầu `scripts/boot-p4.sh` (`git push
+3. **Merge PR 7a** (driver + tài liệu), CI xanh trên commit đó, **ghi CI run id**; chờ run đó xong
+   rồi mới làm gì tiếp (§8). Commit merge trên `main` là `BUILD_COMMIT` của boot.
+4. **Build sẵn từ commit merge đó** (ADR-0090 quyết định 2, ADR-0202 quyết định 1; *Sửa 4* điều 1,
+   2, 6), theo đúng thứ tự:
+   1. Mac: build `w2w` ở `BUILD_COMMIT` bằng hai lệnh ở đầu `scripts/boot-p4.sh` (`git push
       thangtran@192.168.77.2:Projects/fixbolt.git <commit>:refs/heads/boot-p4`, rồi `ssh … git checkout
       --detach <commit> && ~/.cargo/bin/cargo build --release -p fixbolt-w2w`).
    2. Desk: `BOOT_ROOT=../fb-p4-boot scripts/boot-p4.sh build` — dựng `../fb-p4-boot/uring`
@@ -375,14 +388,16 @@ khối đầu và nêu tên dòng `eee`).** Tên "Sửa 4" vì "Sửa 3" đã l�
    3. Gate: `(cd / && sha256sum -c ../fb-p4-boot/MANIFEST.txt)` mọi dòng `OK`; `getcap` trên hai `w2w`
       in `cap_net_admin,cap_net_raw=ep`; `findmnt -no OPTIONS -T <w2w>` không có `nosuid`.
    `run` từ chối (exit 2) nếu thiếu `MANIFEST.txt`/`BUILD-INFO.txt`, thiếu capability, binary nằm trên
-   mount `nosuid`; và dừng nếu HEAD hay sha256 `w2w` của Mac khác `BUILD-INFO.txt`.
-4. Kiểm trước reboot: `ip -br link show enp9s0` có carrier; `ssh -o BatchMode=yes
+   mount `nosuid`, hoặc — ngoài diễn tập — `BUILD_COMMIT` không có trên `origin/main`; và dừng nếu HEAD
+   hay sha256 `w2w` của Mac khác `BUILD-INFO.txt`.
+5. Kiểm trước reboot: `ip -br link show enp9s0` có carrier; `ssh -o BatchMode=yes
    thangtran@192.168.77.2 true` thành công; Mac không ngủ (`pmset -g`, đọc; đổi là việc của anh) và
    **không khởi động lại** trong đêm (FileVault khoá Mac cho tới khi anh đăng nhập — *Rủi ro*).
-5. Handoff: `STATUS.md` *Start here* (hành động đầu tiên, danh sách *đừng làm*, cái chưa chứng minh)
-   + *Nhật ký giao hàng* của plan này, cùng commit; PR 7a merge, **ghi CI run id**; chờ run đó xong
-   rồi mới làm gì tiếp (§8).
-6. Đổi grub (ADR-0202 quyết định 5): kiểm `/etc/default/grub` giống `grub.fixbolt-desktop-20260922`
+6. **Handoff — commit chỉ có tài liệu**, sau build: `STATUS.md` *Start here* (hành động đầu tiên =
+   7b bên dưới, danh sách *đừng làm*, cái chưa chứng minh, `BUILD_COMMIT`, CI run id của bước 3) +
+   *Nhật ký giao hàng* của plan này; qua PR như mọi commit lên `main`, CI xanh, run id ghi lại.
+   `BUILD_COMMIT` vẫn là tổ tiên của `origin/main`, nên `run` vẫn nhận.
+7. Đổi grub (ADR-0202 quyết định 5): kiểm `/etc/default/grub` giống `grub.fixbolt-desktop-20260922`
    (khác thì lưu bản mới có ngày), `sudo -n cp /etc/default/grub.fixbolt-s9-bootf-20260923
    /etc/default/grub && sudo -n update-grub`, `grep CMDLINE /etc/default/grub` thấy `isolcpus` và
    **không** thấy `nohz_full`. Báo anh: **một** lần reboot. `sudo -n reboot`. Hết phiên.
@@ -397,28 +412,36 @@ nguyên văn; mỗi bước quote output vào `target/boot-p4-evidence/first-act
    `grep -o 'isolcpus=[^ ]*' /proc/cmdline` → `isolcpus=6,7,14,15`;
    `grep -c nohz_full /proc/cmdline` → `0`;
    `lsmod | grep -cE '^(onload|sfc_resource)'` → `0`.
-3. **Đặt runtime** (mất sau mỗi lần tắt máy):
+3. **Đặt runtime, phần một, rồi tắt EEE và chờ ssh** (mất sau mỗi lần tắt máy; *Sửa 4* điều 4 —
+   EEE làm link nhảy, nên nó đi **trước** các cài đặt NIC ở bước 4):
    `sudo -n /usr/local/sbin/fixbolt-machine on`;
    `sudo -n systemctl stop irqbalance packagekit.service`;
-   IRQ của NIC → lõi housekeeping:
-   `for i in $(awk -F: '/enp9s0/ {gsub(/ /,"",$1); print $1}' /proc/interrupts); do echo 0-5 | sudo -n tee /proc/irq/$i/smp_affinity_list; done`;
-   `sudo -n ethtool -C enp9s0 rx-usecs 0`.
-4. **Dừng đúng các timer mà dòng `no timer due` nêu tên** (*Sửa 4* điều 3) — cùng cửa sổ 12 giờ mà
-   `check-machine.sh` đọc; `stop`, không `disable`, để lần khởi động sau trả lại:
-   `now=$(( $(date +%s) * 1000000 )); systemctl list-timers --all --output=json | jq -r --argjson now "$now" --argjson win 43200000000 '.[] | select(.next != null and .next <= ($now + $win)) | .unit' | xargs -r sudo -n systemctl stop`.
-5. **Tắt EEE rồi chờ ssh** (*Sửa 4* điều 4): `sudo -n ethtool --set-eee enp9s0 eee off`; chờ
-   `ethtool enp9s0 | grep 'Link detected: yes'`; rồi
+   `sudo -n ethtool --set-eee enp9s0 eee off`; chờ `ethtool enp9s0 | grep 'Link detected: yes'`; rồi
    `timeout 120 bash -c 'until ssh -o BatchMode=yes -o ConnectTimeout=3 thangtran@192.168.77.2 true; do sleep 2; done'`
    phải thoát 0. Hết 120 giây mà chưa được → Mac bị khoá (FileVault) hoặc ngủ: báo anh, dừng.
+4. **Đặt runtime, phần hai — NIC.** IRQ của NIC → lõi housekeeping **0–4** (lõi 5 là lõi observer
+   của U′ và S, không nhận ngắt NIC):
+   `for i in $(awk -F: '/enp9s0/ {gsub(/ /,"",$1); print $1}' /proc/interrupts); do echo 0-4 | sudo -n tee /proc/irq/$i/smp_affinity_list; done`;
+   `sudo -n ethtool -C enp9s0 rx-usecs 0`.
+5. **Dừng mọi timer đang có lịch** (*Sửa 4* điều 3, review PR #113): `check-machine.sh` đo cửa sổ 12
+   giờ **từ lúc mỗi lần kiểm chạy**, nên một timer bước vào cửa sổ giữa boot dài ~2 giờ (cụm nửa đêm:
+   `dpkg-db-backup`, `sysstat-rotate`, `logrotate`, `sysstat-summary`; `apt-daily` có độ trễ ngẫu
+   nhiên) sẽ làm driver dừng giữa chừng. Nên dừng **tất cả** timer có `next`, không chỉ cái đang
+   trong cửa sổ; `stop`, không `disable`, để lần khởi động sau trả lại:
+   `systemctl list-timers --all --output=json | jq -r '.[] | select(.next != null) | .unit' | xargs -r sudo -n systemctl stop`.
+   Driver tự **từ chối trước khối A** (exit 2, nêu tên từng timer) nếu còn timer nào đến hạn trong
+   12 giờ cộng độ dài boot.
 6. **`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh`** → `pass 17 fail 0 unknown 0`, quote nguyên văn.
-   Dòng nào đỏ thì làm đúng lệnh `fix:` nó in rồi chạy lại; `no timer due` còn đỏ → lặp bước 4.
+   Dòng nào đỏ thì làm đúng lệnh `fix:` nó in rồi chạy lại; `no timer due` còn đỏ → lặp bước 5; `eee`
+   hay `NIC IRQ affinity` đỏ → lặp bước 3 hay 4.
 7. **Bỏ lần chạy đầu** (gnome-shell còn đang ổn định sau reboot): một lần `w2w` loopback, output vào
    `target/boot-p4-evidence/discard-first-run.txt`, không đọc số:
    `../fb-p4-boot/uring/target/release/w2w --mode hft --path admin --engine-core 6 --client-core 7`.
 8. **Chạy driver**: `BOOT_ROOT=../fb-p4-boot scripts/boot-p4.sh run` ở nền (nó tự kiểm `MANIFEST.txt`,
-   capability, `BUILD-INFO.txt` và Mac trước khối đầu); **không gọi tool nào** cho tới khi nó thoát
-   (mỗi lần gọi tốn một vòng — boot E). Exit 0 = xong; exit 2 = bị từ chối trước khi chạy; exit 3 =
-   dừng giữa chừng, lý do ở dòng `STOPPED: …`.
+   capability, `BUILD-INFO.txt`, `BUILD_COMMIT` trên `origin/main`, timer và Mac trước khối đầu);
+   **không gọi tool nào** cho tới khi nó thoát (mỗi lần gọi tốn một vòng — boot E). Exit **0** = xong,
+   mọi arm đạt; exit **1** = boot chạy hết nhưng có arm FAILED (tên các arm được in); exit **2** = bị
+   từ chối trước khi chạy; exit **3** = dừng giữa chừng, lý do ở dòng `STOPPED: …`.
 9. Phán quyết: `scripts/compare-w2w-procedures.sh …`; phán quyết `io_uring` theo plan hàng 5; phán
    quyết store theo plan hàng 4; quote nguyên văn.
 10. Áp phán quyết (ADR-0098: bỏ = gỡ code trên cùng nhánh, ghi cặp số vào `measured-costs.md`, ghi kết
@@ -463,9 +486,9 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
 | 6.7 | Senior review PR hàng 6, CI xanh, merge | senior developer (opus) | các gate trên + CI | CI run id của commit đóng được ghi | — | 6.6b |
 | 7a.0 | **Gỡ hai chặn — đã gỡ 2026-09-24** (Mac mở khoá FileVault; ssh chạy được; carrier `1`) | **anh** | `ssh -o BatchMode=yes thangtran@192.168.77.2 true`; `cat /sys/class/net/enp9s0/carrier` → `1` | cả hai đạt | — | — |
 | 7a.1 | `scripts/boot-p4.sh` (mới), khối `io_uring` + cặp store, diễn tập `RUNS=2` | **senior developer (opus)** — nối giao diện của hàng 4 và 5, sai thì hỏng cả boot | diễn tập chạy hết mọi khối, có `target/boot-p4-evidence/`; `bash -n` | output diễn tập ghi *không phải số đo* | cho `check-machine.sh` một dòng đỏ giả (bật lại EEE) → driver dừng trước khối đầu, nêu tên dòng | hàng 4 (tới bước 6 của nó) và hàng 5 merge; 6.7; 7a.0 |
-| 7a.2 | *Sửa 4:* build `w2w` của Mac (lệnh ở đầu `scripts/boot-p4.sh`), rồi `BOOT_ROOT=../fb-p4-boot scripts/boot-p4.sh build` — hai worktree, `setcap`, `MANIFEST.txt`, `BUILD-INFO.txt` | runner (haiku) — brief tự đủ, lệnh chép từ 7a bước 3 | `(cd / && sha256sum -c ../fb-p4-boot/MANIFEST.txt)`; `getcap` hai `w2w`; `findmnt -no OPTIONS -T` hai `w2w`; `scripts/check-bench-alignment.sh` | mọi dòng `OK`; `cap_net_admin,cap_net_raw=ep` cả hai; không `nosuid`; `BUILD-INFO.txt` có `mac_head` = commit của 7a | — | 7a.1 |
-| 7a.3 | Kiểm trước reboot, handoff, merge 7a, đổi grub, reboot | manager | `grep CMDLINE /etc/default/grub` | CI run id ghi trong handoff; `isolcpus` có, `nohz_full` không | — | 7a.2 |
-| 7b.1 | Hành động đầu tiên của boot (7b bước 1–7, làm theo nguyên văn) | manager | `check-machine.sh` ở bước 6; ssh ở bước 5 | `pass 17 fail 0 unknown 0`; ssh thoát 0 | — | reboot |
+| 7a.2 | *Sửa 4:* **sau khi PR 7a merge** (7a bước 3): build `w2w` của Mac ở commit merge (lệnh ở đầu `scripts/boot-p4.sh`), rồi `BOOT_ROOT=../fb-p4-boot scripts/boot-p4.sh build` — hai worktree, `setcap`, `MANIFEST.txt`, `BUILD-INFO.txt` | runner (haiku) — brief tự đủ, lệnh chép từ 7a bước 4 | `(cd / && sha256sum -c ../fb-p4-boot/MANIFEST.txt)`; `getcap` hai `w2w`; `findmnt -no OPTIONS -T` hai `w2w`; `scripts/check-bench-alignment.sh` | mọi dòng `OK`; `cap_net_admin,cap_net_raw=ep` cả hai; không `nosuid`; `BUILD-INFO.txt` có `commit` và `mac_head` = commit merge của 7a trên `origin/main` | — | 7a.1 merge (CI xanh) |
+| 7a.3 | Kiểm trước reboot, commit handoff (chỉ tài liệu, qua PR), đổi grub, reboot (7a bước 5–7) | manager | `grep CMDLINE /etc/default/grub`; `git merge-base --is-ancestor <BUILD_COMMIT> origin/main` | CI run id của merge 7a và của handoff ghi trong handoff; `isolcpus` có, `nohz_full` không | — | 7a.2 |
+| 7b.1 | Hành động đầu tiên của boot (7b bước 1–7, làm theo nguyên văn) | manager | `check-machine.sh` ở bước 6; ssh ở bước 3 | `pass 17 fail 0 unknown 0`; ssh thoát 0 | — | reboot |
 | 7b.2 | Chạy `BOOT_ROOT=../fb-p4-boot scripts/boot-p4.sh run` (7b bước 8) | manager chạy; runner (haiku) trích output sau khi xong | output driver | driver thoát 0, hoặc dừng ở dòng đỏ đã nêu tên | — | 7b.1 |
 | 7b.3 | Phán quyết + áp phán quyết `io_uring` và store (`measured-costs.md`, `DESIGN.md` §8 nếu có dòng mới, dòng kết quả ADR, `PRD.md`); gỡ `io-uring` nếu bỏ | manager (tài liệu); senior developer (opus) gỡ code | `scripts/compare-w2w-procedures.sh`; phán quyết theo plan hàng 4, 5; `cargo test --all`, `--no-default-features`, clippy | mỗi cặp số kèm lệnh, máy, `check-machine.sh` | — | 7b.2 |
 | 7b.4 | Dọn (grub), senior review, CI, merge, `STATUS.md` | manager; senior developer (opus) review | CI | CI run id của commit đóng | — | 7b.3 |
@@ -489,6 +512,9 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
 `check-machine.sh` đi kèm từng khối.
 
 ## Tài liệu phải cập nhật
+
+- [ ] **Plan store *4b* (`docs/plans/2026-09-24-p4-sqlite-store.md`) phải sửa**: cặp store là một binary
+      `sqlite`, hai arm chỉ khác `--journal` (ADR-0202 quyết định 1; *Sửa 4* điều 5) — không sửa ở PR này
 
 - [ ] `docs/reference/measured-costs.md` — mục Onload bị bỏ ở bước thăm dò, không có cặp (6.6b); các
       cặp của boot, kể cả cặp làm hạng mục bị bỏ (7b.3)
@@ -514,13 +540,13 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
 | Đăng ký hỏng để lại NIC kẹt nửa đăng ký (`oo_nic_add` sau lỗi; mọi `register`/`unregister` sau đó in `sh: 1: echo: echo: I/O error`) → các biến thể thử sau **không** chạy tới bước kiểm — đã gặp | `onload_tool unload`, rồi `lsmod` rỗng (6.6a); lần mở lại: G0 trước, và mỗi biến thể bắt đầu từ module mới nạp |
 | Onload tự nạp lúc khởi động (`/etc/modprobe.d/onload.conf`) → boot đo trên kernel có module lạ | 6.6a gỡ; 7b bước 2 `lsmod` rỗng |
 | Build lại giữa boot → layout đổi | `MANIFEST.txt` sha256 trước/sau (ADR-0090) |
-| Gọi tool giữa lúc driver chạy → máy không yên, mất vòng | không gọi tool cho tới khi driver thoát (7b bước 6) |
+| Gọi tool giữa lúc driver chạy → máy không yên, mất vòng | không gọi tool cho tới khi driver thoát (7b bước 8) |
 | Lần chạy đầu sau reboot bẩn | 7b bước 7 bỏ đi một lần |
 | `w2w` build sẵn không có file capability → mọi arm có dấu NIC hỏng `socket(AF_PACKET): Operation not permitted`; build lại thì mất (*Sửa 4*) | `boot-p4.sh build` chạy `setcap` và đọc lại; `run` kiểm `getcap` trước khi chạy (exit 2) và trước mỗi arm (exit 3) — [trang bẫy](../reference/a-pre-built-w2w-needs-its-file-capabilities-and-a-rebuild-drops-them.md) |
 | Binary trên mount `nosuid` (`/tmp`, scratchpad): `getcap` thấy capability nhưng kernel không cấp (*Sửa 4*) | `run` từ chối binary trên mount `nosuid`, exit 2 — [trang bẫy](../reference/a-nosuid-mount-shows-file-capabilities-it-does-not-grant.md) |
-| Danh sách timer viết tay thiếu → `no timer due` đỏ, driver dừng trước khối A (*Sửa 4*) | 7b bước 4 dừng đúng các timer trong cửa sổ, đọc từ `systemctl list-timers`; bước 6 đọc lại dòng |
-| Tắt EEE làm link nhảy, carrier lên trước ssh → driver thấy Mac không trả lời (*Sửa 4*) | 7b bước 5 chờ ssh (≤ 120 s) trước khi chạy driver |
-| Dùng `grub.fixbolt-s9` (có `nohz_full`) | 7a bước 6 `grep` không thấy `nohz_full` |
+| Danh sách timer viết tay thiếu → `no timer due` đỏ, driver dừng trước khối A (*Sửa 4*) | 7b bước 5 dừng mọi timer có lịch, đọc từ `systemctl list-timers`; bước 6 đọc lại dòng |
+| Tắt EEE làm link nhảy, carrier lên trước ssh → driver thấy Mac không trả lời (*Sửa 4*) | 7b bước 3 chờ ssh (≤ 120 s), trước cài đặt NIC và trước driver |
+| Dùng `grub.fixbolt-s9` (có `nohz_full`) | 7a bước 7 `grep` không thấy `nohz_full` |
 | Bật dấu NIC bằng hai cách khác nhau giữa các plan (`W2W_EXTRA` vs `WIRE_NIC`) → hai thước | một cách duy nhất `WIRE_NIC`/`OBSERVER_CORE` (Sửa 3); `standard` không có `WIRE_NIC` (plan store *Sửa 1*) |
 | SQPOLL trên lõi observer, hoặc trên lõi 14/15 (offline khi SMT tắt) | S dùng lõi 7 với observer lõi 5, so với U′ (Sửa 3) |
 
@@ -530,7 +556,7 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
 |---|---|---|
 | ~~Chặn hàng 7 — cáp không có carrier~~ `[2026-09-24]`: `enp9s0` `NO-CARRIER` kể cả sau khi nạp lại module `igb`. Lúc đó ghi "đầu Mac tắt hoặc ngủ" là **đoán**. **Đã gỡ**: carrier nay là `1`; nguyên nhân là Mac bị FileVault khoá (chưa ai đăng nhập) | Đã gỡ | xem dòng FileVault dưới |
 | ~~Chặn hàng 7 — Mac từ chối khoá của máy bàn~~ `[2026-09-24]`: `Permission denied (publickey,password,keyboard-interactive)`, khoá `SHA256:70H/+HuFNSlCQtlqXCpf4IR4zyqLiPHojYpgjBeWQvA` (`tmt@tmt-B450-fixbolt-direct`). **Đã gỡ**: ssh chạy được | Đã gỡ | kiểm lại ở 7a bước 4 |
-| Mac khởi động lại trong đêm → FileVault khoá → không có generator cho tới khi anh đăng nhập | Trung bình | 7a bước 4: Mac không có cập nhật chờ khởi động lại; driver dừng khi generator lỗi, không chạy tiếp vô ích |
+| Mac khởi động lại trong đêm → FileVault khoá → không có generator cho tới khi anh đăng nhập | Trung bình | 7a bước 5: Mac không có cập nhật chờ khởi động lại; driver dừng khi generator lỗi, không chạy tiếp vô ích |
 | Mac ngủ giữa đêm | Trung bình | kiểm `pmset` trước reboot; driver dừng khi generator lỗi |
 | Boot dài, hỏng sớm là mất phần còn lại | Trung bình | driver lưu từng khối; dừng ở dòng đỏ đầu tiên |
 | Hàng 4 hoặc 5 chưa merge khi hàng 6 xong | Trung bình | 7a chờ cả hai; hàng 6 không phụ thuộc chúng |
