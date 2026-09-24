@@ -92,12 +92,14 @@ against that tag rather than a published baseline.
   [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md),
   [ADR-0191](docs/decisions/ADR-0191-the-hft-sleeper-list-reads-io-uring-enter-by-its-min-complete.md)).
   **`fixbolt_engine::transport::uring`**: `Uring` (the ring, `hft`/`standard` constructors
-  `Uring::hft`/`Uring::standard`, `Uring::register`), `UringConfig` (buffers, buffer length,
-  connections — no hidden default, refused by `UringConfigError`), `UringTransport`,
+  `Uring::hft`/`Uring::standard`, `Uring::register`), `UringConfig` (buffers per connection,
+  buffer length, connections — no hidden default, refused by `UringConfigError`; each connection
+  draws from its own provided-buffer ring, [ADR-0192](docs/decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)), `UringTransport`,
   `UringSpin` (`hft`'s idle strategy and reaper) and `UringBlock` (`standard`'s, behind
   `standard` too), `HftArm` (`Enter`, and — behind `affinity` — `Sqpoll { pin: CorePin }`,
   never a default), `UringArm`, `UringReport` (counts only: `cqes`, `bytes`, `enobufs`,
-  `rearms`, `stale`, `enter_errors`, `unarmed`, `cq_overflow`, `unisolated`), and
+  `rearms`, `stale`, `enter_errors`, `unarmed`, `cq_overflow`, `unisolated`, `unflushed`,
+  `drop_conflicts`, `enobufs_slots`, `buffer_bytes`), and
   `UringRefused` (`Disabled { sysctl }`, `Blocked`, `NotInKernel`, `KernelTooOld`,
   `TooSmall { have, need }`, `Other`) — a blocked or too-old kernel refuses at startup, named,
   before any socket is bound, and this transport never falls back to `read(2)`.

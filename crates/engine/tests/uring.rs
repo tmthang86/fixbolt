@@ -37,12 +37,22 @@ use fixbolt_engine::transport::uring::{
 use fixbolt_engine::transport::{Io, TcpTransport, Transport};
 use fixbolt_engine::wait::Waiting;
 
-/// Every ring ends a test with nothing it could not arm and nothing the kernel
-/// could not post (ADR-0190 R3, R4): both are sized never to happen.
+/// Every ring ends a test with nothing it could not arm, nothing the kernel
+/// could not post (ADR-0190 R3, R4), no failed enter, no unflushed queue and
+/// no drop conflict: each is designed never to happen.
 fn clean(uring: &Uring) {
     let r = uring.report();
     assert_eq!(r.unarmed, 0, "a source went unarmed: {r:?}");
     assert_eq!(r.cq_overflow, 0, "the completion queue overflowed: {r:?}");
+    // Senior review of PR #110: an enter that failed is a ring running deaf
+    // (M1); a flush that could not empty the queue kept a socket open (M2); a
+    // drop that found the ring borrowed leaked one (L4). None is expected.
+    assert_eq!(r.enter_errors, 0, "an io_uring_enter failed: {r:?}");
+    assert_eq!(r.unflushed, 0, "a flush could not empty the queue: {r:?}");
+    assert_eq!(
+        r.drop_conflicts, 0,
+        "a transport was dropped mid-borrow: {r:?}"
+    );
 }
 
 /// See the module comment: shared by every test, exclusive for the two that
@@ -752,6 +762,14 @@ const AUDIT_ARCH: u32 = 0xC000_00B7;
 /// Docker's default profile does. Needs no privilege: `no_new_privs` first.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn refuse_io_uring_setup_on_this_thread() {
+    refuse_on_this_thread(libc::SYS_io_uring_setup);
+}
+
+/// The same filter for any one system call — `io_uring_enter` for a sandbox
+/// that allows setting a ring up and refuses using it (senior review of PR
+/// #110, M1).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn refuse_on_this_thread(nr: libc::c_long) {
     // Classic BPF opcodes, spelled as their parts. BPF_LD, BPF_W and BPF_K
     // are all zero, so only the non-zero parts are written.
     const LD_W_ABS: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
@@ -764,7 +782,7 @@ fn refuse_io_uring_setup_on_this_thread() {
         ins(LD_W_ABS, 0, 0, ARCH_AT),
         ins(JEQ_K, 0, 3, AUDIT_ARCH),
         ins(LD_W_ABS, 0, 0, NR_AT),
-        ins(JEQ_K, 0, 1, libc::SYS_io_uring_setup as u32),
+        ins(JEQ_K, 0, 1, nr as u32),
         ins(RET_K, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EPERM as u32),
         ins(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW),
     ];
@@ -1019,4 +1037,116 @@ fn standard_with_a_quiet_listener_waits_out_its_timeout_every_turn() {
         );
     }
     clean(&uring);
+}
+
+/// A sandbox that lets `io_uring_setup` through and answers `EPERM` to
+/// `io_uring_enter` is refused **at startup**, as `Blocked`, naming seccomp —
+/// ADR-0190 decision 7.
+///
+/// `[measured 2026-09-24]` senior review of PR #110, M1: before the startup
+/// probe, such a ring was made, registered connections, and then ran deaf —
+/// every idle turn's enter failed, `enter_errors` climbed past a million in
+/// half a second, and not one byte arrived.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn a_blocked_io_uring_enter_refuses_to_start_and_names_seccomp() {
+    let _g = shared();
+    let refused = std::thread::spawn(|| {
+        refuse_on_this_thread(libc::SYS_io_uring_enter);
+        Uring::hft(config(8, 4096, 1), HftArm::Enter).err()
+    })
+    .join()
+    .expect("the filtered thread finished");
+    let Some(e) = refused else {
+        panic!(
+            "io_uring_enter is filtered with EPERM and a ring was made anyway — it would run deaf"
+        )
+    };
+    assert_eq!(e, UringRefused::Blocked, "{e}");
+    assert!(e.to_string().contains("seccomp"), "{e}");
+}
+
+/// A connection dropped while its `RecvMulti` **cannot be submitted** keeps
+/// its descriptor open, so the entry still in the queue can never name a
+/// socket that later reuses the number — senior review of PR #110, M2.
+///
+/// The queue is made undrainable by refusing `io_uring_enter` on this thread
+/// after the ring exists: the connection's receive was queued at `register`
+/// and never reached the kernel. The descriptor is read back by its
+/// `/proc/self/fd` link, which names the socket's inode — the same socket, not
+/// merely the same number.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn a_descriptor_whose_receive_was_never_submitted_is_kept_open() {
+    use std::os::fd::AsRawFd;
+    let _g = shared();
+    let (before, after, report) = std::thread::spawn(|| {
+        let (uring, _spin) = hft(config(8, 4096, 1));
+        let (_client, server) = pair();
+        let fd = server.socket().as_raw_fd();
+        let link = format!("/proc/self/fd/{fd}");
+        let before = std::fs::read_link(&link).ok();
+        let t = uring.register(server).expect("a free slot");
+        refuse_on_this_thread(libc::SYS_io_uring_enter);
+        drop(t);
+        let after = std::fs::read_link(&link).ok();
+        (before, after, uring.report())
+    })
+    .join()
+    .expect("the filtered thread finished");
+    assert!(
+        before.is_some(),
+        "the socket's descriptor was not readable to begin with"
+    );
+    assert_eq!(
+        after, before,
+        "the descriptor was closed (or reused) with its receive still unsubmitted: {report:?}"
+    );
+    assert!(
+        report.unflushed > 0,
+        "the flush that could not empty the queue was not counted: {report:?}"
+    );
+}
+
+/// *(ADR-0192)* A connection nobody reads cannot starve another: each draws
+/// from its own provided-buffer ring. A (4 buffers of its own) is sent 64 KiB
+/// and never read; B's 10 bytes must still arrive within a second, and only
+/// A's slot may be counted as having run dry.
+///
+/// `[measured 2026-09-24]` senior review of PR #110, L3: with one pool shared
+/// by every connection, A's unread bytes held all of it and B read nothing.
+#[test]
+fn a_connection_nobody_reads_cannot_starve_another() {
+    let _g = shared();
+    let (uring, mut spin) = hft(config(4, 4096, 2));
+    let (mut ca, sa) = pair();
+    let _a = uring.register(sa).expect("a slot for A");
+    let (mut cb, sb) = pair();
+    let mut b = uring.register(sb).expect("a slot for B");
+
+    let writer = std::thread::spawn(move || {
+        // 64 KiB into a socket nobody drains: the write may not finish, and it
+        // does not need to — it only has to fill A's buffers.
+        ca.set_write_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        let _ = ca.write_all(&[b'A'; 64 * 1024]);
+        ca
+    });
+    // A's bytes reach the ring first.
+    for _ in 0..50 {
+        spin.idle(&[]);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    cb.write_all(b"0123456789").expect("write B");
+    let (got, how) = reap_until(&mut spin, &mut b, 10, Duration::from_secs(1));
+    let r = uring.report();
+    assert_eq!(
+        got.len(),
+        10,
+        "B got {} of 10 bytes in 1 s (ended {how:?}); report {r:?}",
+        got.len()
+    );
+    assert_eq!(got, b"0123456789");
+    assert_eq!(r.enobufs_slots, 1, "only A's slot may have run dry: {r:?}");
+    let _ca = writer.join().expect("the writer finished");
 }

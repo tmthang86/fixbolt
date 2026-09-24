@@ -1972,7 +1972,12 @@ Stated so you do not discover it in production:
   serving loop can hold at once** — `UringConfig::connections` at least the engine's capacity
   plus the pre-session `Limits::pending()`, because a socket is registered at accept, before its
   `Logon` — or the entry points refuse with `UringRefused::TooSmall { have, need }` before
-  binding. **SQPOLL (`HftArm::Sqpoll`) is a measured arm, not a mode**: it needs both a
+  binding. **`[2026-09-24]` Its memory grows with `connections`**: each connection has its own
+  provided-buffer ring ([ADR-0192](decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)), so
+  `connections × buffers_per_connection × buffer_len` bytes are allocated and pre-faulted at
+  startup — 8 MiB at 256 slots of 8 × 4 096 — and `UringReport::buffer_bytes` says how much.
+  That is the price of a connection nobody reads (one parked, say) never starving the others.
+  **SQPOLL (`HftArm::Sqpoll`) is a measured arm, not a mode**: it needs both a
   `--features affinity` `CorePin` and `tools/w2w`'s `--sqpoll-core`/`--uring-arm sqpoll` (or the
   equivalent in your own call), it is `hft`-only by the type system, it burns a second core for
   the kernel's own polling thread, and it never becomes the default this transport chooses for

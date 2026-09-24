@@ -783,7 +783,7 @@ mod busy_loop {
             assert_eq!(kernel.connections(), n, "every session still up");
             drop((kernel, kc));
 
-            let ring = UringConfig::new(256, 4096, 64).expect("a valid ring size");
+            let ring = UringConfig::new(8, 4096, 64).expect("a valid ring size");
             let (uring, spin) = Uring::hft(ring, HftArm::Enter)
                 .unwrap_or_else(|e| panic!("the uring arm needs a ring: {e}"));
             let (mut ringed, mut rc) = setup(n, spin, |t| uring.register(t));

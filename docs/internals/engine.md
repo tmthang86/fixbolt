@@ -13,7 +13,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 |---|---|
 | `lib.rs` | `Engine`, `turn`, `run`, `serve*` entry points — one non-blocking pass, and the loop around it |
 | `transport.rs` | `Transport`, `TcpTransport`, `Loopback`, `Waiting`, the `Io` result type |
-| `transport/uring.rs` | `[2026-09-24]` A second `Transport`, behind `#[cfg(all(feature = "io-uring", target_os = "linux"))]`: `Uring` (the ring, the provided-buffer ring, the per-connection staging slab, `!Send`), `UringTransport`, `UringSpin`/`UringBlock` (the idle strategy that is also the reaper), `UringConfig`, `HftArm`, `UringRefused`, `UringReport`. The module doc names each `unsafe` block (U1–U7) and the test that proves it |
+| `transport/uring.rs` | `[2026-09-24]` A second `Transport`, behind `#[cfg(all(feature = "io-uring", target_os = "linux"))]`: `Uring` (the ring, one provided-buffer ring per connection slot — [ADR-0192](../decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md) — the per-connection staging slab, `!Send`), `UringTransport`, `UringSpin`/`UringBlock` (the idle strategy that is also the reaper), `UringConfig`, `HftArm`, `UringRefused`, `UringReport`. The module doc names each `unsafe` block (U1–U7) and the test that proves it |
 | `frame.rs` | `Framer` — cutting a byte stream into messages by `9=`, nothing parsed |
 | `presession.rs` | `Identity`, `PendingSet`, `Registry`, `Table` — who owns a socket before a session exists |
 | `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes; its `Drop` retires the journal (ADR-0153, `tests/retire.rs`) |

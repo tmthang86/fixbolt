@@ -42,7 +42,7 @@
 //! | # | Where | Proved by |
 //! |---|---|---|
 //! | U1 | `Region`: page-aligned `alloc`/`dealloc`, pre-touch | `buffers_are_resident_before_the_first_message`; ASan (step 7) |
-//! | U2 | `register_buf_ring_with_flags` | explicit `Drop` for `Inner`; `unregistered_buffers_are_not_written_after_the_ring_is_dropped` |
+//! | U2 | `register_buf_ring_with_flags` (one ring per slot) | structural: the `Rc` every `UringTransport` holds, whose drop shuts its socket and cancels its `recv` first; `Drop` for `Inner` unregistering before the memory goes is a second line no test can tell apart; the canary checks only the end state |
 //! | U3 | `SubmissionQueue::push` | `a_ring_that_runs_out_of_buffers_rearms_and_loses_nothing` |
 //! | U4 | `Submitter::enter` | `a_message_arrives_through_the_ring`; the `standard` wake tests (step 3) |
 //! | U5 | a slice from a CQE's `(buffer id, length)` | `staged_span` and its unit test; `sixty_four_connections_interleaved_are_byte_exact` |
@@ -67,14 +67,21 @@ use crate::transport::{Interest, Io, Source, TcpTransport, Transport};
 use crate::wait::Waiting;
 
 /// The largest provided-buffer ring the kernel accepts: buffer ids are 16 bits
-/// and the ring's entry count is at most `1 << 15`.
+/// and a ring's entry count is at most `1 << 15`. The bound on
+/// [`UringConfig::buffers_per_connection`].
 pub const MAX_BUFFERS: u16 = 1 << 15;
 
-/// How big the ring's receive side is. **No field has a hidden default**
-/// (`CLAUDE.md` §6): the caller names all three and they are checked here.
+/// How big the ring's receive side is: `connections × buffers_per_connection ×
+/// buffer_len` bytes, allocated and pre-faulted when the ring is made
+/// ([ADR-0192]). **No field has a hidden default** (`CLAUDE.md` §6): the caller
+/// names all three and they are checked here. `tools/w2w` uses **8 × 4 096
+/// bytes per connection** — twice the engine's default `RX` in flight —
+/// and `docs/CONFIGURATION.md` says why.
+///
+/// [ADR-0192]: ../../../../docs/decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UringConfig {
-    buffers: u16,
+    buffers_per_connection: u16,
     buffer_len: u32,
     connections: u16,
 }
@@ -82,8 +89,10 @@ pub struct UringConfig {
 /// Why a [`UringConfig`] was refused. Fieldless: nothing here allocates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UringConfigError {
-    /// The buffer count is not a power of two in `1..=`[`MAX_BUFFERS`] — the
-    /// provided-buffer ring's entry count must be one.
+    /// The buffers per connection are not a power of two in
+    /// `2..=`[`MAX_BUFFERS`] — each connection's provided-buffer ring's entry
+    /// count must be one, and a ring of one buffer cannot receive while that
+    /// buffer is being read.
     Buffers,
     /// A buffer of zero bytes can hold nothing.
     BufferLen,
@@ -94,7 +103,9 @@ pub enum UringConfigError {
 impl fmt::Display for UringConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Buffers => "the io_uring buffer count must be a power of two, at most 32768",
+            Self::Buffers => {
+                "the io_uring buffers per connection must be a power of two from 2 to 32768"
+            }
             Self::BufferLen => "an io_uring buffer must be at least one byte long",
             Self::Connections => "an io_uring transport must serve at least one connection",
         })
@@ -104,18 +115,23 @@ impl fmt::Display for UringConfigError {
 impl std::error::Error for UringConfigError {}
 
 impl UringConfig {
-    /// `buffers` provided buffers of `buffer_len` bytes each, shared by at most
-    /// `connections` registered connections.
+    /// `buffers_per_connection` provided buffers of `buffer_len` bytes each,
+    /// **for each** of at most `connections` registered connections — every
+    /// connection draws from its own ring, so one that nobody reads cannot
+    /// starve another (ADR-0192).
     ///
     /// # Errors
     ///
     /// [`UringConfigError`] naming the first field that is out of range.
     pub const fn new(
-        buffers: u16,
+        buffers_per_connection: u16,
         buffer_len: u32,
         connections: u16,
     ) -> Result<Self, UringConfigError> {
-        if !buffers.is_power_of_two() || buffers > MAX_BUFFERS {
+        if !buffers_per_connection.is_power_of_two()
+            || buffers_per_connection < 2
+            || buffers_per_connection > MAX_BUFFERS
+        {
             return Err(UringConfigError::Buffers);
         }
         if buffer_len == 0 {
@@ -125,16 +141,16 @@ impl UringConfig {
             return Err(UringConfigError::Connections);
         }
         Ok(Self {
-            buffers,
+            buffers_per_connection,
             buffer_len,
             connections,
         })
     }
 
-    /// How many provided buffers.
+    /// How many provided buffers each connection's ring holds.
     #[must_use]
-    pub const fn buffers(&self) -> u16 {
-        self.buffers
+    pub const fn buffers_per_connection(&self) -> u16 {
+        self.buffers_per_connection
     }
 
     /// How long each provided buffer is, in bytes.
@@ -149,11 +165,13 @@ impl UringConfig {
         self.connections
     }
 
-    /// Every provided buffer together, in bytes — what is allocated and
-    /// pre-faulted when the ring is made.
+    /// Every connection's provided buffers together, in bytes —
+    /// `connections × buffers_per_connection × buffer_len`, allocated and
+    /// pre-faulted when the ring is made (the rings' own entries come on top;
+    /// [`UringReport::buffer_bytes`] reads the whole allocation back).
     #[must_use]
     pub const fn buffer_bytes(&self) -> u64 {
-        self.buffers as u64 * self.buffer_len as u64
+        self.connections as u64 * self.buffers_per_connection as u64 * self.buffer_len as u64
     }
 }
 
@@ -231,6 +249,23 @@ pub struct UringReport {
     /// `CorePin::allow_unisolated` — a figure from that arm says so beside it
     /// (ADR-0190 R1).
     pub unisolated: bool,
+    /// Times a flush could not empty the submission queue — an enter that
+    /// failed, or an SQPOLL thread that did not take the entries within its
+    /// bound. A connection dropped then keeps its descriptor open until a
+    /// later flush succeeds, so no queued entry can name a reused number.
+    pub unflushed: u64,
+    /// Times a `UringTransport` was dropped while the ring was borrowed — a
+    /// structural impossibility today; its descriptor is then leaked rather
+    /// than closed under a live slot. Counted so it cannot happen unseen.
+    pub drop_conflicts: u64,
+    /// *(ADR-0192)* How many distinct connection slots have run out of their
+    /// own buffers at least once — beside `enobufs`, so one connection starved
+    /// of its buffers reads apart from many.
+    pub enobufs_slots: u64,
+    /// *(ADR-0192)* The provided-buffer memory this ring allocated and
+    /// pre-faulted — every slot's ring and buffers — so a large `connections`
+    /// is visible rather than discovered.
+    pub buffer_bytes: u64,
 }
 
 /// Why this process was not given a ring. Each variant says where the
@@ -328,11 +363,6 @@ impl fmt::Display for UringRefused {
 
 impl std::error::Error for UringRefused {}
 
-/// The one provided-buffer group this transport registers.
-const BGID: u16 = 0;
-/// The buffer memory's alignment: a page on every Linux target (4, 16 and
-/// 64 KiB pages), which the kernel requires of a buffer ring it maps.
-const ALIGN: usize = 1 << 16;
 /// The pre-touch stride: the smallest page size, so every page of any size is
 /// written at least once.
 const TOUCH_STRIDE: usize = 4096;
@@ -395,29 +425,56 @@ fn staged_span(bid: Option<u16>, res: i32, buffers: u16, buffer_len: u32) -> Opt
     (bid < buffers && len > 0 && len <= buffer_len).then_some((bid, len))
 }
 
-/// The buffer ring's entries and the buffers themselves, in one page-aligned
-/// allocation, every page written once when it is made.
+/// This machine's page size — the kernel requires each registered buffer ring
+/// to start on a page. 4 096 if the answer is not a power of two.
+fn page_size() -> usize {
+    // SAFETY (U1, the layout it feeds): `sysconf` takes an integer and reads
+    // nothing of this process's memory. Proved by every ring registration in
+    // `tests/uring.rs`, which the kernel refuses with `EINVAL` for a ring
+    // that is not page-aligned.
+    #[allow(unsafe_code)]
+    let p = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    usize::try_from(p)
+        .ok()
+        .filter(|p| p.is_power_of_two())
+        .unwrap_or(TOUCH_STRIDE)
+}
+
+/// Every connection slot's buffer ring and every slot's buffers, in one
+/// page-aligned allocation, every page written once when it is made
+/// (ADR-0192).
+///
+/// `[ring 0][ring 1]…[ring C−1][slot 0's buffers]…[slot C−1's buffers]`: each
+/// ring starts on its own page and holds `buffers_per_connection` entries;
+/// slot `s`'s buffer `b` is at `data_at + (s × per + b) × buffer_len`.
 struct Region {
     base: NonNull<u8>,
     layout: Layout,
-    /// Where the buffers start: after the entries, on a 4 KiB boundary.
+    /// Bytes from one slot's ring to the next: its entries, rounded to a page.
+    ring_stride: usize,
+    /// Where the buffers start: after every ring.
     data_at: usize,
+    /// Buffers per connection.
+    per: usize,
     buffer_len: usize,
 }
 
 impl Region {
     fn new(config: &UringConfig) -> Result<Self, UringRefused> {
         let too_big = UringRefused::Other(io::ErrorKind::OutOfMemory);
-        let entries = usize::from(config.buffers) * core::mem::size_of::<BufRingEntry>();
-        let data_at = entries
-            .checked_next_multiple_of(TOUCH_STRIDE)
+        let page = page_size();
+        let per = usize::from(config.buffers_per_connection);
+        let connections = usize::from(config.connections);
+        let ring_stride = (per * core::mem::size_of::<BufRingEntry>())
+            .checked_next_multiple_of(page)
             .ok_or(too_big)?;
+        let data_at = ring_stride.checked_mul(connections).ok_or(too_big)?;
         let data = usize::try_from(config.buffer_bytes()).map_err(|_| too_big)?;
         let total = data_at.checked_add(data).ok_or(too_big)?;
-        let layout = Layout::from_size_align(total, ALIGN).map_err(|_| too_big)?;
+        let layout = Layout::from_size_align(total, page).map_err(|_| too_big)?;
         let buffer_len = usize::try_from(config.buffer_len).map_err(|_| too_big)?;
 
-        // SAFETY (U1): `layout` has a non-zero size — at least one entry and
+        // SAFETY (U1): `layout` has a non-zero size — at least one ring and
         // one buffer of at least one byte. The pointer is checked for null
         // below and freed exactly once, with this same `layout`, in `Drop`.
         // Proved by `buffers_are_resident_before_the_first_message` and the
@@ -428,7 +485,9 @@ impl Region {
         let region = Self {
             base,
             layout,
+            ring_stride,
             data_at,
+            per,
             buffer_len,
         };
 
@@ -450,31 +509,40 @@ impl Region {
         Ok(region)
     }
 
-    /// The first buffer-ring entry. Entry 0's `resv` is the tail.
-    const fn entries(&self) -> *mut BufRingEntry {
-        self.base.as_ptr().cast()
+    /// Slot `slot`'s first buffer-ring entry, on a page of its own. Entry 0's
+    /// `resv` is that ring's tail. `slot < connections`.
+    fn entries(&self, slot: usize) -> *mut BufRingEntry {
+        self.base
+            .as_ptr()
+            .wrapping_add(slot * self.ring_stride)
+            .cast()
     }
 
-    /// The address the kernel writes buffer `bid` at. `bid < buffers`.
-    fn buffer_addr(&self, bid: u16) -> u64 {
-        let at = self.data_at + usize::from(bid) * self.buffer_len;
-        self.base.as_ptr().wrapping_add(at) as u64
+    /// Where slot `slot`'s buffer `bid` starts, from the base.
+    const fn at(&self, slot: usize, bid: u16) -> usize {
+        self.data_at + (slot * self.per + bid as usize) * self.buffer_len
     }
 
-    /// The first `len` bytes of buffer `bid`.
+    /// The address the kernel writes slot `slot`'s buffer `bid` at.
+    fn buffer_addr(&self, slot: usize, bid: u16) -> u64 {
+        self.base.as_ptr().wrapping_add(self.at(slot, bid)) as u64
+    }
+
+    /// The first `len` bytes of slot `slot`'s buffer `bid`.
     ///
-    /// **Called only with a span `staged_span` accepted**: `bid < buffers`
-    /// and `len <= buffer_len`, so the slice is inside the allocation.
-    fn staged(&self, bid: u16, len: u32) -> &[u8] {
-        let at = self.data_at + usize::from(bid) * self.buffer_len;
+    /// **Called only with a span `staged_span` accepted**: `bid <
+    /// buffers_per_connection` and `len <= buffer_len`, for a slot below
+    /// `connections`, so the slice is inside the allocation.
+    fn staged(&self, slot: usize, bid: u16, len: u32) -> &[u8] {
+        let at = self.at(slot, bid);
         let len = (len as usize).min(self.buffer_len);
         // SAFETY (U5): `bid` and `len` passed `staged_span` when the
-        // completion was reaped, and the buffer is on a staging list — the
-        // ledger's promise that the kernel no longer owns it and will not
-        // write it until `provide` hands it back, which happens only after the
-        // last byte is copied out. So `at + len` is inside the allocation and
-        // the memory is not written while this borrow lives. Proved by
-        // `staged_span`'s unit test and by
+        // completion was reaped, `slot` is a live slot's index, and the buffer
+        // is on that slot's staging list — the ledger's promise that the
+        // kernel no longer owns it and will not write it until `provide` hands
+        // it back, which happens only after the last byte is copied out. So
+        // `at + len` is inside the allocation and the memory is not written
+        // while this borrow lives. Proved by `staged_span`'s unit test and by
         // `sixty_four_connections_interleaved_are_byte_exact`, which checks
         // the ledger after every reap.
         #[allow(unsafe_code)]
@@ -487,10 +555,11 @@ impl Region {
 impl Drop for Region {
     fn drop(&mut self) {
         // SAFETY (U1): `base` came from `alloc` with this `layout` and is
-        // freed once. `Inner`'s `Drop` has unregistered the buffer ring and
-        // closed the ring before this runs (field order), so the kernel holds
-        // no address inside it. Proved by
-        // `unregistered_buffers_are_not_written_after_the_ring_is_dropped`.
+        // freed once. By the time this runs no request can select a buffer —
+        // U2's structural argument at registration — and `Inner`'s `Drop` has
+        // unregistered every ring and closed the ring (field order).
+        // `unregistered_buffers_are_not_written_after_the_ring_is_dropped`
+        // checks the end state.
         #[allow(unsafe_code)]
         unsafe {
             std::alloc::dealloc(self.base.as_ptr(), self.layout);
@@ -709,26 +778,41 @@ impl Polls {
     }
 }
 
+/// One connection slot's provided-buffer ring (ADR-0192): what this side has
+/// published, and what the ledger says the kernel holds. It outlives every
+/// tenant of the slot — the ring is registered once, when `Uring` is built.
+#[derive(Clone, Copy)]
+struct Ring {
+    /// The ring's tail this side has published.
+    tail: u16,
+    /// How many of this slot's buffers the ledger says the kernel has.
+    with_kernel: u32,
+    /// Whether this slot has ever run dry — counted once in `enobufs_slots`.
+    ran_dry: bool,
+}
+
 /// Everything but the ring itself.
+///
+/// **Buffers are per slot** (ADR-0192): slot `s`'s buffer `b` is ledger
+/// index `s × per + b`; its id on the wire (`bid`) is `b`, in group `s`.
 struct State {
     region: Region,
     config: UringConfig,
-    /// `buffers - 1`: a ring index from a free-running tail.
+    /// `buffers_per_connection - 1`: a ring index from a free-running tail.
     mask: u16,
-    /// The buffer-ring tail this side has published.
-    tail: u16,
-    /// Per buffer: [`KERNEL`], or the slot whose staging list holds it.
+    /// Per slot: its ring's tail and count.
+    rings: Box<[Ring]>,
+    /// Per buffer (ledger index): [`KERNEL`], or the slot whose staging list
+    /// holds it — only ever its own.
     owner: Box<[u32]>,
     /// Per buffer: how many bytes its completion delivered.
     len: Box<[u32]>,
-    /// Per buffer: the next buffer on the same staging list.
+    /// Per buffer: the next buffer (a `bid` of the same slot) on its list.
     next: Box<[u16]>,
     slots: Box<[Slot]>,
     /// Free slots, a stack.
     free: Box<[u32]>,
     free_len: usize,
-    /// How many buffers the ledger says the kernel has.
-    kernel_owned: u32,
     /// How many slots have `rearm` set.
     rearm_pending: u32,
     fds: FdTable,
@@ -740,10 +824,17 @@ struct State {
     /// The kernel's own count of completions it dropped.
     kernel_overflow: u32,
     unisolated: bool,
+    unflushed: u64,
+    /// *(Senior review of PR #110, M2)* Sockets of dropped connections whose
+    /// flush could not empty the submission queue: kept open — the number
+    /// cannot be reused while an entry in the queue may still name it — and
+    /// closed by the next flush that empties it. Capacity is reserved once.
+    deferred: Vec<TcpTransport>,
     arm: UringArm,
     cqes: u64,
     bytes: u64,
     enobufs: u64,
+    enobufs_slots: u64,
     rearms: u64,
     stale: u64,
     enter_errors: u64,
@@ -751,13 +842,21 @@ struct State {
 
 impl State {
     fn new(region: Region, config: UringConfig, arm: UringArm) -> Self {
-        let buffers = usize::from(config.buffers);
         let connections = usize::from(config.connections);
+        let buffers = connections * usize::from(config.buffers_per_connection);
         Self {
             region,
             config,
-            mask: config.buffers.wrapping_sub(1),
-            tail: 0,
+            mask: config.buffers_per_connection.wrapping_sub(1),
+            rings: vec![
+                Ring {
+                    tail: 0,
+                    with_kernel: 0,
+                    ran_dry: false,
+                };
+                connections
+            ]
+            .into_boxed_slice(),
             owner: vec![KERNEL; buffers].into_boxed_slice(),
             len: vec![0; buffers].into_boxed_slice(),
             next: vec![NIL; buffers].into_boxed_slice(),
@@ -768,7 +867,6 @@ impl State {
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
             free_len: connections,
-            kernel_owned: 0,
             rearm_pending: 0,
             fds: FdTable::new(connections),
             #[cfg(feature = "standard")]
@@ -777,10 +875,13 @@ impl State {
             cq_overflow_seen: 0,
             kernel_overflow: 0,
             unisolated: false,
+            unflushed: 0,
+            deferred: Vec::with_capacity(connections),
             arm,
             cqes: 0,
             bytes: 0,
             enobufs: 0,
+            enobufs_slots: 0,
             rearms: 0,
             stale: 0,
             enter_errors: 0,
@@ -799,24 +900,39 @@ impl State {
             unarmed: self.unarmed,
             cq_overflow: self.cq_overflow_seen + self.kernel_overflow as u64,
             unisolated: self.unisolated,
+            unflushed: self.unflushed,
+            drop_conflicts: 0,
+            enobufs_slots: self.enobufs_slots,
+            buffer_bytes: self.region.layout.size() as u64,
         }
     }
 
-    /// Hand buffer `bid` to the kernel: write its ring entry at the tail and
-    /// publish the tail.
-    fn provide(&mut self, bid: u16) {
-        let idx = usize::from(self.tail & self.mask);
-        let addr = self.region.buffer_addr(bid);
-        let entries = self.region.entries();
-        // SAFETY (U6): `idx < buffers`, so the entry is inside the ring's
-        // memory. The ledger never has more than `buffers` buffers with the
-        // kernel, so the entry at the tail is one the kernel has already
-        // consumed and does not read until the tail below says so. The writes
-        // go through raw offsets of the kernel ABI layout (asserted above),
-        // never through a `&mut` spanning entry 0's `resv`, which is the tail.
-        // The tail is a `u16` inside that allocation, aligned (offset 14 of an
-        // 8-aligned entry), and published with `Release` so the kernel sees
-        // the entry first. Proved by the ledger and the byte-exact tests.
+    /// The ledger index of slot `slot`'s buffer `bid`.
+    const fn index(&self, slot: usize, bid: u16) -> usize {
+        slot * self.config.buffers_per_connection as usize + bid as usize
+    }
+
+    /// Hand slot `slot`'s buffer `bid` to the kernel: write its entry at that
+    /// slot's ring tail and publish the tail.
+    fn provide(&mut self, slot: usize, bid: u16) {
+        let Some(ring) = self.rings.get(slot).copied() else {
+            return;
+        };
+        let idx = usize::from(ring.tail & self.mask);
+        let addr = self.region.buffer_addr(slot, bid);
+        let entries = self.region.entries(slot);
+        let tail = ring.tail.wrapping_add(1);
+        // SAFETY (U6): `slot < connections` (checked by the `get` above) and
+        // `idx < buffers_per_connection`, so the entry is inside that slot's
+        // ring. The ledger never has more than `buffers_per_connection` of a
+        // slot's buffers with the kernel, so the entry at its tail is one the
+        // kernel has already consumed and does not read until the tail below
+        // says so. The writes go through raw offsets of the kernel ABI layout
+        // (asserted above), never through a `&mut` spanning entry 0's `resv`,
+        // which is the tail. The tail is a `u16` inside that ring's page,
+        // aligned (offset 14 of an 8-aligned entry), and published with
+        // `Release` so the kernel sees the entry first. Proved by the ledger
+        // and the byte-exact tests.
         #[allow(unsafe_code)]
         unsafe {
             let entry = entries.add(idx).cast::<u8>();
@@ -826,40 +942,47 @@ impl State {
                 .cast::<u32>()
                 .write(self.config.buffer_len);
             entry.add(ENTRY_BID_AT).cast::<u16>().write(bid);
-            self.tail = self.tail.wrapping_add(1);
-            let tail = BufRingEntry::tail(entries).cast::<AtomicU16>();
-            (*tail).store(self.tail, Ordering::Release);
+            let published = BufRingEntry::tail(entries).cast::<AtomicU16>();
+            (*published).store(tail, Ordering::Release);
         }
-        if let Some(o) = self.owner.get_mut(usize::from(bid)) {
+        let g = self.index(slot, bid);
+        if let Some(o) = self.owner.get_mut(g) {
             *o = KERNEL;
         }
-        self.kernel_owned += 1;
+        if let Some(r) = self.rings.get_mut(slot) {
+            r.tail = tail;
+            r.with_kernel += 1;
+        }
     }
 
-    /// Take buffer `bid` from the kernel for `to`. `false` if the ledger does
-    /// not have it with the kernel — a completion naming a buffer it was not
-    /// given, which is never staged.
-    fn take(&mut self, bid: u16, to: u32) -> bool {
-        match self.owner.get_mut(usize::from(bid)) {
+    /// Take slot `slot`'s buffer `bid` from the kernel for `to`. `false` if
+    /// the ledger does not have it with the kernel — a completion naming a
+    /// buffer it was not given, which is never staged.
+    fn take(&mut self, slot: usize, bid: u16, to: u32) -> bool {
+        let g = self.index(slot, bid);
+        match self.owner.get_mut(g) {
             Some(o) if *o == KERNEL => {
                 *o = to;
-                self.kernel_owned = self.kernel_owned.saturating_sub(1);
+                if let Some(r) = self.rings.get_mut(slot) {
+                    r.with_kernel = r.with_kernel.saturating_sub(1);
+                }
                 true
             }
             _ => false,
         }
     }
 
-    /// A buffer the kernel selected for a completion nobody will read: back
-    /// to the kernel at once.
-    fn give_back(&mut self, bid: Option<u16>) {
-        // `take` to `KERNEL`, then `provide`: the ledger's count drops and
-        // rises by one, and the ring gets the entry back.
+    /// A buffer the kernel selected from slot `slot`'s ring for a completion
+    /// nobody will read: back to that ring at once.
+    fn give_back(&mut self, slot: usize, bid: Option<u16>) {
+        // `take` to `KERNEL`, then `provide`: the slot's count drops and rises
+        // by one, and its ring gets the entry back.
         if let Some(b) = bid
-            && b < self.config.buffers
-            && self.take(b, KERNEL)
+            && b < self.config.buffers_per_connection
+            && slot < self.rings.len()
+            && self.take(slot, b, KERNEL)
         {
-            self.provide(b);
+            self.provide(slot, b);
         }
     }
 
@@ -881,11 +1004,11 @@ impl State {
     }
 
     fn append(&mut self, slot: usize, bid: u16, len: u32) {
-        let b = usize::from(bid);
-        if let Some(l) = self.len.get_mut(b) {
+        let g = self.index(slot, bid);
+        if let Some(l) = self.len.get_mut(g) {
             *l = len;
         }
-        if let Some(n) = self.next.get_mut(b) {
+        if let Some(n) = self.next.get_mut(g) {
             *n = NIL;
         }
         let Some(s) = self.slots.get_mut(slot) else {
@@ -895,8 +1018,11 @@ impl State {
         s.tail = bid;
         if last == NIL {
             s.head = bid;
-        } else if let Some(n) = self.next.get_mut(usize::from(last)) {
-            *n = bid;
+        } else {
+            let gl = self.index(slot, last);
+            if let Some(n) = self.next.get_mut(gl) {
+                *n = bid;
+            }
         }
     }
 
@@ -923,19 +1049,25 @@ impl State {
             .is_some_and(|s| s.live && s.generation == generation);
         if !current {
             // Its connection is gone and the slot may have a new tenant: the
-            // bytes reach nobody, and the buffer goes straight back.
+            // bytes reach nobody, and the buffer goes straight back — to the
+            // same slot's ring, which is the group it came from.
             self.stale += 1;
-            self.give_back(bid);
+            self.give_back(slot, bid);
             return;
         }
         if res > 0 {
-            match staged_span(bid, res, self.config.buffers, self.config.buffer_len) {
-                Some((b, len)) if self.take(b, slot as u32) => {
+            match staged_span(
+                bid,
+                res,
+                self.config.buffers_per_connection,
+                self.config.buffer_len,
+            ) {
+                Some((b, len)) if self.take(slot, b, slot as u32) => {
                     self.append(slot, b, len);
                     self.bytes += u64::from(len);
                 }
                 _ => {
-                    self.give_back(bid);
+                    self.give_back(slot, bid);
                     self.end(slot, Io::Failed(io::ErrorKind::InvalidData));
                 }
             }
@@ -943,24 +1075,36 @@ impl State {
                 self.mark_rearm(slot);
             }
         } else if res == 0 {
-            self.give_back(bid);
+            self.give_back(slot, bid);
             self.end(slot, Io::Closed);
         } else if res == -libc::ENOBUFS {
-            // Every buffer is out. The bytes stay in the socket — TCP's own
-            // backpressure — and the receive is submitted again as soon as a
-            // buffer is back with the kernel.
+            // *(ADR-0192 decision 3)* This connection's own buffers are all
+            // out: backpressure on it alone. The bytes stay in its socket —
+            // TCP's own — and its receive is submitted again when one of its
+            // buffers is back with the kernel.
             self.enobufs += 1;
+            if let Some(r) = self.rings.get_mut(slot)
+                && !r.ran_dry
+            {
+                r.ran_dry = true;
+                self.enobufs_slots += 1;
+            }
             if !more {
                 self.mark_rearm(slot);
             }
         } else {
+            // *(Senior review of PR #110, L2)* A failed completion may still
+            // carry a buffer; it goes back, or the slot's ring is one short
+            // for ever while the ledger — which never saw it leave — reads
+            // clean.
+            self.give_back(slot, bid);
             let kind = io::Error::from_raw_os_error(res.saturating_neg()).kind();
             self.end(slot, Io::Failed(kind));
         }
     }
 
     /// Copy what `slot` has staged into `buf`, handing each emptied buffer
-    /// back to the kernel. No system call.
+    /// back to its ring. No system call.
     fn read(&mut self, slot: usize, generation: u32, buf: &mut [u8]) -> Io {
         let Some(&s) = self.slots.get(slot) else {
             return Io::Failed(io::ErrorKind::NotFound);
@@ -971,11 +1115,11 @@ impl State {
         let (mut head, mut tail, mut at) = (s.head, s.tail, s.at);
         let mut n = 0;
         while n < buf.len() && head != NIL {
-            let b = usize::from(head);
-            let len = self.len.get(b).copied().unwrap_or(0);
+            let g = self.index(slot, head);
+            let len = self.len.get(g).copied().unwrap_or(0);
             let src = self
                 .region
-                .staged(head, len)
+                .staged(slot, head, len)
                 .get(at as usize..)
                 .unwrap_or(&[]);
             let dst = buf.get_mut(n..).unwrap_or(&mut []);
@@ -987,12 +1131,12 @@ impl State {
             at += k as u32;
             if at >= len {
                 let done = head;
-                head = self.next.get(b).copied().unwrap_or(NIL);
+                head = self.next.get(g).copied().unwrap_or(NIL);
                 if head == NIL {
                     tail = NIL;
                 }
                 at = 0;
-                self.provide(done);
+                self.provide(slot, done);
             }
         }
         if let Some(s) = self.slots.get_mut(slot) {
@@ -1022,8 +1166,8 @@ impl State {
         Some((slot, generation))
     }
 
-    /// Free `slot`: its staged buffers go back to the kernel, its generation
-    /// moves on, and it can be handed out again at once.
+    /// Free `slot`: its staged buffers go back to its ring, its generation
+    /// moves on, and it can be handed out again at once — with the same ring.
     fn release(&mut self, slot: u32) {
         let ix = slot as usize;
         let Some(&s) = self.slots.get(ix) else {
@@ -1031,8 +1175,9 @@ impl State {
         };
         let mut b = s.head;
         while b != NIL {
-            let next = self.next.get(usize::from(b)).copied().unwrap_or(NIL);
-            self.provide(b);
+            let g = self.index(ix, b);
+            let next = self.next.get(g).copied().unwrap_or(NIL);
+            self.provide(ix, b);
             b = next;
         }
         if s.rearm {
@@ -1053,9 +1198,12 @@ impl State {
         }
     }
 
+    /// The ownership ledger, **per slot** (ADR-0192 decision 4): each of slot
+    /// `s`'s buffers is in exactly one place — `s`'s ring, or `s`'s staging
+    /// list — and `s`'s count of buffers with the kernel agrees.
     fn accounted_for(&self) -> bool {
-        let buffers = usize::from(self.config.buffers);
-        let mut seen = vec![0u32; buffers];
+        let per = usize::from(self.config.buffers_per_connection);
+        let mut seen = vec![0u32; self.owner.len()];
         for (ix, s) in self.slots.iter().enumerate() {
             if (s.head == NIL) != (s.tail == NIL) || (!s.live && s.head != NIL) {
                 return false;
@@ -1064,28 +1212,51 @@ impl State {
             let mut steps = 0;
             while b != NIL {
                 steps += 1;
-                let (Some(&owner), Some(count)) =
-                    (self.owner.get(usize::from(b)), seen.get_mut(usize::from(b)))
-                else {
+                if usize::from(b) >= per {
+                    return false;
+                }
+                let g = self.index(ix, b);
+                let (Some(&owner), Some(count)) = (self.owner.get(g), seen.get_mut(g)) else {
                     return false;
                 };
-                if steps > buffers || owner as usize != ix {
+                if steps > per || owner as usize != ix {
                     return false;
                 }
                 *count += 1;
-                b = self.next.get(usize::from(b)).copied().unwrap_or(NIL);
+                b = self.next.get(g).copied().unwrap_or(NIL);
             }
         }
-        let mut with_kernel = 0u32;
-        for (owner, count) in self.owner.iter().zip(seen.iter()) {
-            match (*owner, *count) {
-                (KERNEL, 0) => with_kernel += 1,
-                (KERNEL, _) => return false,
-                (_, 1) => {}
-                _ => return false,
+        for (ix, ring) in self.rings.iter().enumerate() {
+            let mut with_kernel = 0u32;
+            for g in ix * per..(ix + 1) * per {
+                match (self.owner.get(g).copied(), seen.get(g).copied()) {
+                    (Some(KERNEL), Some(0)) => with_kernel += 1,
+                    (Some(o), Some(1)) if o as usize == ix => {}
+                    _ => return false,
+                }
+            }
+            if with_kernel != ring.with_kernel {
+                return false;
             }
         }
-        with_kernel == self.kernel_owned
+        true
+    }
+}
+
+/// What a [`Uring`] and everything made from it share: the ring and its
+/// state, and a counter that lives **outside** the `RefCell`, so a drop that
+/// finds the ring borrowed can still record it (senior review of PR #110, L4).
+struct Shared {
+    cell: RefCell<Inner>,
+    drop_conflicts: std::cell::Cell<u64>,
+}
+
+impl Shared {
+    fn new(inner: Inner) -> Rc<Self> {
+        Rc::new(Self {
+            cell: RefCell::new(inner),
+            drop_conflicts: std::cell::Cell::new(0),
+        })
     }
 }
 
@@ -1102,8 +1273,8 @@ impl Inner {
         // Room for one turn's re-arms, cancels and `standard` polls without a
         // flush; a full queue is flushed without waiting, never an error.
         let sq = (4 * connections + 2 * EXTRA_SOURCES).next_power_of_two();
-        let cq = (u32::from(config.buffers) + 6 * connections + 2 * EXTRA_SOURCES + 64)
-            .next_power_of_two();
+        let buffers = connections * u32::from(config.buffers_per_connection);
+        let cq = (buffers + 6 * connections + 2 * EXTRA_SOURCES + 64).next_power_of_two();
         let mut builder = IoUring::builder();
         builder.setup_cqsize(cq).setup_clamp();
         match setup {
@@ -1141,6 +1312,26 @@ impl Inner {
             return Err(UringRefused::KernelTooOld);
         }
 
+        // *(Senior review of PR #110, M1)* **Enter once, here, before
+        // anything is allocated or registered.** A sandbox may allow
+        // `io_uring_setup` and refuse `io_uring_enter`; without this the ring
+        // is made, connections are registered, and every idle turn's enter
+        // fails — an engine that runs deaf instead of refusing (ADR-0190
+        // decision 7). The error is classified exactly as a setup error is.
+        // SAFETY (U4): no argument pointer (`None`); the kernel reads only the
+        // three integers, and the descriptor is `ring`'s own. Proved by
+        // `a_blocked_io_uring_enter_refuses_to_start_and_names_seccomp`.
+        #[allow(unsafe_code)]
+        let entered = unsafe {
+            ring.submitter().enter::<libc::sigset_t>(
+                0,
+                0,
+                io_uring::EnterFlags::GETEVENTS.bits(),
+                None,
+            )
+        };
+        entered.map_err(|e| UringRefused::from_setup(&e))?;
+
         let arm = match setup {
             _ if ring.params().is_setup_sqpoll() => UringArm::Sqpoll,
             #[cfg(feature = "standard")]
@@ -1148,49 +1339,87 @@ impl Inner {
             _ => UringArm::Enter,
         };
         let mut state = State::new(Region::new(&config)?, config, arm);
-        for bid in 0..config.buffers {
-            state.provide(bid);
+        for slot in 0..usize::from(config.connections) {
+            for bid in 0..config.buffers_per_connection {
+                state.provide(slot, bid);
+            }
         }
-        // SAFETY (U2): the entries are `buffers` (a power of two, at most
-        // 32768) `io_uring_buf`s at a 64 KiB-aligned address, inside `state`'s
-        // `Region`, which lives until `Inner` is dropped — and `Inner`'s
-        // `Drop` unregisters this group before either the ring or the memory
-        // goes. Proved by
-        // `unregistered_buffers_are_not_written_after_the_ring_is_dropped`.
-        #[allow(unsafe_code)]
-        let registered = unsafe {
-            ring.submitter().register_buf_ring_with_flags(
-                state.region.entries() as u64,
-                config.buffers,
-                BGID,
-                0,
-            )
-        };
-        registered.map_err(|e| UringRefused::from_setup(&e))?;
-        Ok(Self { ring, state })
+        // Built before the rings are registered, so a registration that fails
+        // part-way unregisters the ones that took (`Inner`'s `Drop`).
+        let inner = Self { ring, state };
+        for slot in 0..config.connections {
+            // SAFETY (U2): slot `slot`'s entries are `buffers_per_connection`
+            // (a power of two, at most 32768) `io_uring_buf`s on a page of
+            // their own inside `state`'s `Region`, which lives as long as
+            // `inner`. What keeps the kernel from writing a buffer after that
+            // memory is freed is **structural**: every `UringTransport` holds
+            // the `Rc` that owns `Inner`, so `Inner` — and the `Region` — can
+            // only be dropped after the last connection has been dropped, and
+            // each of those shut its socket down (`shutdown(2)` ends its
+            // `recv`), cancelled that `recv` and flushed the cancel before
+            // its descriptor closed. No request can select a buffer after
+            // that. `Inner`'s `Drop` unregistering every ring before the
+            // `Region` is freed is a second line behind it, and no test can
+            // tell it from its absence (senior review of PR #110, L1: fields
+            // reordered and the unregister deleted, the canary stayed green);
+            // `unregistered_buffers_are_not_written_after_the_ring_is_dropped`
+            // checks the end state, not this order.
+            #[allow(unsafe_code)]
+            let registered = unsafe {
+                inner.ring.submitter().register_buf_ring_with_flags(
+                    inner.state.region.entries(usize::from(slot)) as u64,
+                    config.buffers_per_connection,
+                    slot,
+                    0,
+                )
+            };
+            registered.map_err(|e| UringRefused::from_setup(&e))?;
+        }
+        Ok(inner)
     }
 
     /// Submit what is queued without waiting for anything. Under SQPOLL, wait
     /// — spinning, never sleeping — until the kernel thread has taken it.
-    fn flush(&mut self) {
-        if self.ring.submission().is_empty() {
-            return;
-        }
-        if self.state.arm == UringArm::Sqpoll {
-            for _ in 0..SQPOLL_FLUSH_SPINS {
-                let sq = self.ring.submission();
-                if sq.is_empty() {
-                    return;
+    ///
+    /// `true` if the submission queue is empty afterwards: every entry reached
+    /// the kernel and resolved its descriptor. `false` — an enter that failed,
+    /// or an SQ thread that did not take the entries within
+    /// [`SQPOLL_FLUSH_SPINS`] — is counted in [`UringReport::unflushed`]
+    /// (senior review of PR #110, M2).
+    fn flush(&mut self) -> bool {
+        if !self.ring.submission().is_empty() {
+            if self.state.arm == UringArm::Sqpoll {
+                for _ in 0..SQPOLL_FLUSH_SPINS {
+                    let sq = self.ring.submission();
+                    if sq.is_empty() {
+                        break;
+                    }
+                    if sq.need_wakeup() {
+                        drop(sq);
+                        self.enter(0, 0, io_uring::EnterFlags::SQ_WAKEUP.bits());
+                    }
+                    core::hint::spin_loop();
                 }
-                if sq.need_wakeup() {
-                    drop(sq);
-                    self.enter(0, 0, io_uring::EnterFlags::SQ_WAKEUP.bits());
-                }
-                core::hint::spin_loop();
+            } else {
+                let n = self.ring.submission().len() as u32;
+                self.enter(n, 0, 0);
             }
+        }
+        let empty = self.ring.submission().is_empty();
+        if empty {
+            self.settle();
         } else {
-            let n = self.ring.submission().len() as u32;
-            self.enter(n, 0, 0);
+            self.state.unflushed += 1;
+        }
+        empty
+    }
+
+    /// Close the sockets kept open by a flush that could not empty the queue,
+    /// once the queue is empty — nothing queued can name them any more.
+    /// Rare; the `Vec` keeps its capacity, so nothing is freed or allocated.
+    fn settle(&mut self) {
+        if !self.state.deferred.is_empty() && self.ring.submission().is_empty() {
+            self.state.deferred.clear();
         }
     }
 
@@ -1265,16 +1494,20 @@ impl Inner {
     }
 
     /// Queue a fresh multishot `recv` for every slot whose last one ended,
-    /// while the kernel has a buffer to give it.
+    /// while that slot's own ring has a buffer to give it.
     fn rearm(&mut self) {
-        if self.state.rearm_pending == 0 || self.state.kernel_owned == 0 {
+        if self.state.rearm_pending == 0 {
             return;
         }
         for ix in 0..self.state.slots.len() {
             let Some(s) = self.state.slots.get(ix).copied() else {
                 break;
             };
-            if !s.rearm {
+            // *(ADR-0192 decision 3)* Re-armed when **its own** ring has a
+            // buffer back — the engine read it — not when some other
+            // connection's did.
+            let has_buffer = self.state.rings.get(ix).is_some_and(|r| r.with_kernel > 0);
+            if !s.rearm || !has_buffer {
                 continue;
             }
             let e = recv(s.fd, ix as u32, s.generation);
@@ -1309,6 +1542,7 @@ impl Inner {
             self.enter(n, 0, io_uring::EnterFlags::GETEVENTS.bits());
         }
         self.drain();
+        self.settle();
     }
 
     /// Move every posted completion to where it belongs.
@@ -1395,6 +1629,7 @@ impl Inner {
             self.enter(n, 0, io_uring::EnterFlags::GETEVENTS.bits());
             self.drain();
         }
+        self.settle();
     }
 
     #[cfg(feature = "standard")]
@@ -1421,16 +1656,22 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        // U2's other half: the group goes before the memory. The ring field
-        // is dropped next (closing it cancels whatever is pending), and only
-        // then `state`, whose `Region` frees the buffers.
-        let _ = self.ring.submitter().unregister_buf_ring(BGID);
+        // U2's second line (its first is structural — see the SAFETY comment
+        // at registration): every slot's ring is unregistered before the
+        // memory goes. The ring field is dropped next (closing it cancels
+        // whatever is pending), and only then `state`, whose `Region` frees
+        // the buffers. A slot whose registration never took answers with an
+        // error, which changes nothing.
+        for slot in 0..self.state.config.connections {
+            let _ = self.ring.submitter().unregister_buf_ring(slot);
+        }
     }
 }
 
-/// A multishot, buffer-selected `recv` on `fd` for `slot` at `generation`.
+/// A multishot `recv` on `fd` for `slot` at `generation`, selecting from
+/// **that slot's own** buffer group — its group id is its index (ADR-0192).
 fn recv(fd: std::os::fd::RawFd, slot: u32, generation: u32) -> squeue::Entry {
-    opcode::RecvMulti::new(types::Fd(fd), BGID)
+    opcode::RecvMulti::new(types::Fd(fd), slot as u16)
         .build()
         .user_data(user_data(KIND_RECV, slot, generation))
 }
@@ -1438,7 +1679,7 @@ fn recv(fd: std::os::fd::RawFd, slot: u32, generation: u32) -> squeue::Entry {
 /// One ring, its provided buffers and its connection slab. `!Send`: one per
 /// engine thread, made on that thread.
 pub struct Uring {
-    inner: Rc<RefCell<Inner>>,
+    inner: Rc<Shared>,
 }
 
 impl Uring {
@@ -1474,7 +1715,7 @@ impl Uring {
         if let HftArm::Sqpoll { pin } = arm {
             inner.state.unisolated = pin.is_unisolated_allowed();
         }
-        let inner = Rc::new(RefCell::new(inner));
+        let inner = Shared::new(inner);
         Ok((
             Self {
                 inner: Rc::clone(&inner),
@@ -1509,7 +1750,7 @@ impl Uring {
     /// [`UringRefused::KernelTooOld`] without `IORING_FEAT_EXT_ARG`.
     #[cfg(feature = "standard")]
     pub fn standard(config: UringConfig) -> Result<(Self, UringBlock), UringRefused> {
-        let inner = Rc::new(RefCell::new(Inner::new(config, Setup::Block)?));
+        let inner = Shared::new(Inner::new(config, Setup::Block)?);
         Ok((
             Self {
                 inner: Rc::clone(&inner),
@@ -1527,7 +1768,7 @@ impl Uring {
     /// has no room for. No allocation.
     #[must_use]
     pub fn register(&self, transport: TcpTransport) -> Option<UringTransport> {
-        let mut inner = self.inner.try_borrow_mut().ok()?;
+        let mut inner = self.inner.cell.try_borrow_mut().ok()?;
         let fd = transport.socket().as_raw_fd();
         let (slot, generation) = inner.state.open(fd)?;
         if !inner.push(&recv(fd, slot, generation)) {
@@ -1539,14 +1780,14 @@ impl Uring {
             inner: Rc::clone(&self.inner),
             slot,
             generation,
-            tcp: transport,
+            tcp: Some(transport),
         })
     }
 
     /// What this ring has done so far.
     #[must_use]
     pub fn report(&self) -> UringReport {
-        self.inner.try_borrow().map_or(
+        let mut r = self.inner.cell.try_borrow().map_or(
             UringReport {
                 arm: UringArm::Enter,
                 cqes: 0,
@@ -1558,9 +1799,15 @@ impl Uring {
                 unarmed: 0,
                 cq_overflow: 0,
                 unisolated: false,
+                unflushed: 0,
+                drop_conflicts: 0,
+                enobufs_slots: 0,
+                buffer_bytes: 0,
             },
             |i| i.state.report(),
-        )
+        );
+        r.drop_conflicts = self.inner.drop_conflicts.get();
+        r
     }
 
     /// Whether every provided buffer is in exactly one place: with the
@@ -1575,6 +1822,7 @@ impl Uring {
     #[must_use]
     pub fn buffers_accounted_for(&self) -> bool {
         self.inner
+            .cell
             .try_borrow()
             .is_ok_and(|i| i.state.accounted_for())
     }
@@ -1588,7 +1836,7 @@ impl Uring {
     #[doc(hidden)]
     #[must_use]
     pub fn buffer_region(&self) -> (usize, usize) {
-        self.inner.try_borrow().map_or((0, 0), |i| {
+        self.inner.cell.try_borrow().map_or((0, 0), |i| {
             (
                 i.state.region.base.as_ptr() as usize,
                 i.state.region.layout.size(),
@@ -1634,10 +1882,12 @@ impl Uring {
 /// moves its slot's generation on, and submits an `ASYNC_CANCEL` for its
 /// `recv` before the descriptor is closed.
 pub struct UringTransport {
-    inner: Rc<RefCell<Inner>>,
+    inner: Rc<Shared>,
     slot: u32,
     generation: u32,
-    tcp: TcpTransport,
+    /// `Some` for the transport's whole life; `Drop` takes it, to close it or,
+    /// when a queued entry may still name it, to keep it open (M2).
+    tcp: Option<TcpTransport>,
 }
 
 impl Transport for UringTransport {
@@ -1652,29 +1902,43 @@ impl Transport for UringTransport {
         if buf.is_empty() {
             return Io::Idle;
         }
-        match self.inner.try_borrow_mut() {
+        match self.inner.cell.try_borrow_mut() {
             Ok(mut inner) => inner.state.read(self.slot as usize, self.generation, buf),
             Err(_) => Io::Failed(io::ErrorKind::WouldBlock),
         }
     }
 
     fn send(&mut self, buf: &[u8]) -> Io {
-        self.tcp.send(buf)
+        match self.tcp.as_mut() {
+            Some(t) => t.send(buf),
+            None => Io::Closed,
+        }
     }
 
     fn source(&self) -> Option<Source> {
-        self.tcp.source()
+        self.tcp.as_ref().and_then(Transport::source)
     }
 }
 
 impl Drop for UringTransport {
     fn drop(&mut self) {
-        // U7, with no `unsafe`: `TcpStream::shutdown`. The socket is still
-        // owned here — `tcp` is dropped after this body. `SHUT_RDWR` ends the
-        // multishot `recv` and puts the FIN on the wire now, even though that
-        // request still holds a reference to the file.
-        let _ = self.tcp.socket().shutdown(std::net::Shutdown::Both);
-        let Ok(mut inner) = self.inner.try_borrow_mut() else {
+        let tcp = self.tcp.take();
+        // U7, with no `unsafe`: `TcpStream::shutdown`, on the socket this
+        // still owns. `SHUT_RDWR` ends the multishot `recv` and puts the FIN on
+        // the wire now, even though that request still holds a reference to
+        // the file.
+        if let Some(t) = &tcp {
+            let _ = t.socket().shutdown(std::net::Shutdown::Both);
+        }
+        let Ok(mut inner) = self.inner.cell.try_borrow_mut() else {
+            // *(Senior review of PR #110, L4)* Unreachable today — nothing
+            // drops a transport while the ring is borrowed. If it ever
+            // happens, the slot stays live, so its descriptor must not close:
+            // it is leaked, never closed under a live slot, and counted.
+            self.inner
+                .drop_conflicts
+                .set(self.inner.drop_conflicts.get().saturating_add(1));
+            std::mem::forget(tcp);
             return;
         };
         let slot = self.slot as usize;
@@ -1690,16 +1954,26 @@ impl Drop for UringTransport {
                 .user_data(user_data(KIND_CANCEL, self.slot, self.generation));
             let _ = inner.push(&cancel);
         }
-        // Nothing queued may still name this descriptor once `tcp` closes it
-        // and the number is reused.
-        inner.flush();
+        // Nothing queued may still name this descriptor once it is closed and
+        // the number reused. *(Senior review of PR #110, M2)* If the queue
+        // could not be emptied, the socket is kept open until a flush empties
+        // it (`Inner::settle`) — or, with that list full, never closed.
+        if !inner.flush()
+            && let Some(t) = tcp
+        {
+            if inner.state.deferred.len() < inner.state.deferred.capacity() {
+                inner.state.deferred.push(t);
+            } else {
+                std::mem::forget(t);
+            }
+        }
     }
 }
 
 /// `hft`'s idle strategy over a [`Uring`]: enter the kernel once, never wait,
 /// reap.
 pub struct UringSpin {
-    inner: Rc<RefCell<Inner>>,
+    inner: Rc<Shared>,
 }
 
 impl Waiting for UringSpin {
@@ -1708,7 +1982,7 @@ impl Waiting for UringSpin {
     const REAPS: bool = true;
 
     fn idle(&mut self, _interests: &[Interest]) {
-        if let Ok(mut inner) = self.inner.try_borrow_mut() {
+        if let Ok(mut inner) = self.inner.cell.try_borrow_mut() {
             inner.reap_hft();
         }
     }
@@ -1746,7 +2020,7 @@ impl Waiting for UringSpin {
 /// ```
 #[cfg(feature = "standard")]
 pub struct UringBlock {
-    inner: Rc<RefCell<Inner>>,
+    inner: Rc<Shared>,
     timeout_ms: u32,
 }
 
@@ -1775,15 +2049,52 @@ impl Waiting for UringBlock {
     const REAPS: bool = true;
 
     fn idle(&mut self, interests: &[Interest]) {
-        if let Ok(mut inner) = self.inner.try_borrow_mut() {
+        if let Ok(mut inner) = self.inner.cell.try_borrow_mut() {
             inner.reap_standard(interests, self.timeout_ms);
         }
     }
 }
 
 #[cfg(test)]
+// A unit test here builds the ledger without a ring; an `expect` that fails is
+// a failing test, which is what a test is for.
+#[allow(clippy::expect_used)]
 mod tests {
-    use super::staged_span;
+    use super::{KERNEL, KIND_RECV, Region, State, UringArm, UringConfig, staged_span, user_data};
+
+    /// Senior review of PR #110, L2: a completion that **fails** but carries a
+    /// buffer (`IORING_CQE_F_BUFFER`) hands that buffer back to the kernel.
+    /// Without it the ledger still reads "with the kernel" — the check cannot
+    /// see this leak — while the ring has one buffer fewer for ever; the tail
+    /// is what shows it.
+    #[test]
+    fn a_failed_completion_that_carries_a_buffer_gives_it_back() {
+        const F_BUFFER: u32 = 1;
+        let config = UringConfig::new(8, 4096, 1).expect("a valid ring size");
+        let region = Region::new(&config).expect("buffer memory");
+        let mut state = State::new(region, config, UringArm::Enter);
+        for bid in 0..config.buffers_per_connection {
+            state.provide(0, bid);
+        }
+        let (slot, generation) = state.open(1_000).expect("a free slot");
+        let tail = state.rings.first().map(|r| r.tail).expect("slot 0's ring");
+        state.complete(
+            user_data(KIND_RECV, slot, generation),
+            -libc::ECONNRESET,
+            F_BUFFER | (3 << 16),
+        );
+        assert_eq!(
+            state.rings.first().map(|r| r.tail),
+            Some(tail.wrapping_add(1)),
+            "buffer 3 was not handed back to the kernel"
+        );
+        assert_eq!(state.owner.get(3).copied(), Some(KERNEL));
+        assert!(state.accounted_for());
+        assert_eq!(
+            state.rings.first().map(|r| r.with_kernel),
+            Some(u32::from(config.buffers_per_connection))
+        );
+    }
 
     /// U5: only a span inside one buffer is ever turned into a slice.
     #[test]

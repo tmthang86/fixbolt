@@ -528,6 +528,7 @@ static URING_BYTES: AtomicU64 = AtomicU64::new(0);
 static URING_ENOBUFS: AtomicU64 = AtomicU64::new(0);
 static URING_UNARMED: AtomicU64 = AtomicU64::new(0);
 static URING_CQ_OVERFLOW: AtomicU64 = AtomicU64::new(0);
+static URING_ENTER_ERRORS: AtomicU64 = AtomicU64::new(0);
 static URING_UNISOLATED: AtomicBool = AtomicBool::new(false);
 
 /// The `transport:` line: `kernel`/`uring` from [`CARRIER_SEEN`], the arm and
@@ -549,7 +550,7 @@ fn transport_line() -> String {
         ""
     };
     format!(
-        "transport: uring arm={} cqes={} bytes={} enobufs={} unarmed={} cq-overflow={}{unisolated}",
+        "transport: uring arm={} cqes={} bytes={} enobufs={} unarmed={} cq-overflow={} enter-errors={}{unisolated}",
         match arm {
             1 => "enter",
             2 => "sqpoll",
@@ -561,6 +562,7 @@ fn transport_line() -> String {
         URING_ENOBUFS.load(Ordering::Relaxed),
         URING_UNARMED.load(Ordering::Relaxed),
         URING_CQ_OVERFLOW.load(Ordering::Relaxed),
+        URING_ENTER_ERRORS.load(Ordering::Relaxed),
     )
 }
 
@@ -3578,11 +3580,13 @@ fn run<
     }
 }
 
-/// The ring `--transport uring` runs on: 64 buffers of 4 KiB, and a slot for
-/// every connection [`pump`]'s engine can hold — ADR-0190 R4's rule, since this
-/// loop registers a socket when it accepts it.
+/// The ring `--transport uring` runs on: **8 buffers of 4 KiB per
+/// connection** (ADR-0192 — each connection its own ring; twice the engine's
+/// default `RX` in flight), and a slot for every connection [`pump`]'s engine
+/// can hold — ADR-0190 R4's rule, since this loop registers a socket when it
+/// accepts it.
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
-const URING_BUFFERS: u16 = 64;
+const URING_BUFFERS: u16 = 8;
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
 const URING_BUFFER_LEN: u32 = 4096;
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
@@ -3626,6 +3630,7 @@ fn run_uring<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: boo
         URING_ENOBUFS.store(r.enobufs, Ordering::Relaxed);
         URING_UNARMED.store(r.unarmed, Ordering::Relaxed);
         URING_CQ_OVERFLOW.store(r.cq_overflow, Ordering::Relaxed);
+        URING_ENTER_ERRORS.store(r.enter_errors, Ordering::Relaxed);
         URING_UNISOLATED.store(r.unisolated, Ordering::Relaxed);
     }
     let ring = match UringConfig::new(URING_BUFFERS, URING_BUFFER_LEN, URING_CONNECTIONS) {

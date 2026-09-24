@@ -192,7 +192,7 @@ fn uring_exchange() -> (usize, u64) {
 
     use fixbolt_engine::transport::uring::{HftArm, Uring, UringConfig, UringSpin, UringTransport};
 
-    let ring = UringConfig::new(64, 4096, 4).expect("a valid ring size");
+    let ring = UringConfig::new(8, 4096, 4).expect("a valid ring size");
     let (uring, spin) = Uring::hft(ring, HftArm::Enter)
         .unwrap_or_else(|e| panic!("uring-exchange measures the io_uring path or nothing: {e}"));
     let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");

@@ -175,7 +175,7 @@ mod idle_loop {
             });
             drop(kernel);
 
-            let ring = UringConfig::new(64, 4096, 64).expect("a valid ring size");
+            let ring = UringConfig::new(8, 4096, 64).expect("a valid ring size");
             let (uring, spin) = Uring::hft(ring, HftArm::Enter)
                 .unwrap_or_else(|e| panic!("the uring arm needs a ring: {e}"));
             let mut ringed = engine(n, spin, |t| uring.register(t));

@@ -1,6 +1,8 @@
 # ADR-0192 — Each `io_uring` connection draws from its own provided-buffer ring
 
-- **Status**: Proposed — 2026-09-24. Written by the architect (Opus) for phase 4 row 5, from design
+- **Status**: Accepted — 2026-09-24, built in PR #110 with its red-first test
+  (`a_connection_nobody_reads_cannot_starve_another`) and its reversal (every slot on group 0).
+  Proposed 2026-09-24. Written by the architect (Opus) for phase 4 row 5, from design
   finding L3 of the senior review of PR #110. **Supersedes the shared-pool bullet of
   [ADR-0190](ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
   decision 2** (*"one ring-mapped provided-buffer group per `Uring`"*); every other part of

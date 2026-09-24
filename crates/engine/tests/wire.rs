@@ -620,11 +620,12 @@ fn the_fifty_nine_definitions_pass_in_standard_mode_too() {
     );
 }
 
-/// The ring the two `io_uring` cases run on: 64 buffers of 4 KiB, four
-/// connections — the corpus opens at most two at once.
+/// The ring the two `io_uring` cases run on: 8 buffers of 4 KiB per
+/// connection (ADR-0192, `tools/w2w`'s size), four connections — the corpus
+/// opens at most two at once.
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
 fn uring_config() -> fixbolt_engine::transport::uring::UringConfig {
-    fixbolt_engine::transport::uring::UringConfig::new(64, 4096, 4).expect("a valid ring size")
+    fixbolt_engine::transport::uring::UringConfig::new(8, 4096, 4).expect("a valid ring size")
 }
 
 /// The same 59, **`hft` over `io_uring`**: every accepted socket is registered

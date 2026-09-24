@@ -146,8 +146,30 @@ SLEEPERS='epoll_wait|epoll_pwait|epoll_pwait2|poll|ppoll|select|pselect6|futex|n
 # half starts with `<` and is cut to nothing, so a split call is counted once,
 # on the line that carries its arguments.
 # shellcheck disable=SC2016 # awk's own `$0`/`$2`, not the shell's.
+#
+# *(Senior review of PR #110, L5)* `IORING_ENTER_SQ_WAIT` (flag bit 4) waits
+# for room in the submission queue whatever `min_complete` says, so a call
+# carrying it is `_wait` — spelled by strace as the flag name, or inside a
+# numeric flags word. `name_of_selftest` below runs fixture lines through this
+# function before anything is traced, and fails the script if one is misread.
 NAME_OF='
-function name_of(   line, args, n, part, mc) {
+function flags_wait(f,   v) {
+  if (f ~ /SQ_WAIT/) return 1
+  if (f ~ /^0x[0-9a-fA-F]+$/) { v = strtonum_hex(f); return int(v / 4) % 2 }
+  if (f ~ /^[0-9]+$/) return int((f + 0) / 4) % 2
+  return 0
+}
+function strtonum_hex(h,   i, c, v, d) {
+  v = 0
+  h = tolower(substr(h, 3))
+  for (i = 1; i <= length(h); i++) {
+    c = substr(h, i, 1)
+    d = index("0123456789abcdef", c) - 1
+    v = v * 16 + d
+  }
+  return v
+}
+function name_of(   line, args, n, part, mc, fl) {
   line = $0
   sub(/^[0-9]+ +/, "", line)
   if (line !~ /^io_uring_enter\(/) return $2
@@ -156,9 +178,37 @@ function name_of(   line, args, n, part, mc) {
   n = split(args, part, ",")
   mc = (n >= 3) ? part[3] : ""
   gsub(/^ +| +$/, "", mc)
+  fl = (n >= 4) ? part[4] : ""
+  gsub(/^ +| +$/, "", fl)
+  if (flags_wait(fl)) return "io_uring_enter_wait"
   if (mc ~ /^[0-9]+$/) return (mc + 0 == 0) ? "io_uring_enter_nowait" : "io_uring_enter_wait"
   return "io_uring_enter_unparsed"
 }'
+
+# Fixture lines through `name_of`, before anything is traced: a gate whose
+# classifier misreads a line it was written for is not run at all.
+name_of_selftest() {
+  local line want got bad=0
+  while IFS='|' read -r want line; do
+    got="$(printf '%s\n' "${line}" | awk "${NAME_OF}"'{ n = name_of(); sub(/\(.*/, "", n); print n }')"
+    if [[ "${got}" != "${want}" ]]; then
+      echo "FAIL: NAME_OF read '${line}' as '${got}', not '${want}'" >&2
+      bad=1
+    fi
+  done <<'FIXTURES'
+io_uring_enter_nowait|123 io_uring_enter(5, 1, 0, IORING_ENTER_GETEVENTS, NULL, 8) = 0
+io_uring_enter_wait|123 io_uring_enter(5, 0, 1, IORING_ENTER_GETEVENTS|IORING_ENTER_EXT_ARG, 0x7ffc1234, 24 <unfinished ...>
+io_uring_enter_wait|123 io_uring_enter(5, 0, 0, IORING_ENTER_SQ_WAKEUP|IORING_ENTER_SQ_WAIT, NULL, 8) = 0
+io_uring_enter_wait|123 io_uring_enter(5, 0, 0, 0x4, NULL, 8) = 0
+io_uring_enter_wait|123 io_uring_enter(5, 0, 0, 6, NULL, 8) = 0
+io_uring_enter_nowait|123 io_uring_enter(5, 0, 0, IORING_ENTER_SQ_WAKEUP, NULL, 8) = 0
+io_uring_enter_unparsed|123 io_uring_enter(5, 0, ?, IORING_ENTER_GETEVENTS, NULL, 8) = 0
+<...|123 <... io_uring_enter resumed>) = 1
+recvfrom|123 recvfrom(7, 0x7f00, 4096, 0, NULL, NULL) = -1 EAGAIN (Resource temporarily unavailable)
+FIXTURES
+  return "${bad}"
+}
+name_of_selftest || exit 1
 
 # `[2026-09-14]` **The wire arm is read back, not assumed from `W2W_EXTRA`** — the
 # `ran_mode` lesson again. A w2w that stopped acting on `--wire-timestamps`
