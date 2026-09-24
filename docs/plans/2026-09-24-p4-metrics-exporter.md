@@ -430,3 +430,281 @@ còn ghi tài liệu thì để lại một lần lock thừa trên mỗi lần 
 | S1 | **Test đỏ trước**: `crates/metrics/tests/exporter.rs::with_events_names_the_engine_each_event_came_from` (hai engine `"a"`, `"b"`, mỗi cái một Logon → closure nhận `("a", LoggedOn)` và `("b", LoggedOn)`, cả hai `conn = 0`); `crates/engine/tests/observe_occupancy.rs::ask_raises_the_flag_and_reads_nothing` (`ask()` rồi một `turn()` → `published()` tăng đúng 1; `ask()` trước lần công bố đầu không panic, không trả gì). Đỏ = lỗi biên dịch, trích nguyên văn. Rồi code: `Observer::ask`, `request` viết lại qua `ask`; chữ ký `with_events` và kiểu `OnEvent` mới; `refresh` gọi `ask()` | senior developer (opus) — đụng `crates/engine` | Sửa: `crates/engine/src/observe.rs`, `crates/engine/tests/observe_occupancy.rs`, `crates/metrics/src/{lib.rs, thread.rs}`, `crates/metrics/tests/exporter.rs`, và example/test nào đang gọi `with_events`. **Không** sửa file khác trong `crates/engine/`, test có sẵn ngoài hai file trên | `cargo test -p fixbolt-engine --test observe_occupancy --test observe --test events --test admin`; `cargo test -p fixbolt-metrics`; `cargo bench -p fixbolt-engine --bench alloc` (`observe-idle`, `observe-asked`, `observe-asked-ring` vẫn 0); `cargo bench -p fixbolt-metrics --bench alloc` (`metrics-idle 0 metrics-scraped 0`); `cargo test --all`; `cargo test --no-default-features`; clippy `-D warnings`; `cargo fmt --check`; `scripts/check-indexing-debt.sh` | — |
 | S2 | **Đảo ngược**: R15 closure nhận tên của engine đầu tiên cho mọi event → `with_events_names_the_engine…` đỏ; R16 `ask()` không bật cờ → `ask_raises_the_flag…` đỏ **và** `a_scrape_storm…`/`the_snapshot_age…` phải cho thấy exporter không còn nhận snapshot mới | senior developer (opus), cùng agent | như S1; khôi phục hết | từng cái đỏ đúng test đã ghi trước, rồi xanh lại | S1 |
 | S3 | **Tài liệu, cùng commit**: `CHANGELOG.md` (`Observer::ask`; chữ ký `with_events`), `DESIGN.md` §3 dòng `observe`, `docs/internals/engine.md`, `docs/internals/metrics.md`, `docs/GUIDE.md` §8a (ví dụ `with_events`) | developer (sonnet) | chỉ các file đó | `python3 scripts/check-links.py` xanh | S2 |
+
+## Sửa 2 — quy trình hàng 2 trên boot §9 (2026-09-25; sửa theo review PR #114)
+
+Hàng 2 là **vạch bỏ của exporter**: cặp `w2w` scrape tắt / scrape 10 Hz trên máy bàn §9, hai
+procedure. `scripts/boot-p4.sh` **không** chạy cặp này (driver đo khối `io_uring` và cặp store).
+Manager chạy nó **cùng boot, ngay sau khi `scripts/boot-p4.sh run` thoát**, chỉ với binary đã build
+sẵn trong `/home/tmt/Projects/fb-p4-boot/`. **Không build lại gì**: build lại làm mất file capability
+`cap_net_admin,cap_net_raw` mà nhánh NIC cần. Không `cargo` nào chạy trong suốt quy trình này.
+
+**Cách chạy qua Claude Code.** Mỗi lần gọi Bash là một shell mới (hàm và biến không giữ lại), mỗi
+lần gọi tối đa 10 phút, và không được `sleep` ở foreground. Nên:
+
+1. **Bước 1** (dưới đây) gồm vài lệnh ngắn, manager chạy và **đọc bằng mắt**.
+2. **Bước 2**: manager lưu **nguyên văn** script ở mục *Script* vào `"$EVD/row2.sh"`, trong thư mục
+   bằng chứng, không để ở `/tmp` (tmpfs trên máy bàn). Rồi chạy nó **một lần**, với
+   `run_in_background`:
+   `bash "$EVD/row2.sh" > "$EVD/row2.log" 2>&1`
+   Nó chạy khoảng 1 giờ 30, kể cả 1800 s chờ. Khi được báo xong, đọc `row2.log`. Mục cuối của log
+   (`== ĐỌC ==`) là mọi dòng phán quyết cần.
+
+### Những gì đã biết chắc (đọc 2026-09-25, chỉ đọc)
+
+- Cả hai `w2w` trong `fb-p4-boot` build từ `1dd99bd` (`BUILD-INFO.txt`: `commit`, `mac_head`), có
+  `--metrics` (không sau feature nào), mang `cap_net_admin,cap_net_raw=ep` (`getcap`). Dùng cây
+  **`uring`**: binary của nó là binary của arm K trong driver (`w2w` sha256 `ae0e860f…` trong
+  `MANIFEST.txt`), nên arm "tắt" của hàng 2 so chéo được với K cùng boot.
+- Luồng exporter được `w2w` tạo từ luồng main **trước** khi luồng engine tự ghim lõi 6 qua
+  `--engine-core`. Mỗi lần chạy, nửa `--listen` in `metrics-thread: cpus <mask>`, và `w2w` **tự từ
+  chối** nếu mask đó chạm lõi đo hay lõi cô lập (`tools/w2w/src/main.rs:1258-1340` của cây đó).
+- `allocs` của nửa `--listen` là bộ đếm toàn cục của tiến trình, và **nhãn của nó gọi tên luồng
+  exporter** khi có `--metrics`: `(engine, observer and exporter threads, …)` ở `hft` có tem NIC,
+  `(engine and exporter threads, …)` ở `standard` (`main.rs:2457-2460`).
+- Tham số đúng như driver (`scripts/boot-p4.sh:169-176, 591-609`): `RUNS=10`, `MESSAGES=20000`,
+  `ENGINE_CORE=6`, `PIN=1`, `WARMUP=2000`, `GAP=8`, `CLIENT_CORE=7`, `LISTEN=192.168.77.1:0`,
+  generator `thangtran@192.168.77.2` với `Projects/nanofixengine/target/release/w2w`,
+  `FIXBOLT_NIC=enp9s0`. Nhánh `hft` có `WIRE_NIC=enp9s0 OBSERVER_CORE=7`. Nhánh `standard` không có
+  tem NIC (`w2w-baseline.sh` từ chối, Q10) và được đo **từ phía Mac**. Timeout mỗi arm
+  `RUNS × 120 + 600 = 1800` s.
+- Lõi: 6 engine, 7 observer (14, 15 offline), IRQ của NIC ở 0–4, `isolcpus=6,7,14,15`. Vòng scrape
+  được ghim `taskset -c 0-5,8-13` — mọi lõi trừ lõi đo và hai lõi anh em của chúng.
+- `scripts/scrape-loop.sh <addr> <hz> <seconds>` đếm `ok`/`bad`/`unanswered` và thoát 1 nếu không
+  có `ok` nào (giữa hai lần chạy `w2w` chẳng có exporter nào nghe — chuyện bình thường).
+- `scripts/compare-w2w-procedures.sh <s1> <s2>` so dòng `wire p50/p99/p99.9` khi arm có dòng wire
+  (`hft`), và dòng `p50/p99/p99.9` thường khi không có (`standard`). Ngưỡng 5 % tính trên số nhỏ
+  hơn (ADR-0068 quyết định 2, ADR-0071 quyết định 2). Khoá so khớp là `mode/path/tls`; `W2W_EXTRA`
+  không nằm trong khoá, nên arm tắt và arm bật khớp nhau. **Chiều đọc**: cột số thứ nhất là tham số
+  thứ nhất, cột thứ hai là tham số thứ hai. Script luôn gọi `off` trước, `on` sau, nên cột 1 = tắt,
+  cột 2 = bật. `diff` là **không dấu**: arm bật *chậm hơn* khi cột 2 > cột 1, *nhanh hơn* khi
+  cột 2 < cột 1.
+
+### Bốn arm, hai procedure
+
+| Arm | `ARMS` | Tem NIC | `W2W_EXTRA` | Vòng scrape |
+|---|---|---|---|---|
+| `off-hft` | `hft:admin` | `WIRE_NIC=enp9s0 OBSERVER_CORE=7` | *(rỗng)* | không |
+| `on-hft` | `hft:admin` | `WIRE_NIC=enp9s0 OBSERVER_CORE=7` | `--metrics 127.0.0.1:19464` | 10 Hz |
+| `off-std` | `standard:admin` | không (thước phía Mac) | *(rỗng)* | không |
+| `on-std` | `standard:admin` | không (thước phía Mac) | `--metrics 127.0.0.1:19464` | 10 Hz |
+
+`hft:admin` vì đó là dòng tiêu đề của `DESIGN.md` §8 và là cấu hình của arm K; exporter không làm
+gì khác nhau giữa `admin` và `app`. `standard` được đo vì ADR-0013 (chứng minh ở một mode là chưa
+chứng minh ở mode nào), cùng cách cặp store đã làm.
+
+Procedure 1: `off-hft on-hft off-std on-std`. **≥ 1800 s theo đồng hồ, máy để yên** (ADR-0068
+quyết định 1). Procedure 2 chạy thứ tự ngược: `on-std off-std on-hft off-hft`. Mỗi arm khoảng 4–8
+phút; cả quy trình khoảng 1 giờ 30, tất cả sau khi driver thoát.
+
+### Bước 1 — kiểm trước, bằng tay
+
+Mỗi dòng là một lần gọi Bash riêng, hoặc gộp vài dòng; đọc output trước khi sang bước 2:
+
+```bash
+cd /home/tmt/Projects/nanofixengine || exit 1
+EVD="$PWD/$(find target/boot-p4-evidence -maxdepth 1 -type d -name '20*Z' | sort | tail -1)/row2"; mkdir -p "$EVD"; echo "$EVD"
+sha256sum -c /home/tmt/Projects/fb-p4-boot/MANIFEST.txt            # 4 dòng OK
+getcap /home/tmt/Projects/fb-p4-boot/uring/target/release/w2w       # cap_net_admin,cap_net_raw=ep
+grep -E '^(mac_head|mac_w2w_sha256) ' /home/tmt/Projects/fb-p4-boot/BUILD-INFO.txt
+ssh -o BatchMode=yes thangtran@192.168.77.2 'cd Projects/nanofixengine && git rev-parse HEAD && shasum -a 256 target/release/w2w'   # khớp hai dòng trên
+ss -ltn 'sport = :19464'                                            # không có dòng LISTEN
+FIXBOLT_NIC=enp9s0 scripts/check-machine.sh                         # pass 17 fail 0 unknown 0
+```
+
+`EVD` phải là thư mục bằng chứng **của lần driver vừa thoát** (tên theo giờ UTC, không có
+`-REHEARSAL`). Script ở bước 2 tính lại đúng giá trị này bằng cùng một lệnh và dừng nếu nó không
+phải thư mục chứa chính script.
+
+### Script — lưu nguyên văn vào `"$EVD/row2.sh"`
+
+```bash
+#!/usr/bin/env bash
+# Phase 4 row 2: the exporter's kill line — w2w scrape-off vs scrape-on (10 Hz), two
+# procedures >= 1800 s apart, on the §9 desk, from the prebuilt binaries only.
+# docs/plans/2026-09-24-p4-metrics-exporter.md, "Sửa 2". Run once, in the background:
+#   bash "$EVD/row2.sh" > "$EVD/row2.log" 2>&1
+set -euo pipefail
+cd /home/tmt/Projects/nanofixengine || exit 1
+B=/home/tmt/Projects/fb-p4-boot/uring
+MANIFEST=/home/tmt/Projects/fb-p4-boot/MANIFEST.txt
+PORT=19464
+ADDR=127.0.0.1:$PORT
+C=$B/scripts/compare-w2w-procedures.sh
+
+latest=$(find target/boot-p4-evidence -maxdepth 1 -type d -name '20*Z' | sort | tail -1)
+[ -n "$latest" ] || { echo "row2: no driver evidence directory under target/boot-p4-evidence"; exit 1; }
+EVD=$PWD/$latest/row2
+here=$(cd "$(dirname "$0")" && pwd -P)
+[ "$here" = "$(cd "$EVD" && pwd -P)" ] || { echo "row2: this script is in $here, not in $EVD"; exit 1; }
+mkdir -p "$EVD/compare"
+echo "row2: evidence $EVD, start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+sha256sum -c "$MANIFEST" | tee "$EVD/manifest-start.txt"
+
+# One arm — the driver's run_arm, same settings. An arm that fails is recorded and the
+# run goes on (as in the driver); the verdict section below reads what happened.
+arm() { # arm <procedure> <id> <ARMS> <wire 0|1> <W2W_EXTRA>
+  local dir=$EVD/p$1/$2 wn="" oc="" rc=0
+  mkdir -p "$dir"
+  if [ "$4" = 1 ]; then wn=enp9s0; oc=7; fi
+  RUNS=10 MESSAGES=20000 ENGINE_CORE=6 ALLOW_UNISOLATED=0 \
+    PIN=1 WARMUP=2000 GAP=8 CLIENT_CORE=7 \
+    LISTEN=192.168.77.1:0 GENERATOR_SSH=thangtran@192.168.77.2 \
+    GENERATOR_W2W=Projects/nanofixengine/target/release/w2w \
+    FIXBOLT_NIC=enp9s0 WIRE_NIC=$wn OBSERVER_CORE=$oc \
+    ARMS=$3 W2W_EXTRA="$5" OUT_DIR=$dir \
+    timeout --kill-after=30 1800 "$B/scripts/w2w-baseline.sh" >"$dir/baseline.log" 2>&1 || rc=$?
+  echo "p$1 $2: w2w-baseline exit $rc $(date -u +%H:%M:%SZ)" | tee -a "$EVD/summary.txt"
+}
+
+# The scrape-on arm: refuse if the port is held (a timed-out w2w can keep it), then a
+# 10 Hz scrape loop pinned off the measured cores, in 60 s chunks until the arm is done
+# (a chunk that falls between two w2w runs has no `ok`, which is expected).
+on() { # on <procedure> <id> <ARMS> <wire 0|1>
+  local dir=$EVD/p$1/$2 sp
+  # grep without -q reads all of ss's output: under pipefail an early exit could SIGPIPE ss.
+  if ss -ltn "sport = :$PORT" | grep LISTEN >/dev/null; then
+    echo "p$1 $2: REFUSED — port $PORT is already listening" | tee -a "$EVD/summary.txt"
+    return 0
+  fi
+  mkdir -p "$dir"
+  rm -f "$dir/.done"
+  ( while [ ! -e "$dir/.done" ]; do
+      taskset -c 0-5,8-13 "$B/scripts/scrape-loop.sh" "$ADDR" 10 60 || true
+    done ) >"$dir/scrape.txt" 2>&1 &
+  sp=$!
+  arm "$1" "$2" "$3" "$4" "--metrics $ADDR"
+  touch "$dir/.done"
+  wait "$sp" || true
+  echo "p$1 $2: scrape chunks $(grep -c '^scrape-loop: 127' "$dir/scrape.txt" || true)" | tee -a "$EVD/summary.txt"
+}
+
+# Procedure 1.
+arm 1 off-hft hft:admin 1 ""
+on 1 on-hft hft:admin 1
+arm 1 off-std standard:admin 0 ""
+on 1 on-std standard:admin 0
+P1_END=$(date +%s)
+
+# >= 1800 s by the clock, the machine left alone (ADR-0068 decision 1).
+echo "row2: procedure 1 ended $(date -u +%H:%M:%SZ); waiting 1800 s"
+while [ "$(date +%s)" -lt $((P1_END + 1800)) ]; do sleep 60; done
+P2_START=$(date +%s)
+printf 'p1_end %s\np2_start %s\nelapsed_s %s\n' "$P1_END" "$P2_START" $((P2_START - P1_END)) | tee "$EVD/gap.txt"
+
+# Procedure 2, reversed.
+on 2 on-std standard:admin 0
+arm 2 off-std standard:admin 0 ""
+on 2 on-hft hft:admin 1
+arm 2 off-hft hft:admin 1 ""
+
+sha256sum -c "$MANIFEST" | tee "$EVD/manifest-end.txt" || true
+FIXBOLT_NIC=enp9s0 scripts/check-machine.sh >"$EVD/final-check-machine.txt" 2>&1 || true
+
+# Compare. Argument order is fixed: off first, on second — column 1 is off, column 2 is on.
+for p in 1 2; do
+  "$C" "$EVD/p$p/off-hft/summary.txt" "$EVD/p$p/on-hft/summary.txt" >"$EVD/compare/p$p-hft-off-vs-on.txt" 2>&1 || true
+  "$C" "$EVD/p$p/off-std/summary.txt" "$EVD/p$p/on-std/summary.txt" >"$EVD/compare/p$p-std-off-vs-on.txt" 2>&1 || true
+done
+for a in off-hft on-hft off-std on-std; do
+  "$C" "$EVD/p1/$a/summary.txt" "$EVD/p2/$a/summary.txt" >"$EVD/compare/$a-p1-vs-p2.txt" 2>&1 || true
+done
+
+# Everything the verdict reads, with file names. Each "must print nothing" is a grep -L
+# (files WITHOUT the line) or a grep -l (files WITH a line they must not have).
+set +e
+echo "== ĐỌC =="
+echo "-- summary.txt (arm exits, scrape chunks)"; cat "$EVD/summary.txt"
+echo "-- binaries";            grep -H -E '^binary |^generator binary ' "$EVD"/p*/*/baseline.log
+echo "-- machine, per arm (all 8: pass 17 fail 0 unknown 0)"; grep -H '^     machine ' "$EVD"/p*/*/summary.txt
+echo "-- listen files without 'allocs 0' (must print nothing)"; grep -L -E '^ *allocs +0 ' "$EVD"/p*/*/*-run-*-listen.txt
+echo "-- on-arm listen files whose allocs label does not name the exporter (must print nothing)"; grep -L 'allocs .*exporter' "$EVD"/p*/on-*/*-run-*-listen.txt
+echo "-- on-arm listen files without 'metrics:' (must print nothing)"; grep -L "^metrics: $ADDR" "$EVD"/p*/on-*/*-run-*-listen.txt
+echo "-- off-arm listen files with 'metrics:' (must print nothing)"; grep -l '^metrics: ' "$EVD"/p*/off-*/*-run-*-listen.txt
+echo "-- exporter thread placement (no 6 or 7 in any mask)"; grep -H '^metrics-thread: cpus' "$EVD"/p*/on-*/*-run-*-listen.txt
+echo "-- scrape chunks (bad 0 everywhere; rate >= 9.0 Hz)"; grep -H '^scrape-loop: ' "$EVD"/p*/on-*/scrape.txt
+echo "-- compare (column 1 = off, column 2 = on; within an arm p1-vs-p2, column 1 = p1)"; grep -H -E '^== |p50|p99|^arms' "$EVD"/compare/*.txt
+echo "-- gap"; cat "$EVD/gap.txt"
+echo "-- manifest end"; cat "$EVD/manifest-end.txt"
+echo "-- final check-machine"; grep -E '^pass [0-9]+' "$EVD/final-check-machine.txt"
+echo "row2: end $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+### Đọc vạch bỏ (ADR-0098 mục 5, ADR-0170)
+
+Mọi dòng dưới đây nằm trong mục `== ĐỌC ==` của `row2.log`. Exporter **qua vạch** khi tất cả những
+điều sau đều đúng:
+
+1. **Cặp `hft`, cả hai procedure** (`compare/p1-hft-off-vs-on.txt`, `compare/p2-hft-off-vs-on.txt`):
+   dòng `wire p50` **và** dòng `wire p99` đều `reproduced` (lệch ≤ 5 %). Dòng `wire p99.9` được ghi
+   lại nhưng không phải vạch. **Đọc từng dòng, không đọc exit code**: script thoát khác 0 cả khi chỉ
+   p99.9 lệch.
+2. **Không cấp phát**: hai lệnh "must print nothing" về `allocs` in rỗng, tức mọi file listen có
+   `allocs 0`, và mọi file của arm bật có nhãn gọi tên luồng exporter. `w2w-baseline.sh` tự thoát 1
+   với `allocs != 0 (engine half)` nếu không.
+3. **Cặp `standard`, cả hai procedure** (`compare/p*-std-off-vs-on.txt`): dòng `p50` phía Mac
+   `reproduced`. Vạch này là của plan này, không phải của ADR-0098, giống cặp `standard` của plan
+   store; ghi đúng tên thước: *khứ hồi phía Mac*.
+4. **Tải thật sự có mặt, đặt đúng chỗ**: mọi file listen của arm bật có dòng `metrics:`, không file
+   nào của arm tắt có; mọi dòng `metrics-thread: cpus` không chứa 6 hay 7; mọi khúc scrape `bad 0`,
+   và mỗi arm bật có ít nhất một khúc có `ok` > 0 với rate ≥ 9.0 Hz.
+5. **Máy đạt ở mọi arm**: cả 8 dòng `machine` là `pass 17 fail 0 unknown 0`.
+
+**Chiều lệch**: trong `compare/p*-*-off-vs-on.txt`, cột 1 là arm tắt, cột 2 là arm bật, `diff`
+không dấu. Arm bật *chậm hơn* khi cột 2 > cột 1.
+
+Những trường hợp không phải phán quyết:
+
+- **Không đọc được, không phải bị bỏ** — ghi số lại, không kết luận, đo lại ở boot sau:
+  - một arm FAILED (exit khác 0 không phải vì `allocs`) hoặc bị `REFUSED` vì cổng bận;
+  - generator hay binary đổi giữa chừng;
+  - arm tắt tự nó không tái lập giữa p1 và p2 (`compare/off-hft-p1-vs-p2.txt` có `wire p50` hay
+    `wire p99` là `not reproduced` — chưa có band);
+  - arm bật **nhanh hơn** arm tắt quá 5 % (cột 2 < cột 1). Chiều đó không thể là chi phí của
+    exporter; đó là cặp không tái lập.
+- **Bị bỏ** — crate ở ngoài nhóm phát hành và được thiết kế lại (ADR-0098); vẫn tính là *xong*
+  (câu hỏi 1 của ADR-0098):
+  - `wire p50` hay `wire p99` của arm bật **chậm hơn** quá 5 % (cột 2 > cột 1) ở ít nhất một
+    procedure, trong khi arm tắt tái lập được;
+  - hoặc `allocs` khác 0 chỉ ở arm bật;
+  - hoặc hụt vạch 3.
+
+**Bẫy riêng của quy trình này.** Vòng scrape sinh mười tiến trình `curl` mỗi giây. Nếu dòng
+`machine` của một arm bật báo đỏ ở hàng *machine is quiet*, hoặc lần chạy của arm bật bị loại vì
+hàng đó mà arm tắt thì không, đó là **tải của chính vòng scrape** (Prometheus không fork). Ghi lại,
+**không nới ngưỡng**. Nếu ít hơn một nửa số lần chạy đạt, `w2w-baseline.sh` cho arm FAILED, tức
+trường hợp "không đọc được".
+
+### Ghi vào đâu
+
+- **`docs/reference/measured-costs.md`** — mục mới *The metrics exporter under a 10 Hz scrape*, ghi
+  **cả khi bị bỏ** hay không đọc được. Nội dung:
+  - lệnh: script ở trên, đường dẫn `row2.sh`;
+  - máy: `tmt-B450-I-AORUS-PRO-WIFI`, grub line §9, tám dòng `machine`;
+  - commit `1dd99bd`; sha256 hai binary (`w2w` `ae0e860f…`, Mac `mac_w2w_sha256`);
+  - cả tám summary: p50/p99/p99.9 wire (`hft`) hoặc phía Mac (`standard`); sáu file compare;
+    khoảng chờ trong `gap.txt`;
+  - một câu giới hạn: ở 10 Hz, chỉ khoảng **10 lần scrape** rơi vào một cửa sổ đo 20 000 request
+    (*ước lượng, chưa đo*). Vì vậy p50/p99 cho thấy chi phí đều đặn mỗi vòng của việc có exporter,
+    không cho thấy cú khựng của một lần scrape riêng lẻ.
+- **Plan này, *Nhật ký giao hàng*** — một dòng hàng 2: đường dẫn `row2/`, phán quyết (qua / bỏ /
+  không đọc được) kèm bốn dòng `wire p50`/`wire p99` của hai cặp `hft`, dòng `allocs`, commit.
+- **ADR-0170** — thêm mục `## Result`: ngày, phán quyết, bốn con số vạch, đường dẫn bằng chứng.
+  ADR đã Accepted; mục kết quả là phần thêm, không sửa quyết định, giống `## Result` của ADR-0101.
+- **Nếu qua**, cùng commit với số đo (ADR-0170 quyết định 10):
+  - đưa `fixbolt-metrics` vào gia đình release theo tag: thêm vào danh sách của
+    `scripts/check-release-versions.sh`; cờ `publish` và các danh sách script khác đúng như hàng 4c
+    của plan store làm cho `fixbolt-store-sqlite` (ADR-0161; không publish crates.io);
+  - `PRD.md` §3 đổi *built, not yet kept* thành *kept*; `CHANGELOG.md`.
+- **Nếu bỏ**: giữ `publish = false`; `PRD.md` §3 ghi *killed at the kill line*, kèm con số.
+- **`STATUS.md`** — manager viết, cùng commit.
+
+### Chưa chứng minh
+
+- **Bất biến 4 cho exporter ở chế độ tách hai tiến trình chưa được kiểm**: nửa `--listen` không in
+  dòng `engine-ctxt`, nên cặp này không thấy luồng engine có ngủ hay không khi có scrape. Bằng
+  chứng bất biến 4 duy nhất đang có là bước 5 của plan (ba script mode, chạy gộp một tiến trình,
+  trên dòng grub desktop).
+- Chi phí của **một** lần scrape riêng lẻ lên một request cụ thể: cửa sổ đo chỉ chứa khoảng 10 lần
+  scrape (ước lượng), nên p50/p99 không thấy nó.
