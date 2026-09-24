@@ -1,6 +1,8 @@
 # ADR-0190 — The `io_uring` transport is reaped by the idle strategy, and an `hft` turn enters the kernel once without waiting
 
-- **Status**: Proposed — 2026-09-24. Written by the architect (Opus) for phase 4 row 5
+- **Status**: Proposed — 2026-09-24; **revised in place 2026-09-24** (Revision 1, R1–R4, at the
+  end of this ADR — decisions 4, 5 and 7 changed while it was still Proposed, after steps 1–4 were
+  built). Written by the architect (Opus) for phase 4 row 5
   ([plan](../plans/2026-09-24-p4-io-uring-transport.md)). Accepted with that plan, by the owner or
   by the manager under the owner's standing mandate.
 - **Date**: 2026-09-24
@@ -147,9 +149,11 @@ from a waiting one.
 
 ### 4. SQPOLL is an `hft` arm only, pinned; NAPI is not built in row 5
 
-- **`HftArm::Sqpoll { core }`** sets up the ring with `SQPOLL | SQ_AFF`, `sq_thread_cpu = core`,
-  a named core that `affinity::Topology` must accept as isolated (the same validation
-  `serve_hft_pinned` does; refused otherwise, before any socket exists). `DEFER_TASKRUN` is
+- **`HftArm::Sqpoll { pin: CorePin }`** *(R1)* sets up the ring with `SQPOLL | SQ_AFF`,
+  `sq_thread_cpu = pin.core()`, validated by `CorePin::validate()` before any socket exists — the
+  rules `serve_hft_pinned` applies: absent or offline is refused, and outside `isolcpus` is refused
+  unless the caller wrote `CorePin::allow_unisolated()`. The waiver is reported, never implied:
+  `UringReport` says whether it was taken. `DEFER_TASKRUN` is
   incompatible with it, so completions are posted by the SQ thread and `UringSpin::idle` only
   peeks — this is the one arm in which the engine thread does not enter the kernel to receive. If
   the kernel raises `IORING_SQ_NEED_WAKEUP`, `idle` calls `enter` with `IORING_ENTER_SQ_WAKEUP` and
@@ -172,11 +176,22 @@ from a waiting one.
   `Block` timeout (100 ms by default, `with_timeout_ms` for tests) passed through
   `IORING_ENTER_EXT_ARG` — the timeout is a correctness parameter, as it is for `Block`: it is what
   delivers `Input::Tick`. `EINTR` is a wake, not an error.
-- `UringBlock::NEEDS_SOURCES = true`: it is shown the interest list and arms a **one-shot**
-  `POLL_ADD` for every readable source the ring does not already cover (the listener, the
-  dispatch waker's pipe) and for every `writable` interest, tracked in a fixed table so nothing
-  is armed twice; an armed source missing from this turn's list is cancelled by its `user_data`.
-  Sources that are registered connections are covered by their multishot `recv` and skipped.
+- `UringBlock::NEEDS_SOURCES = true`: it is shown the interest list. *(R2)* **A poll lives for
+  exactly one wait**: before each wait it arms a one-shot `POLL_ADD` for every readable source the
+  ring does not already cover (the listener, the dispatch waker's pipe) and for every `writable`
+  interest, each `user_data` carrying the wait's generation; right after the wait it queues an
+  `ASYNC_CANCEL` by `user_data` for every one that did not fire, and a completion from an older
+  generation is discarded. Sources that are registered connections are covered by their multishot
+  `recv` and skipped.
+- *(R3)* **It does not wait while the engine has bytes to read that the kernel can no longer
+  see.** If a source **in this turn's readable interest list** has reaped bytes staged and unread,
+  the enter uses `min_complete = 0`; otherwise `1`. Staged bytes of a connection **not** in the
+  list (a connection parked by `Recovery::ready`, for instance) do not count — exactly as `poll(2)`
+  ignores a descriptor it was not given; a ring-wide count would make `standard` spin for as long
+  as such a connection stays parked.
+- *(R3)* **A source that cannot be armed is counted, not hidden**: `UringReport::unarmed`. Such a
+  source is woken only by the timeout. The SQ and CQ are sized at setup so it cannot happen in a
+  configuration the entry points accept (R4); `unarmed > 0` in any test or script run is a failure.
   `idle_with`'s drain of the waker after the wait (`lib.rs:1689-1698`) applies unchanged.
 
 ### 6. The dependency is the `io-uring` crate, pinned `>= 0.7.15`, Linux only
@@ -204,10 +219,19 @@ say where the operator goes next:
 | `ENOSYS` | `NotInKernel` | a kernel without `CONFIG_IO_URING`, or a sandbox answering `ENOSYS` |
 | `EINVAL` on setup, or the probe lacks `RECV`/`POLL_ADD`/`ASYNC_CANCEL`, or buffer-ring registration fails `EINVAL` | `KernelTooOld` | 6.1 as the floor (`DEFER_TASKRUN`) |
 | anything else | `Other(io::ErrorKind)` | the kind |
+| *(R4)* `UringConfig::connections` < capacity + pending | `TooSmall { have, need }` | both numbers — a configuration error, not the kernel's |
 
 There is **no code path** from a `serve_*uring*` function to a `TcpTransport` read loop. A
 refusal is proven by a test that installs a real seccomp filter answering `EPERM` on the test's
 own thread (Docker's mechanism, no privilege needed) and by a desk-only test under the sysctl.
+
+- *(R4)* **The ring holds every socket the serving loop can hold.** Sockets are registered at
+  accept, before their `Logon`, so `UringConfig::connections` must be at least the engine's
+  capacity plus `presession::Limits::pending()` (the pending and parked sets together are bounded
+  by it). `serve_uring` and `serve_hft_uring` check it **at startup** and refuse with
+  `UringRefused::TooSmall { have, need }` before binding; a caller driving an `Engine` by hand is
+  told in the rustdoc, and an over-full ring makes `register` return `None`, which closes the
+  socket like any connection there is no room for.
 
 ### 8. Teardown: `shutdown(2)` before close, cancel by `user_data`
 
@@ -289,3 +313,43 @@ procedure, two procedures ≥ 30 min apart with the arm order reversed in the se
 - **The literature expects the single-session wire arm to lose** (liburing #536). The item may well
   survive on the idle arm alone, which is a statement about many sessions per core, not about the
   published single-session figure.
+
+## Revision 1 — 2026-09-24 (while Proposed, after steps 1–4 were built)
+
+Asked by the senior developer before step 5; decided by the architect; the decision text above is
+edited in place and marked *(R1)*–*(R4)*.
+
+- **R1 — the SQPOLL core is a `CorePin`, not a bare `CoreId`.** Was: `Sqpoll { core }`, validated
+  as isolated with no waiver. `CorePin` (`crates/engine/src/affinity.rs:588-650`) already carries
+  `allow_unisolated`, reports it (`is_unisolated_allowed`, ADR-0015 decision 5) and validates through
+  the same `ShardPlan` rules, so a separate flag would be a second copy of one rule. `tools/w2w`'s
+  existing `--allow-unisolated` applies to the SQ core as it does to the engine core, and its
+  `transport:` line prints `unisolated=yes|no` for the SQPOLL arm. Row 7 runs on a §9 boot without
+  the waiver; the plan's step 7 desktop run uses it and says so.
+- **R2 — a `POLL_ADD` is armed per wait and cancelled after it**, replacing *"arm once, track in a
+  table, cancel when the source leaves the list"*. The table was keyed by descriptor number, and a
+  listener closed and replaced by one that received the same number **between two turns** never
+  leaves the list, so the old poll — holding the old file — would stand in for the new one and the
+  new listener would be woken only by the timeout. Arming per wait binds each poll to the file of
+  that turn. No wake is lost at the boundary: a poll armed on an already-readable source completes
+  at once. Cost: two SQEs per extra source per idle turn (normally two sources), carried by the
+  same `io_uring_enter`, no extra syscall. Accepted.
+- **R3 — `standard` does not wait while listed sources have staged bytes**, and unarmed sources are
+  counted. Accepted, **narrowed**: the built version keys the decision on a ring-wide
+  `staged_slots` count; it must key it on the staged bytes of sources in this turn's readable
+  interest list (the built fd hash of covered sources makes that a lookup per listed source).
+  Reason: a connection parked by `Recovery::ready` is neither read nor listed
+  (`lib.rs` `pump_loop`, *"Parking is not progress"*), and a peer that writes while parked would
+  otherwise keep `standard` at `min_complete = 0` — spinning — until the park ends, up to its
+  `LogonTimeout`. The kernel arm does not spin there, because `poll` is never given that
+  descriptor. Guard: test `standard_does_not_spin_on_bytes_nobody_asked_for` (a registered,
+  unlisted connection with staged bytes; `idle` with a 50 ms timeout must take ≥ 40 ms; red with
+  the ring-wide count). `UringReport::unarmed` and the enlarged SQ/CQ are accepted with R4's
+  sizing rule; `unarmed` is printed by `tools/w2w` and asserted 0 by
+  `scripts/check-standard-gives-the-core-back.sh`.
+- **R4 — ring sizing is checked at startup.** `connections ≥ capacity + pending`, refused otherwise
+  (decision 7's new row). The SQ holds, for one idle turn, every re-arm and cancel the ring can owe:
+  one `RecvMulti` re-arm and one teardown cancel per connection, plus two SQEs per extra source and
+  per writable interest; the CQ holds every buffer the ring can fill plus one SQ's worth of
+  completions. Both are derived from `UringConfig` at construction, not tuned by hand; a CQ
+  overflow is counted in `UringReport` and asserted 0 in `tests/uring.rs`.

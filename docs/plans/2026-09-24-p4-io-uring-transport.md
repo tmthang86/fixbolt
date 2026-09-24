@@ -133,7 +133,7 @@ Chỉ ghi phương án được chọn; phương án bị loại nằm ở ADR-0
 
 - `UringConfig` — số vùng đệm (luỹ thừa của 2), độ dài mỗi vùng, số kết nối tối đa; kiểm hợp lệ
   khi tạo, không có giá trị ẩn (`CLAUDE.md` §6).
-- `HftArm::{Enter, Sqpoll { core }}` — `Enter` là mặc định; `Sqpoll` phải được gọi tên rõ.
+- `HftArm::{Enter, Sqpoll { pin: CorePin }}` *(Sửa 1, R1)* — `Enter` là mặc định; `Sqpoll` phải được gọi tên rõ; lõi của luồng SQ là một `CorePin`, nên miễn trừ `allow_unisolated()` đi theo nó và được báo lại.
 - `Uring` — sở hữu ring, vùng đệm và bảng kết nối; `Rc`, không `Send`. `Uring::hft(cfg, arm)`
   trả `(Uring, UringSpin)`; `Uring::standard(cfg)` trả `(Uring, UringBlock)` — cấu hình của
   `standard` **không có trường SQPOLL**, nên "standard + SQPOLL" không viết ra được.
@@ -144,7 +144,7 @@ Chỉ ghi phương án được chọn; phương án bị loại nằm ở ADR-0
   trả vùng đệm về ring, **không syscall**; `send` là `write(2)` như cũ; `POLLABLE = true`.
 - `UringSpin: Waiting` (`SLEEPS = false`) và `UringBlock: Waiting` (`SLEEPS = true`,
   `NEEDS_SOURCES = true`).
-- `UringRefused::{Disabled { sysctl }, Blocked, NotInKernel, KernelTooOld, Other(ErrorKind)}`,
+- `UringRefused::{Disabled { sysctl }, Blocked, NotInKernel, KernelTooOld, TooSmall { have, need }, Other(ErrorKind)}` (`TooSmall`: *Sửa 1, R4*),
   `Display` nói người vận hành phải đi đâu (bảng ở ADR-0190 quyết định 7).
 - Hai hằng có mặc định, **không phá code bên ngoài**: `Transport::NEEDS_REAPER = false`,
   `Waiting::REAPS = false`; `Engine::new` khẳng định `!T::NEEDS_REAPER || W::REAPS` trong khối
@@ -174,10 +174,18 @@ Chỉ ghi phương án được chọn; phương án bị loại nằm ở ADR-0
 - **`hft`, arm `Sqpoll`**: `idle` chỉ nhìn CQ; khi kernel bật `IORING_SQ_NEED_WAKEUP` thì gọi
   `enter` với `SQ_WAKEUP`, `min_complete = 0`. Đốt thêm một lõi — mọi con số từ arm này ghi rõ.
 - **`standard`**: `UringBlock::idle` gọi `enter(to_submit, 1, GETEVENTS | EXT_ARG)` với timeout
-  100 ms (hoặc `with_timeout_ms` cho test). `EINTR` là một lần thức, không phải lỗi. Nguồn nào
-  không phải kết nối đã đăng ký (listener, pipe của waker) và mọi nguồn `writable` được gắn một
-  `POLL_ADD` **một lần** (không multishot), ghi trong bảng cố định để không gắn trùng; nguồn đã
-  gắn mà biến khỏi danh sách của vòng này thì bị huỷ theo `user_data`.
+  100 ms (hoặc `with_timeout_ms` cho test). `EINTR` là một lần thức, không phải lỗi. *(Sửa 1,
+  R2)* Mỗi `POLL_ADD` sống đúng **một lần chờ**: trước khi chờ, gắn một `POLL_ADD` một lần cho mỗi
+  nguồn không phải kết nối đã đăng ký (listener, pipe của waker) và mỗi nguồn `writable`, `user_data`
+  mang thế hệ của lần chờ; ngay sau khi chờ, huỷ theo `user_data` những cái chưa bắn; hoàn tất của
+  thế hệ cũ bị vứt. *(Sửa 1, R3)* Nếu một nguồn **có trong danh sách đọc của vòng này** còn byte đã
+  gom mà engine chưa đọc thì dùng `min_complete = 0`, ngược lại `1`; byte của kết nối **không** có
+  trong danh sách (vd. đang bị park) không tính. Nguồn không gắn được `POLL_ADD` được đếm ở
+  `UringReport::unarmed`, phải bằng 0.
+- *(Sửa 1, R4)* **Kích thước ring kiểm lúc khởi động**: `UringConfig::connections` ≥ capacity của
+  engine + `Limits::pending()` (socket đăng ký lúc accept, trước `Logon`); `serve_uring`,
+  `serve_hft_uring` từ chối bằng `UringRefused::TooSmall` trước khi bind. SQ và CQ tính từ
+  `UringConfig` lúc tạo (ADR-0190 R4), tràn CQ được đếm và phải bằng 0.
 - **Đóng kết nối**: `shutdown(SHUT_RDWR)` (dừng `recv` đang treo, phía kia nhận FIN), xếp một
   `ASYNC_CANCEL` theo `user_data` cho lần `idle` sau, trả danh sách đã gom về ring, tăng thế hệ.
   **Huỷ `Uring`**: gỡ đăng ký buffer ring **trước** khi giải phóng bộ nhớ của nó.
@@ -315,10 +323,10 @@ duyệt plan này cùng ADR-0190, ADR-0191.
 |---|---|---|---|
 | 1 | Đỏ trên code chưa viết | bước 1 | Mọi test `uring.rs` đỏ ở khẳng định của chính nó (vd. `a_message_arrives_through_the_ring`: *"Uring::hft refused: …"*); hai test uring của `wire.rs` đỏ với *"over io_uring: 0 / 59"* hoặc lỗi dựng ring; test từ chối dưới seccomp đỏ vì khung trả `Other`, không phải `Blocked`. Không test nào đỏ vì panic của harness |
 | 2 | Đúng dữ liệu | `cargo test -p fixbolt-engine --features io-uring --test uring` | `a_message_arrives_through_the_ring` (`report().cqes > 0`); `a_ring_that_runs_out_of_buffers_rearms_and_loses_nothing` (2 vùng, 1 MiB dồn dập, byte-exact, `enobufs > 0` **và** `rearms > 0` — đường chạy thật); `sixty_four_connections_interleaved_are_byte_exact` (khúc ngẫu nhiên, hạt giống in ra, sổ sở hữu kiểm sau mỗi lần gom); `a_late_completion_for_a_dropped_connection_reaches_nobody`; `a_closed_connection_is_seen_as_closed_and_its_peer_sees_fin` (phía kia đọc 0 trong 1 s); `buffers_are_resident_before_the_first_message`; `unregistered_buffers_are_not_written_after_the_ring_is_dropped` |
-| 3 | `standard` thức vì dữ liệu, không vì timeout | cùng lệnh | `standard_is_woken_by_the_data_not_the_timeout` (timeout 10 s, trả lời < 1 s); `standard_is_woken_by_a_connect`; `standard_is_woken_by_the_waker` (trả lời từ luồng ứng dụng); `standard_wakes_on_its_own_timeout_to_tick` (timeout 50 ms, `idle` trở về trong [40, 500] ms) |
+| 3 | `standard` thức vì dữ liệu, không vì timeout | cùng lệnh | `standard_is_woken_by_the_data_not_the_timeout` (timeout 10 s, trả lời < 1 s); `standard_is_woken_by_a_connect`; `standard_is_woken_by_the_waker` (trả lời từ luồng ứng dụng); `standard_wakes_on_its_own_timeout_to_tick` (timeout 50 ms, `idle` trở về trong [40, 500] ms); *(Sửa 1)* `standard_does_not_spin_on_bytes_nobody_asked_for` (kết nối đã đăng ký, có byte đã gom, **không** có trong danh sách; `idle` timeout 50 ms phải mất ≥ 40 ms); `a_listener_replaced_between_turns_still_wakes_standard` (đóng listener, mở listener mới lấy cùng số fd giữa hai vòng, connect phải được nhận trước timeout); `unarmed` = 0 và tràn CQ = 0 ở cuối mọi test |
 | 4 | Bị chặn thì từ chối, có tên, không quay về | cùng lệnh; `scripts/check-uring-refused-under-sysctl.sh` trên máy bàn | `a_blocked_io_uring_refuses_to_start_and_names_seccomp` (bộ lọc seccomp trả EPERM cho `io_uring_setup` trên luồng test → `UringRefused::Blocked`, câu có chữ *seccomp*); `serve_hft_uring_under_seccomp_binds_no_socket` (trả `ServeError::Uring`, không cổng nào nghe); `the_refusal_is_classified_by_errno_and_sysctl` (bảng thuần: EPERM+0→`Blocked`, EPERM+1/2→`Disabled`, ENOSYS→`NotInKernel`, EINVAL→`KernelTooOld`); script sysctl: exit ≠ 0, câu `Disabled { sysctl: 2 }`, giá trị sau khôi phục đọc lại = `0` |
 | 5 | Ghép sai không biên dịch | `cargo test -p fixbolt-engine --features io-uring --doc` | ba doctest `compile_fail` xanh — và **đảo ngược R8**: bỏ khối `const` thì doctest thứ nhất biên dịch được, tức đỏ |
-| 6 | Đảo ngược (bước 7) | từng cái | **R1** `UringSpin` dùng `min_complete = 1` → `check-no-kernel-sleep.sh` FAIL *"the engine thread slept in the kernel"* có `io_uring_enter_wait`, và ctxt script đỏ; **R2** dòng trace sửa tay có tham số thứ ba không đọc được → FAIL có `io_uring_enter_unparsed`; **R3** `UringBlock` dùng `min_complete = 0` → `check-standard-gives-the-core-back.sh` đỏ ở khẳng định CPU/trạng thái `S`; **R4** bỏ `POLL_ADD` cho listener → `standard_is_woken_by_a_connect` đỏ; **R5** bỏ tăng thế hệ → `a_late_completion_…` đỏ; **R6** bỏ `shutdown` khi đóng → `…_peer_sees_fin` đỏ; **R7** bỏ nộp lại sau `ENOBUFS` → `…_rearms_and_loses_nothing` đỏ (hết thời gian, byte thiếu); **R8** như mục 5; **R9** tiêm `black_box(Vec::with_capacity(1))` vào đường gom → `uring-exchange` > 0; **R10** bỏ chạm trước vùng đệm → `buffers_are_resident_…` đỏ |
+| 6 | Đảo ngược (bước 7) | từng cái | **R1** `UringSpin` dùng `min_complete = 1` → `check-no-kernel-sleep.sh` FAIL *"the engine thread slept in the kernel"* có `io_uring_enter_wait`, và ctxt script đỏ; **R2** dòng trace sửa tay có tham số thứ ba không đọc được → FAIL có `io_uring_enter_unparsed`; **R3** `UringBlock` dùng `min_complete = 0` → `check-standard-gives-the-core-back.sh` đỏ ở khẳng định CPU/trạng thái `S`; **R4** bỏ `POLL_ADD` cho listener → `standard_is_woken_by_a_connect` đỏ; **R5** bỏ tăng thế hệ → `a_late_completion_…` đỏ; **R6** bỏ `shutdown` khi đóng → `…_peer_sees_fin` đỏ; **R7** bỏ nộp lại sau `ENOBUFS` → `…_rearms_and_loses_nothing` đỏ (hết thời gian, byte thiếu); **R8** như mục 5; **R9** tiêm `black_box(Vec::with_capacity(1))` vào đường gom → `uring-exchange` > 0; **R10** bỏ chạm trước vùng đệm → `buffers_are_resident_…` đỏ; *(Sửa 1)* **R11** quyết định không-chờ dùng lại đếm toàn ring `staged_slots` → `standard_does_not_spin_on_bytes_nobody_asked_for` đỏ; **R12** bỏ huỷ `POLL_ADD` sau khi chờ, gắn theo bảng số fd như bản đầu → `a_listener_replaced_between_turns_still_wakes_standard` đỏ; **R13** bỏ kiểm `TooSmall` → test `serve_uring_refuses_a_ring_smaller_than_capacity_plus_pending` đỏ |
 | 7 | Mode, cả hai nửa | ba script mode | `hft` + uring xanh, `io_uring_enter_nowait` > 0, ctxt 0; `standard` + uring vấp script `hft` với `_wait` và vấp ctxt; `standard` + uring qua đủ bốn khẳng định; `hft` + uring vấp script `standard` |
 | 8 | Không phá gì đã có | `cargo test --all`; `cargo test --no-default-features`; `cargo test -p fixbolt-engine --no-default-features --features io-uring`; `cargo clippy --all-targets -- -D warnings` (và với `--features io-uring`); `cargo fmt --check`; `scripts/check-lint-config.sh`; `scripts/check-indexing-debt.sh`; `scripts/check-no-crate-root-allow.sh`; `scripts/check-no-optional-deps.sh`; `cargo semver-checks` so với git tag `v0.1.0` (baseline theo ADR-0161, không có bản trên registry) | xanh; test có sẵn **không sửa** (riêng harness `wire.rs` được làm generic, thân hai test cũ giữ nguyên, vẫn 59 / 59) |
 | 9 | CI thấy test dưới feature đã chạy | bước `io-uring` của CI | `check-feature-gated-tests-ran.sh fixbolt-engine io-uring <log>` xanh; đầu job in `uname -r` và `io_uring_disabled` của runner |
@@ -435,6 +443,37 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
   nhận ngắt).
 - `docs/hft-playbook.md` và `DESIGN.md` §9 — không dòng máy nào đổi.
 - Chạy engine trong Docker thật — máy bàn không có Docker; seccomp trên luồng test là cùng cơ chế.
+
+## Sửa 1 — 2026-09-24
+
+Sau khi bước 1–4 đã dựng (commit `b5976d2` trên `plan/p4-io-uring`), senior developer hỏi ba
+điều trước bước 5. Architect quyết; ADR-0190 còn *Proposed* nên được sửa tại chỗ (mục *Revision 1*,
+R1–R4). Tóm tắt:
+
+- **R1 — lõi SQPOLL là `CorePin`.** `HftArm::Sqpoll { pin: CorePin }`, kiểm bằng
+  `CorePin::validate()`. `CorePin` đã mang sẵn `allow_unisolated` và báo lại nó, nên không thêm cờ
+  riêng. `w2w` dùng lại `--allow-unisolated` có sẵn cho lõi SQ; dòng `transport:` in
+  `unisolated=yes|no` cho arm SQPOLL. Bước 7 chạy trên dòng desktop với miễn trừ này, ghi rõ; hàng 7
+  chạy trên boot §9 không miễn trừ.
+- **R2 — chấp nhận: gắn `POLL_ADD` mỗi lần chờ, huỷ ngay sau.** Lý do của developer đúng: bảng
+  theo số fd không phân biệt được listener đã đóng với listener mới lấy cùng số giữa hai vòng.
+  Không mất lần thức nào ở ranh giới, vì `POLL_ADD` gắn lên nguồn đã sẵn sàng thì bắn ngay. Giá:
+  thêm hai SQE cho mỗi nguồn phụ mỗi vòng rảnh, đi chung một `io_uring_enter`, không thêm syscall.
+- **R3 — chấp nhận có thu hẹp: không chờ khi còn byte chưa đọc**, nhưng chỉ tính byte của nguồn
+  **có trong danh sách đọc của vòng này**, không tính đếm toàn ring. Lý do: kết nối bị park bởi
+  `Recovery::ready` không được đọc và không có trong danh sách; nếu đối tác gửi thêm trong lúc park,
+  đếm toàn ring sẽ làm `standard` spin tới hết `LogonTimeout` — trong khi arm kernel không spin,
+  vì `poll` không được đưa fd đó. `UringReport::unarmed` và SQ/CQ lớn hơn: chấp nhận, với quy tắc
+  kích thước ở R4; `unarmed` phải bằng 0 (w2w in ra, `check-standard-gives-the-core-back.sh` khẳng
+  định).
+- **R4 — `connections ≥ capacity + pending` được kiểm lúc khởi động**, không chỉ ghi trong tài
+  liệu: `serve_uring`/`serve_hft_uring` từ chối bằng `UringRefused::TooSmall { have, need }` trước
+  khi bind. Người tự dựng `Engine` được rustdoc báo; ring đầy thì `register` trả `None`, socket bị
+  đóng như khi hết chỗ.
+- **Việc thêm cho bước 5–7**: bước 5 thêm `unisolated=` và `unarmed=` vào dòng `transport:`; bước 6
+  thêm khẳng định `unarmed=0` vào `check-standard-gives-the-core-back.sh`; test mới và R11–R13 ở
+  *Cách kiểm chứng* mục 3 và 6. Sửa R3 và R4 đụng code đã commit ở bước 3–4
+  (`src/transport/uring.rs`, `src/lib.rs`, `tests/uring.rs`) — làm ở đầu bước 5, test đỏ trước.
 
 ## Nhật ký giao hàng
 
