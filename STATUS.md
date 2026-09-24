@@ -111,6 +111,11 @@ both `w2w` carry `cap_net_admin,cap_net_raw=ep`, trees clean, `BUILD-INFO.txt` n
 
 ### Next — the first executable action
 
+**Handoff check (7b step 1):** the handoff commit is the merge of PR [#114](https://github.com/tmthang86/fixbolt/pull/114),
+the tip of `origin/main`; its CI is that merge's `push` run (`gh run list --branch main --limit 1`). The boot binaries'
+source must be on main: `git merge-base --is-ancestor 1dd99bd origin/main`; main's push run on `1dd99bd` is
+36047222206, success.
+
 **Follow [the boot plan's 7b list](docs/plans/2026-09-24-p4-bypass-and-s9-boot.md) ("7b — hành động đầu tiên của boot")
 verbatim, steps 1–8**: verify this handoff's commit and CI id on `origin/main`; `grep -o 'isolcpus=[^ ]*' /proc/cmdline`
 reads `isolcpus=6,7,14,15`; runtime settings; stop every scheduled timer; EEE off and wait for ssh to the Mac;
@@ -134,6 +139,8 @@ desktop line), rows 8–9 (SIMD), row 10 (close the phase).
   the exporter's scrape pair (row 2, by hand in the same boot per the metrics plan's *Sửa 2*; its commands were
   checked with `bash -n` only).
 * The SQPOLL flush-expiry path has no test of its own (it shares the tested flush()==false branch).
+* Rule 4 for the exporter in split mode: the listen half prints no `engine-ctxt` line, so row 2's pair does not check
+  that the hft engine thread never sleeps with the exporter attached (the loopback ctxt script did, row 1 step 5).
 
 ## Start here — 2026-09-24, later: phase 3 is closed — 0.1.0 is the git tag `v0.1.0`, not a crates.io upload; phase 4 is being built on four branches
 
