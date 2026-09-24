@@ -688,6 +688,16 @@ jobs:
           kill "${srv}"
           exit "${rc}"
 
+      # Plan docs/plans/2026-09-24-p4-sqlite-store.md row 5: the SQLite store
+      # soak for 2 s. **A COUNT, NOT A MEASUREMENT**: it exits non-zero when a
+      # record is unwritten, a row is missing or differs from the generator, or
+      # the stand-in engine thread missed its pace on more than 1 % of
+      # messages — and asserts nothing about speed. `target/soak` is on the
+      # runner's disk; the soak refuses a tmpfs directory itself. Row 4a's
+      # 60 s kill line is run on the desk, never here.
+      - name: The SQLite store soak, 2 s, a count
+        run: cargo run --release -p fixbolt-store-sqlite --example soak -- --rate 50000 --seconds 2 --dir target/soak
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning

@@ -46,3 +46,14 @@ workspace = true
 # ADR-0160 decision 8: docs.rs builds a named feature list.
 [package.metadata.docs.rs]
 features = ["sqlite"]
+
+# Plan row 4: the engine thread's half allocates nothing, counted per thread.
+[[bench]]
+name = "alloc"
+harness = false
+required-features = ["sqlite"]
+
+# Plan row 5: the soak that row 4a's kill line is read with.
+[[example]]
+name = "soak"
+required-features = ["sqlite"]

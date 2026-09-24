@@ -326,6 +326,34 @@ static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 /// be one allocation from the surrounding setup, and the assertion is against
 /// zero over 20 000 messages.
 static ARMED: AtomicBool = AtomicBool::new(false);
+/// `--journal sqlite-async` only: count **only the threads that registered**
+/// with [`count_this_thread`] — the engine, the client in the combined run,
+/// the observer — and not the SQLite writer, which commits inside the window
+/// and may allocate (ADR-0037 allows a writer to). SQLite's own C heap is not
+/// seen by any Rust allocator either way. Every other `--journal` leaves this
+/// `false` and counts every thread, exactly as before (plan
+/// `docs/plans/2026-09-24-p4-sqlite-store.md` row 6).
+static ONLY_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Set by [`count_this_thread`]. `const`-initialised with no destructor,
+    /// so the allocator can read it without allocating.
+    static REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark the calling thread as one whose allocations [`ALLOCS`] counts when
+/// [`ONLY_REGISTERED`] is on. Called first thing on the engine, client and
+/// observer threads; harmless when every thread is counted.
+fn count_this_thread() {
+    REGISTERED.with(|r| r.set(true));
+}
+
+/// Whether an allocation on this thread is one [`ALLOCS`] counts.
+#[inline]
+fn counts_here() -> bool {
+    !ONLY_REGISTERED.load(Ordering::Relaxed)
+        || REGISTERED.try_with(std::cell::Cell::get).unwrap_or(false)
+}
 /// The engine thread's tid, written once by [`print_engine_tid`] from inside
 /// that thread, read from the main thread by [`engine_ctxt_switches`]
 /// (ADR-0072 decision 1). `0` means "not yet known". `AtomicI32` because a
@@ -352,7 +380,7 @@ struct Counting;
 // the timed loop takes the count from 0 to 20 000.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        if ARMED.load(Ordering::Relaxed) {
+        if ARMED.load(Ordering::Relaxed) && counts_here() {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
         }
         unsafe { System.alloc(l) }
@@ -361,7 +389,7 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        if ARMED.load(Ordering::Relaxed) {
+        if ARMED.load(Ordering::Relaxed) && counts_here() {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
         }
         unsafe { System.realloc(p, l, n) }
@@ -466,6 +494,14 @@ enum JournalKind {
     /// changes one variable — in a file under `std::env::temp_dir()` that
     /// this run removes when it ends.
     FileAsync,
+    /// [`SqliteStore`] — `fixbolt_store_sqlite::SqliteStore`, the same
+    /// engine-thread half as `FileAsync` with a database for a file and the
+    /// same `SLOTS` and `SLOT_LEN`, in a database under
+    /// `std::env::temp_dir()` that this run removes when it ends. Behind
+    /// `--features sqlite`; its `allocs` counts registered threads only
+    /// ([`ONLY_REGISTERED`]).
+    #[cfg(feature = "sqlite")]
+    SqliteAsync,
 }
 
 impl JournalKind {
@@ -473,6 +509,8 @@ impl JournalKind {
         match self {
             Self::Mem => "mem",
             Self::FileAsync => "file-async",
+            #[cfg(feature = "sqlite")]
+            Self::SqliteAsync => "sqlite-async",
         }
     }
 }
@@ -1422,11 +1460,25 @@ fn main() -> std::io::Result<()> {
     let journal = match arg::<String>(&args, "--journal").as_deref() {
         None | Some("mem") => JournalKind::Mem,
         Some("file-async") => JournalKind::FileAsync,
+        #[cfg(feature = "sqlite")]
+        Some("sqlite-async") => JournalKind::SqliteAsync,
+        #[cfg(not(feature = "sqlite"))]
+        Some("sqlite-async") => {
+            eprintln!("w2w: --journal sqlite-async needs `--features sqlite`. Build with:");
+            eprintln!("       cargo build --release -p fixbolt-w2w --features sqlite");
+            return Err(std::io::Error::other("this build has no SQLite store"));
+        }
         Some(other) => {
-            eprintln!("w2w: unknown --journal {other}; expected mem or file-async");
+            eprintln!("w2w: unknown --journal {other}; expected mem, file-async or sqlite-async");
             return Err(std::io::Error::other("unknown --journal"));
         }
     };
+    // Before anything is armed: the SQLite writer commits inside the window,
+    // so only the registered threads are counted (see `ONLY_REGISTERED`).
+    #[cfg(feature = "sqlite")]
+    if journal == JournalKind::SqliteAsync {
+        ONLY_REGISTERED.store(true, Ordering::Relaxed);
+    }
     let log = match arg::<String>(&args, "--log").as_deref() {
         None | Some("none") => LogKind::None,
         Some("file") => LogKind::File,
@@ -1623,6 +1675,8 @@ fn both_halves(
     listener_every: std::num::NonZeroU32,
     assert_no_voluntary: bool,
 ) -> std::io::Result<()> {
+    // This thread is the client: counted under `--journal sqlite-async`.
+    count_this_thread();
     let Run { path, tls, .. } = run;
     let acceptor = Acceptor::bind("127.0.0.1:0")?;
     let local = acceptor.local_addr()?;
@@ -2075,6 +2129,24 @@ fn counted_threads(client: bool, observer: bool, journal: JournalKind, log: LogK
     }
     if journal == JournalKind::FileAsync {
         names.push("journal writer");
+    }
+    // Only registered threads are counted under `--journal sqlite-async`,
+    // and the log writer is not one of them.
+    #[cfg(feature = "sqlite")]
+    if journal == JournalKind::SqliteAsync {
+        let registered = match names.as_slice() {
+            [one] => format!("{one} thread"),
+            [first @ .., last] => format!("{} and {last} threads", first.join(", ")),
+            [] => String::new(),
+        };
+        return format!(
+            "{registered} only; the SQLite writer thread{} and SQLite's C heap are not counted",
+            if log == LogKind::File {
+                " and the log writer"
+            } else {
+                ""
+            }
+        );
     }
     if log == LogKind::File {
         names.push("log writer");
@@ -2626,6 +2698,10 @@ fn spawn_engine<F: FnOnce() + Send + 'static>(
     core: Option<usize>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     use fixbolt_engine::affinity::{CoreId, spawn_pinned};
+    let body = move || {
+        count_this_thread();
+        body();
+    };
     match core {
         Some(cpu) => {
             // `spawn_pinned` reads the mask back off the scheduler and returns
@@ -2649,6 +2725,10 @@ fn spawn_engine<F: FnOnce() + Send + 'static>(
     body: F,
     _core: Option<usize>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
+    let body = move || {
+        count_this_thread();
+        body();
+    };
     println!("engine-core: not pinned");
     std::thread::Builder::new()
         .name("w2w-engine".into())
@@ -2717,6 +2797,27 @@ impl Journals for OneFile {
     }
 }
 
+/// The store `--journal sqlite-async` opens, at the same
+/// [`fixbolt_engine::journal::SLOTS`] and [`fixbolt_engine::journal::SLOT_LEN`]
+/// as [`FileStore`], so the pair row 4b compares changes one variable.
+#[cfg(feature = "sqlite")]
+type SqliteStore = fixbolt_store_sqlite::SqliteStore;
+
+/// `--journal sqlite-async`: the one store this run opened, to the first
+/// connection, and nothing to any after — [`OneFile`]'s shape.
+#[cfg(feature = "sqlite")]
+struct OneSqlite(Option<SqliteStore>);
+
+#[cfg(feature = "sqlite")]
+impl Journals for OneSqlite {
+    type J = SqliteStore;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::J> {
+        self.0.take()
+    }
+}
+
 /// Where `--journal file-async` and `--log file` keep their files: under the
 /// system temp directory, named by this process's id so two runs on the same
 /// box never collide.
@@ -2749,6 +2850,9 @@ impl Drop for TempFile {
 struct Opened {
     journal: Option<FileStore>,
     log: Option<fixbolt_engine::msglog::FileLog>,
+    /// `--journal sqlite-async`'s store; `journal` is `None` beside it.
+    #[cfg(feature = "sqlite")]
+    sqlite: Option<SqliteStore>,
 }
 
 /// The guards that remove whichever files [`open_files`] opened. Held by the
@@ -2756,6 +2860,11 @@ struct Opened {
 struct Cleanup {
     _journal: Option<TempFile>,
     _log: Option<TempFile>,
+    /// The database, its `-wal` and its `-shm`. Removing a path opens no
+    /// descriptor on it, so this cannot drop SQLite's lock (ADR-0180
+    /// decision 5) even if a writer were still running.
+    #[cfg(feature = "sqlite")]
+    _sqlite: Vec<TempFile>,
 }
 
 /// Open what `--journal` and `--log` asked for: before the engine thread
@@ -2763,8 +2872,31 @@ struct Cleanup {
 /// file fails the run rather than the first message. With neither flag this
 /// opens nothing and touches no file.
 fn open_files(journal: JournalKind, log: LogKind) -> std::io::Result<(Opened, Cleanup)> {
+    #[cfg(feature = "sqlite")]
+    let (sqlite, sqlite_cleanup) = if journal == JournalKind::SqliteAsync {
+        let path =
+            std::env::temp_dir().join(format!("fixbolt-w2w-journal-{}.db", std::process::id()));
+        let cleanup = ["", "-wal", "-shm"]
+            .iter()
+            .map(|suffix| {
+                let mut p = path.as_os_str().to_owned();
+                p.push(suffix);
+                TempFile(p.into())
+            })
+            .collect::<Vec<_>>();
+        let opened = SqliteStore::open(
+            &path,
+            &Config::acceptor(b"FIX.4.4", b"ISLD", b"W2W"),
+            fixbolt_store_sqlite::SqliteOptions::default(),
+        )?;
+        (Some(opened), cleanup)
+    } else {
+        (None, Vec::new())
+    };
     let (journal, journal_cleanup) = match journal {
         JournalKind::Mem => (None, None),
+        #[cfg(feature = "sqlite")]
+        JournalKind::SqliteAsync => (None, None),
         JournalKind::FileAsync => {
             let path = journal_path();
             let opened = fixbolt_engine::journal::FileJournal::open(
@@ -2783,10 +2915,17 @@ fn open_files(journal: JournalKind, log: LogKind) -> std::io::Result<(Opened, Cl
         }
     };
     Ok((
-        Opened { journal, log },
+        Opened {
+            journal,
+            log,
+            #[cfg(feature = "sqlite")]
+            sqlite,
+        },
         Cleanup {
             _journal: journal_cleanup,
             _log: log_cleanup,
+            #[cfg(feature = "sqlite")]
+            _sqlite: sqlite_cleanup,
         },
     ))
 }
@@ -2811,10 +2950,48 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
     listener_every: std::num::NonZeroU32,
 ) {
     use fixbolt_engine::msglog::NoLog;
+    // `--journal sqlite-async`: two more monomorphised engines, beside the
+    // four below and matched here once, before the first turn.
+    #[cfg(feature = "sqlite")]
+    let files = match files {
+        Opened {
+            sqlite: Some(s),
+            log,
+            ..
+        } => {
+            match log {
+                None => serve::<_, _, _, UNTIL_CLOSED>(
+                    acceptor,
+                    stop,
+                    mode,
+                    app,
+                    side,
+                    OneSqlite(Some(s)),
+                    NoLog,
+                    stamp,
+                    listener_every,
+                ),
+                Some(l) => serve::<_, _, _, UNTIL_CLOSED>(
+                    acceptor,
+                    stop,
+                    mode,
+                    app,
+                    side,
+                    OneSqlite(Some(s)),
+                    l,
+                    stamp,
+                    listener_every,
+                ),
+            }
+            return;
+        }
+        other => other,
+    };
     match files {
         Opened {
             journal: None,
             log: None,
+            ..
         } => serve::<_, _, _, UNTIL_CLOSED>(
             acceptor,
             stop,
@@ -2829,6 +3006,7 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
         Opened {
             journal: Some(j),
             log: None,
+            ..
         } => serve::<_, _, _, UNTIL_CLOSED>(
             acceptor,
             stop,
@@ -2843,6 +3021,7 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
         Opened {
             journal: None,
             log: Some(l),
+            ..
         } => serve::<_, _, _, UNTIL_CLOSED>(
             acceptor,
             stop,
@@ -2857,6 +3036,7 @@ fn serve_chosen<A: Application, const UNTIL_CLOSED: bool>(
         Opened {
             journal: Some(j),
             log: Some(l),
+            ..
         } => serve::<_, _, _, UNTIL_CLOSED>(
             acceptor,
             stop,
@@ -3983,6 +4163,10 @@ mod wire {
         body: F,
     ) -> io::Result<(std::thread::JoinHandle<()>, String)> {
         use fixbolt_engine::affinity::{CoreId, spawn_pinned};
+        let body = move || {
+            super::count_this_thread();
+            body();
+        };
         let (t, on) = spawn_pinned("w2w-observer", CoreId(core), body)?;
         Ok((t, on.to_string()))
     }
