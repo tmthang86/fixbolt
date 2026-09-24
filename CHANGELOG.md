@@ -33,8 +33,10 @@ declared until all of these are true:
 Neither condition is a phase-3 exit criterion; both are read off this file, not off `STATUS.md`,
 because a released API's promise belongs beside the releases it binds.
 
-## [0.1.0] — date filled in when the owner publishes (`RELEASING.md`)
+## [0.1.0] — <date the tag was pushed>
 
+Released as the git tag `v0.1.0`; not published to crates.io
+([ADR-0161](docs/decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)).
 The first release: six crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`,
 `fixbolt-engine`, `fixbolt-sbe`, `fixbolt`), `0.1.0`, lockstep (ADR-0160). Everything below was
 written while every crate was still `0.0.0` and unpublished, and describes what this first

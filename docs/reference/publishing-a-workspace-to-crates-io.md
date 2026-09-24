@@ -200,6 +200,69 @@ so the first few runs are read correctly; the reversal that proves the
 unmodified worktree at the same `0.1.0`, not against `origin/main`, for
 exactly this reason — see `DESIGN.md` §6 *Packaging*.
 
+**Superseded in part by ADR-0161 decision 5, row 8b.** Once there is no
+crates.io upload, the baseline that matters is the last tag, not
+`origin/main`, and this hole is no longer merely "not yet meaningful" — it is
+the thing `scripts/check-semver-against-tag.sh` exists to close, blocking,
+before the `semver` job ever drops `continue-on-error`. See traps 11 and 12
+below.
+
+## 11. `cargo add --git` on a multi-package repository needs the package name
+
+`cargo add --git https://github.com/tmthang86/fixbolt --rev <sha>` with no
+package name fails outright: `[measured 2026-09-24]`
+
+```
+error: multiple packages found at `https://github.com/tmthang86/fixbolt`: fixbolt, fixbolt-attr-scan, fixbolt-codec, … fixbolt-w2w
+To disambiguate, run `cargo add --git … <package>`
+```
+
+Fifteen names, not six: cargo scans the whole tree for anything with a
+`Cargo.toml`, so beside the twelve workspace members (`publish = false` or
+not), it also lists the three packages outside the workspace
+(`spikes/fixp-probe`, `fuzz`, `spikes/ktls`). Naming the package resolves it
+at once: `cargo add --git <url> --tag <tag> fixbolt` prints `Adding fixbolt
+(git) to dependencies` and writes `fixbolt = { git = "<url>", tag = "<tag>",
+version = "<inferred>" }` — cargo infers the `version` field itself from the
+crate's own manifest at that tag.
+
+**Guard:** `scripts/stranger-check.sh --from git` always passes the package
+name explicitly (ADR-0161 decision 4); `docs/GETTING-STARTED.md` and
+`README.md` do the same in the line a human reads.
+
+## 12. `cargo-semver-checks` exits 0 on a major-looking bump having checked nothing, and a git baseline needs the tag fetched
+
+Trap 10 above named the defect once, against `origin/main`, as "not yet
+meaningful because the baseline is still `0.0.0`". ADR-0161 decision 1 (no
+crates.io upload) turns that from a temporary quirk into the actual gate's
+one blind spot: the real baseline for every future release is the previous
+tag, and the same `0.y` -> `0.(y+1)` skip applies there too, forever, not
+only once at `0.0.0` -> `0.1.0`. `[measured 2026-09-24]`
+`cargo semver-checks --workspace --baseline-rev v0.1.0` against an unchanged
+`0.1.0` runs the real 196-check lint set per crate (58 of 254 skipped by
+design — lints a minor release already permits); forcing the tool to treat
+the SAME comparison as a major bump (`--release-type major`) reads `0 checks:
+0 pass, 254 skip` per crate and still exits 0 — nothing distinguishes "found
+zero problems" from "compared nothing" in the exit status alone.
+
+A second, narrower trap sits right beside it: `--baseline-rev <tag>` needs
+the tag resolvable in the LOCAL checkout (`git rev-parse <tag>^{commit}`) —
+`--baseline-rev v9.9.9` (a tag that exists nowhere) exits 101,
+`error: couldn't parse revision: "v9.9.9^{tree}"`, `The ref partially named
+"v9.9.9" could not be found` — and a shallow checkout (the `actions/checkout`
+default) never has the tag to begin with, so the CI job needs
+`fetch-depth: 0` the same way the old `origin/main`-baseline job already did.
+
+**Guard:** `scripts/check-semver-against-tag.sh` reads, per published crate,
+the `Checked […] N checks: …` line cargo-semver-checks itself prints, and
+fails unless N > 0 — unless the workspace's own manifest version already
+differs from the tag's (a deliberate bump), read with `tomllib`, never
+inferred from cargo-semver-checks' own `(major change)` wording. Reversal:
+adding `--release-type major` to the wrapper's own invocation reads `FAIL
+semver: fixbolt-codec ran 0 checks against v0.1.0`; a tag the checkout has
+never fetched reads `FAIL — tag <tag> is not resolvable in this checkout` and
+exits 2, distinct from a real assertion failure.
+
 ## Sources
 
 - The Cargo book: *Publishing on crates.io*; *The manifest format* (`readme`,
@@ -217,3 +280,6 @@ exactly this reason — see `DESIGN.md` §6 *Packaging*.
 - The measurements above; plan
   [2026-09-23-p3-packaging-and-first-release](../plans/2026-09-23-p3-packaging-and-first-release.md)
   *Những gì đã biết chắc* facts 1–5 and 8, *Chia việc* rows 6b and 6c.
+- [ADR-0161](../decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)
+  *Context* (traps 11 and 12: measured on the desk, cargo 1.98.0, cargo-semver-checks 0.50.0,
+  2026-09-24) and *Decision* 4–5.

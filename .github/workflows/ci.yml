@@ -1001,7 +1001,7 @@ jobs:
       # file's shellcheck step (lint-config job) names them, and that job is
       # out of scope for this plan step — checked here instead, once, rather
       # than left silently unchecked.
-      - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh scripts/stranger-check.sh
+      - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh scripts/stranger-check.sh scripts/check-semver-against-tag.sh
       # ADR-0160 decisions 1 and 4, plan row 6a: before anything is packaged,
       # the manifests themselves must be lockstep — every internal normal
       # dependency pinned `=<version>`, every published crate inheriting the
@@ -1032,25 +1032,31 @@ jobs:
       # own code into it verbatim, and drives one Logon/Logout through it.
       - run: scripts/stranger-check.sh --from packaged
 
-  # ADR-0160 decision 7, plan row 6c. Advisory until the first publish exists
-  # (ADR-0097 exit criterion 8 is what makes it block, at row 8b): there is no
-  # crates.io baseline yet, so `--baseline-rev origin/main` is what "something
-  # real" means today. **The first run of this job on this very PR compares
-  # against `origin/main` BEFORE row 6a merged there** — every one of the six
-  # crates was still `version = "0.0.0"`, `publish = false` on that commit, so
-  # cargo-semver-checks reads a 0.0.0 → 0.1.0 jump as a major change and skips
-  # every structural check (`0 checks: 0 pass, 254 skip` per crate,
-  # `[measured 2026-09-23]`) — a green run here on THIS PR proves nothing yet.
-  # The first MEANINGFUL run is the first PR opened after row 6a (and this
-  # job) land on `main`, once both sides of the diff are at a real version.
-  # Reversal proof for the mechanism itself (not reproducible against
-  # `origin/main` today, for the same 0.0.0-skips-everything reason): renaming
-  # `fixbolt_codec::checksum::checksum` and comparing against an unmodified
-  # worktree at the same 0.1.0, `[measured 2026-09-23]`, read
+  # ADR-0160 decision 7, ADR-0161 decision 5, plan row 8b (docs/plans/
+  # 2026-09-23-p3-packaging-and-first-release.md, *Sửa 2*). BLOCKING from the
+  # tag `v0.1.0` onward: ADR-0161 decided there is no crates.io upload, so the
+  # real API baseline a stranger's `Cargo.lock` sees is the last released tag,
+  # not `origin/main`. `scripts/check-semver-against-tag.sh` wraps
+  # `cargo semver-checks --workspace --baseline-rev <tag>` and additionally
+  # asserts that each of the six published crates actually ran a nonzero
+  # count of checks — `[measured 2026-09-24]` an unchanged `0.y.z` version
+  # runs the full 196-check lint set, but a `0.y` -> `0.(y+1)` bump is read as
+  # a MAJOR change and silently skips every lint while still exiting 0
+  # (`0 checks: 0 pass, 254 skip` per crate — first seen at `0.0.0` ->
+  # `0.1.0`, before row 6a existed): a gate that trusted the exit status alone
+  # would have gone green at exactly the moment nothing was compared.
+  #
+  # Reversal proof for the mechanism itself, `[measured 2026-09-24]`: renaming
+  # `fixbolt_codec::checksum::checksum` and comparing an unmodified worktree
+  # at the same `0.1.0` against the `v0.1.0` tag read
   # `failure function_missing: pub fn removed or renamed`, named both
   # `fixbolt_codec::checksum::checksum` and its re-export
   # `fixbolt_codec::checksum`, and exited 100 — proving the pinned 0.50.0
-  # actually catches the defect class this job exists for.
+  # actually catches the defect class this job exists for. Reversal proof for
+  # THIS SCRIPT's own N>0 assertion: adding `--release-type major` to its
+  # `cargo semver-checks` invocation reads `FAIL semver: fixbolt-codec ran 0
+  # checks against v0.1.0` — the exact silent-skip failure mode above, forced
+  # without waiting for a real major bump.
   #
   # `cargo semver-checks --workspace` with no `--exclude`
   # `[measured 2026-09-23]` already checks exactly the six published crates
@@ -1060,20 +1066,54 @@ jobs:
   # does. No `--exclude` is needed; if a future crate is added without
   # `publish = false` and should stay unchecked, name it here and update
   # docs/reference/publishing-a-workspace-to-crates-io.md.
+  #
+  # The baseline literal (`v0.1.0` below) moves to the new tag in the pull
+  # request that follows each new tag, together with the install line in
+  # docs/GETTING-STARTED.md and README.md (ADR-0161 decision 5,
+  # RELEASING.md's tagging steps).
   semver:
-    name: cargo-semver-checks against origin/main (advisory until the first publish, ADR-0097 exit criterion 8)
-    continue-on-error: true
+    name: cargo-semver-checks against the v0.1.0 tag (blocking, ADR-0161)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
-          # cargo-semver-checks diffs against a real commit; the shallow
-          # checkout actions/checkout@v5 takes by default does not carry
-          # origin/main's history on a branch that forked from it earlier.
+          # cargo-semver-checks diffs against a real commit, and
+          # scripts/check-semver-against-tag.sh reads the tag's own
+          # Cargo.toml with `git show`; the shallow checkout
+          # actions/checkout@v5 takes by default carries neither the tag nor
+          # its history on a branch that forked from it earlier.
           fetch-depth: 0
       - run: cargo install --locked cargo-semver-checks --version 0.50.0
-      - run: cargo semver-checks --workspace --baseline-rev origin/main
+      - run: scripts/check-semver-against-tag.sh v0.1.0
+
+  # ADR-0161 decision 4, plan row 8b. The channel a real stranger actually
+  # uses — `cargo add --git <url> --tag v0.1.0` — over the network, from the
+  # first pull request opened after the tag exists (the tag is a precondition
+  # of both this job and the `semver` job above, not something either one
+  # waits to be created). Runs on `pull_request` too, not only `push` to
+  # `main` (CLAUDE.md §9 wants a green run id for the closing COMMIT, which
+  # for this row is a PR commit; this job also catches a
+  # docs/GETTING-STARTED.md edit that starts using API the tagged release
+  # does not have yet, before it merges rather than after).
+  stranger-git:
+    name: A stranger clones fixbolt from GitHub at the v0.1.0 tag and runs it (ADR-0161)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # scripts/stranger-check.sh's --from git mode verifies the built
+          # commit's sha against `git rev-parse v0.1.0^{commit}` IN THIS
+          # CHECKOUT — a shallow checkout with no tags would make that
+          # verification impossible rather than merely lenient. There is no
+          # vendor/-absence step here the way the `package` job has one:
+          # `--from git` clones fixbolt fresh from GitHub into its own
+          # scratch crate, so a vendor/ directory on THIS runner's checkout
+          # has no path into that build at all — asserting its absence would
+          # test nothing about this job's mechanism.
+          fetch-depth: 0
+      - run: scripts/stranger-check.sh --from git --tag v0.1.0
 
   # PHASE 1 EXIT CRITERION 4, and the only gate in this file with an opinion
   # that did not come from this repository.

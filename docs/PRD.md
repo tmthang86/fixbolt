@@ -114,8 +114,10 @@ decision 2). FAST and FIXML are out of scope for phase 2.
 [ADR-0097](decisions/ADR-0097-phase-3-makes-the-engine-dependable-by-a-stranger-and-fixp-waits-on-a-running-oracle.md)
 with all eight of its recommendations as proposed; the plan is
 [plans/2026-09-23-phase-3-scope.md](plans/2026-09-23-phase-3-scope.md). The published crates are
-`fixbolt-codec`, `-dict`, `-session`, `-engine`, `-sbe` and `fixbolt`; the owner runs
-`cargo publish`. The candidates it leaves out — kernel bypass, SIMD, clustering, HA,
+`fixbolt-codec`, `-dict`, `-session`, `-engine`, `-sbe` and `fixbolt`; released as the git tag
+`v0.1.0`, not a crates.io upload
+([ADR-0161](decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)).
+The candidates it leaves out — kernel bypass, SIMD, clustering, HA,
 replication — stay out of phase 3; bypass (Onload over AF_XDP) and SIMD are phase 4's, each behind
 a kill line (ADR-0098), and clustering, HA and replication stay in §5.
 
@@ -132,7 +134,7 @@ could not build.
 | `Decimal` | [ADR-0028](decisions/ADR-0028-a-decimal-is-a-copy-value-parsed-on-demand.md), accepted 2026-09-01; shape revised and built by [ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md), 2026-09-23 |
 | A second engine family in the interop gate | QuickFIX/J, both roles, plaintext and TLS — §3 gap 2 is that TLS has never spoken to another engine |
 | Packaging and an API gate | `cargo publish --workspace --dry-run` with no `vendor/`; `cargo-semver-checks` from the first release |
-| First publish, `0.1.0` | Not `1.0`: the `1.0` condition (one outside deployment, one clean minor) is written into `CHANGELOG.md` and is not a phase-3 criterion |
+| First release, `0.1.0` as the git tag `v0.1.0` | Not `1.0`: the `1.0` condition (one outside deployment, one clean minor) is written into `CHANGELOG.md` and is not a phase-3 criterion. Not a crates.io upload (ADR-0161) |
 | FIXP oracle spike, *conditional* | Only if the owner names a target venue (B3 Binary EntryPoint is the candidate; Artio's acceptor is the second implementation). Its output is the FIXP ADR, not a session machine ([ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md) decision 2). **Done 2026-09-23 (row 9)**: `scripts/fixp-spike.sh` — `accept PASS 5/5, reject-timestamp PASS, reject-credentials PASS` against Artio 0.184, blocking CI job `fixp-spike` ([ADR-0140](decisions/ADR-0140-the-fixp-spike-speaks-the-referees-own-schema-through-a-detached-probe-and-its-ci-job-blocks.md), [CONFORMANCE.md §11](CONFORMANCE.md)); the FIXP ADR is [ADR-0141](decisions/ADR-0141-fixp-is-built-only-in-the-venues-current-dialect-in-a-role-that-dialect-has-a-referee-for-and-not-before-phase-5.md) (Proposed): no session before phase 5, built only in B3's current dialect and in a role with a running referee | |
 
 **Not in phase 3, by name:** HA, replication, clustering, hot standby; kernel bypass, Onload,
@@ -153,8 +155,8 @@ commit, with a CI run id.
 | 4 | No credential reaches disk | a test writes a Logon with `554=` / `96=` through the message log and `FileJournal` and fails on finding the secret; proven by reversal |
 | 5 | `Decimal` ([ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md)) | `cargo test -p fixbolt-codec decimal`; its `benches/alloc.rs` case reads 0, proven by injection |
 | 6 | Second engine family | `scripts/interop.sh` against QuickFIX/J, both roles, 7 / 7, plaintext and TLS, blocking in CI |
-| 7 | A stranger can depend on it | a scratch crate outside the tree, `cargo add fixbolt@0.1.0`, `GETTING-STARTED.md`'s code verbatim, one Logon / Logout; exits 0 |
-| 8 | The API is watched | `cargo semver-checks --baseline-version 0.1.0`, blocking in CI |
+| 7 | A stranger can depend on it | a scratch crate outside the tree, `cargo add fixbolt --git https://github.com/tmthang86/fixbolt --tag v0.1.0`, `GETTING-STARTED.md`'s code verbatim, one Logon / Logout, proof the build came from GitHub at that tag; exits 0 (ADR-0161 decision 4) |
+| 8 | The API is watched | `scripts/check-semver-against-tag.sh v0.1.0` (`cargo semver-checks --baseline-rev v0.1.0`, asserting a real comparison ran), blocking in CI (ADR-0161 decision 5) |
 | — | Phases 1 and 2 still hold | 59 / 59 in process and on a socket; FIXT 179 / 180 with its pinned divergence; `libquickfix` interop 7 / 7; allocation benches 0 |
 
 ### Phase 4: the owner's five items, each behind a kill line — *Accepted — ADR-0098, 2026-09-23*

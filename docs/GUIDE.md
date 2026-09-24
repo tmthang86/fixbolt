@@ -654,8 +654,8 @@ not a plan). Add it as a build-dependency pinned to a release tag instead of `ca
 fixbolt-sbe-gen = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }
 ```
 
-(`v0.1.0` exists once `RELEASING.md` has run; before that, pin a commit instead —
-`rev = "<sha>"` — the same as `docs/GETTING-STARTED.md` does for `fixbolt` itself.)
+(`v0.1.0` is a git tag that already exists — ADR-0161 released `0.1.0` as a tag, not a crates.io
+upload — the same tag `docs/GETTING-STARTED.md` pins `fixbolt` itself to.)
 
 then call it directly from your own `build.rs`:
 
