@@ -29,21 +29,27 @@ guarantee the reset arrives only after everything already written has been deliv
 `Loop::refuse` drains the socket for a short, bounded time before dropping it:
 
 ```rust
-// Closing with unread bytes makes the kernel send a reset, which can
-// arrive before the answer is read. A short, bounded drain lets the
-// answer land; the bytes themselves are thrown away.
-if s.set_read_timeout(Some(Duration::from_millis(10))).is_ok() {
-    for _ in 0..4 {
-        match s.read(self.request.as_mut_slice()) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
+for _ in 0..4 {
+    let Some(left) = http::remaining(deadline) else {
+        break;
+    };
+    if s
+        .set_read_timeout(Some(left.min(Duration::from_millis(10))))
+        .is_err()
+    {
+        break;
+    }
+    match s.read(self.request.as_mut_slice()) {
+        Ok(0) | Err(_) => break,
+        Ok(_) => {}
     }
 }
 ```
 
-Four reads at 10 ms each is a bound of 40 ms on a connection the exporter has already decided
-to refuse — small next to the 1 s default `read_timeout` a well-behaved request gets.
+Bounded twice: four reads of at most 10 ms each — 40 ms on a connection the exporter has
+already decided to refuse — and never past that connection's own deadline, `read_timeout`
+counted from accept (senior review F1,
+[a-timeout-per-read-does-not-bound-a-client-that-trickles](a-timeout-per-read-does-not-bound-a-client-that-trickles.md)).
 
 ## What guards it, and how far the guard goes
 

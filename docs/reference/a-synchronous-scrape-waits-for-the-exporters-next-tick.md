@@ -8,7 +8,8 @@ row 1 step 5 of
 **A client that connects, waits for the reply, then repeats is capped near the exporter's own
 wake interval — not the rate the client asks for.** The first version of `scrape-loop.sh` did
 exactly that (connect, wait for the answer, sleep, repeat) and, asked for 10 Hz against the
-exporter's default 100 ms `tick`, reached **4.2 Hz**.
+exporter's default 100 ms `tick`, reached **4.2 Hz** — `[measured 2026-09-24]` on
+`tmt-B450-I-AORUS-PRO-WIFI`, its desktop grub line (no `isolcpus`), loopback, one run.
 
 ## The mechanism
 
@@ -49,12 +50,17 @@ it before starting the next — pacing is open-loop, matching what a real Promet
 the script's own throughput does not depend on how fast any one scrape is answered. That is
 the operational answer this repository ships.
 
-**No automated test asserts the ceiling itself.** There is no regression test that would go
-red if a future change made the effective cap worse than today's — the only place the number
-4.2 Hz appears is the comment above and this page. `scripts/scrape-loop.sh` prints the rate it
-actually achieved (`sent at … Hz asked …`) so a human reading its output notices a large gap
-between the two, but nothing fails the build on one. A change to `Loop::run`'s wake order, or
-to a client that reverts to a closed loop, would not be caught by CI.
+**The script now fails on the trap.** `scripts/scrape-loop.sh` exits 1 when the rate it sent
+falls under 0.9 × the rate asked (senior review F4 (i)), and the `gates` CI job runs it for 2 s
+at 10 Hz against a Python listener that answers every request after 300 ms — **"scrape-loop.sh
+keeps its rate against a slow listener"**. Open-loop, it sends at ~9.7 Hz there; the reversal
+(the `&` after `curl` removed, a closed loop again) read `sent at 2.4 Hz … FAIL`, exit 1, on
+the machine named above.
+
+What is still not guarded: the exporter's own ceiling for a closed-loop client — one `tick`
+per accept — has no test of its own, because it is the design (ADR-0170 decision 5), not a
+regression. A client that must scrape faster than `tick` either scrapes open-loop, as
+Prometheus does, or sets a shorter `tick`.
 
 ## Sources
 

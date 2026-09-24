@@ -666,6 +666,28 @@ jobs:
       - name: The Prometheus exposition format, checked by promtool
         run: scripts/check-metrics-format.sh
 
+      # Phase 4 row 1 senior review F4 (i). `scripts/scrape-loop.sh` is the 10 Hz
+      # load the mode scripts run under and row 2's scrape-on arm, and it once
+      # waited for each answer before the next — 4.2 Hz asked 10
+      # (docs/reference/a-synchronous-scrape-waits-for-the-exporters-next-tick.md).
+      # Against a listener that answers after 300 ms, an open loop still sends
+      # at ~10 Hz and a closed one at ~2.5 Hz; the script FAILs under 0.9 × the
+      # rate asked. Its reversal — the `&` after `curl` removed — goes red here.
+      - name: scrape-loop.sh keeps its rate against a slow listener
+        run: |
+          python3 -c '
+          import http.server as h, time
+          class H(h.BaseHTTPRequestHandler):
+              def do_GET(s):
+                  time.sleep(0.3); s.send_response(200); s.end_headers(); s.wfile.write(b"ok\n")
+              def log_message(s, *a): pass
+          h.ThreadingHTTPServer(("127.0.0.1", 19465), H).serve_forever()' &
+          srv=$!
+          for _ in $(seq 50); do curl -s -o /dev/null 127.0.0.1:19465/metrics && break; sleep 0.1; done
+          scripts/scrape-loop.sh 127.0.0.1:19465 10 2; rc=$?
+          kill "${srv}"
+          exit "${rc}"
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning

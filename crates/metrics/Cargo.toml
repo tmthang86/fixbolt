@@ -39,6 +39,16 @@ fixbolt-engine = { path = "../engine", features = ["standard"] }
 fixbolt-conformance = { path = "../conformance" }
 fixbolt-session = { path = "../session" }
 
+# `tests/inherits_affinity.rs` only: pinning the test's own thread needs
+# `sched_setaffinity`. Not `fixbolt-engine`'s `affinity` feature, which would do
+# it safely: a dev-dependency's feature is unified into every crate of a
+# `cargo test --all` invocation (docs/reference/feature-flags-unify-across-a-workspace.md),
+# and that would switch the engine's own affinity tests on for the whole
+# workspace. A dev-dependency reaches no consumer, and
+# `scripts/check-no-optional-deps.sh` asks with `-e normal`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true
 

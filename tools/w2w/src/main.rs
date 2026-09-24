@@ -1100,6 +1100,121 @@ fn value_of<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<
     }
 }
 
+/// `--metrics` beside `--engine-core`/`--client-core`: read the exporter
+/// thread's CPU mask back, after the pins, and refuse a run it would disturb.
+///
+/// Senior review F4 (ii). The exporter takes the mask of the thread that spawns
+/// it (`docs/reference/an-exporter-thread-inherits-its-spawners-cpu-affinity.md`),
+/// so the spawn order in `main` is the whole protection — and an order is a
+/// thing a later edit breaks without a sound. This reads the kernel's answer,
+/// the way ADR-0015 reads every other pin back. [`placement_verdict`] says
+/// what is refused, and why the rule is not "the mask contains the engine core".
+fn exporter_placement(
+    engine_core: Option<usize>,
+    client_core: Option<usize>,
+) -> std::io::Result<()> {
+    if METRICS.get().is_none() || (engine_core.is_none() && client_core.is_none()) {
+        return Ok(());
+    }
+    #[cfg(all(feature = "affinity", target_os = "linux"))]
+    {
+        use fixbolt_engine::affinity::Topology;
+        let mask = exporter_mask()?;
+        let topo = Topology::read().map_err(std::io::Error::other)?;
+        let isolated: Vec<usize> = topo.isolated().iter().map(|c| c.0).collect();
+        let measured: Vec<usize> = [engine_core, client_core].into_iter().flatten().collect();
+        if let Err(why) = placement_verdict(&mask, &measured, &isolated) {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+        println!("metrics-thread: cpus {mask:?}");
+    }
+    Ok(())
+}
+
+/// The CPUs the `fixbolt-metrics` thread may run on, read from
+/// `/proc/self/task/*/status`. `std` names a thread from inside it, so the name
+/// is waited for, briefly.
+#[cfg(all(feature = "affinity", target_os = "linux"))]
+fn exporter_mask() -> std::io::Result<Vec<usize>> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        for t in std::fs::read_dir("/proc/self/task")?.flatten() {
+            let named = std::fs::read_to_string(t.path().join("comm"))
+                .is_ok_and(|c| c.trim_end() == "fixbolt-metrics");
+            if !named {
+                continue;
+            }
+            let status = std::fs::read_to_string(t.path().join("status"))?;
+            return status
+                .lines()
+                .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+                .and_then(|v| cpu_list(v.trim()))
+                .ok_or_else(|| {
+                    std::io::Error::other("w2w: the exporter thread's mask is unreadable")
+                });
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(
+                "w2w: --metrics started no fixbolt-metrics thread",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Whether an exporter allowed on `mask` may run beside threads pinned to
+/// `measured`, on a machine whose `isolcpus` is `isolated`.
+///
+/// Two refusals, and **not** "the mask contains a measured core": with no
+/// `isolcpus` the scheduler may put any thread on any core, the exporter's
+/// inherited mask is every core, and that rule would refuse every correctly
+/// ordered `--allow-unisolated` run. What is refused is what the spawn order
+/// exists to prevent:
+///
+/// 1. the exporter may run on a measured core that `isolcpus` isolates — the
+///    isolation exists to keep every other thread off it;
+/// 2. the exporter may run **only** on measured cores — the mask it inherits
+///    from a thread that was already pinned, the reversal of the spawn order.
+#[cfg_attr(not(all(feature = "affinity", target_os = "linux")), allow(dead_code))]
+fn placement_verdict(mask: &[usize], measured: &[usize], isolated: &[usize]) -> Result<(), String> {
+    if let Some(cpu) = measured
+        .iter()
+        .find(|c| mask.contains(c) && isolated.contains(c))
+    {
+        return Err(format!(
+            "the fixbolt-metrics thread may run on cpu{cpu}, a measured core that isolcpus \
+             isolates (its cpus: {mask:?}) — it was spawned after a thread was pinned there"
+        ));
+    }
+    if !mask.is_empty() && mask.iter().all(|c| measured.contains(c)) {
+        return Err(format!(
+            "the fixbolt-metrics thread may run only on measured cores {mask:?} — it inherited \
+             the mask of a thread that was already pinned; spawn it before any pin"
+        ));
+    }
+    Ok(())
+}
+
+/// A kernel CPU list — `0-3,8,10-11` — as the CPUs it names.
+#[cfg_attr(not(all(feature = "affinity", target_os = "linux")), allow(dead_code))]
+fn cpu_list(text: &str) -> Option<Vec<usize>> {
+    let mut out = Vec::new();
+    for part in text.split(',').filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                let (a, b): (usize, usize) = (a.parse().ok()?, b.parse().ok()?);
+                if a > b {
+                    return None;
+                }
+                out.extend(a..=b);
+            }
+            None => out.push(part.parse().ok()?),
+        }
+    }
+    Some(out)
+}
+
 /// `--metrics <addr>`: where the exporter listens, or `None` without the flag.
 /// A value that is not a socket address is refused, not defaulted.
 fn metrics_of(args: &[String]) -> Result<Option<std::net::SocketAddr>, String> {
@@ -1630,6 +1745,7 @@ fn both_halves(
     let engine = spawn_engine(body, engine_core)?;
 
     pin_client(client_core)?;
+    exporter_placement(engine_core, client_core)?;
 
     let peer = Peer::InProcess {
         stop: &stop,
@@ -1868,6 +1984,7 @@ fn engine_half(
         }
     };
     let engine = spawn_engine(body, engine_core)?;
+    exporter_placement(engine_core, None)?;
     // The main thread blocks here and allocates nothing, so the count below is
     // the engine thread's.
     engine
@@ -5141,6 +5258,34 @@ mod tests {
         assert_eq!(
             metrics_of(&argv("--metrics")),
             Err("--metrics needs a value".into())
+        );
+    }
+
+    #[test]
+    fn a_cpu_list_reads_as_the_kernel_writes_it() {
+        assert_eq!(cpu_list("0-3,8,10-11"), Some(vec![0, 1, 2, 3, 8, 10, 11]));
+        assert_eq!(cpu_list("2"), Some(vec![2]));
+        assert_eq!(cpu_list("3-1"), None);
+        assert_eq!(cpu_list("x"), None);
+    }
+
+    /// Senior review F4 (ii): the two refusals, and the run that must pass.
+    #[test]
+    fn the_exporter_is_refused_beside_a_measured_core_it_could_take() {
+        let all: Vec<usize> = (0..16).collect();
+        // No isolcpus, spawned before the pins: every core, and allowed.
+        assert_eq!(placement_verdict(&all, &[2, 3], &[]), Ok(()));
+        // isolcpus 2-3, spawned before the pins: the housekeeping cores only.
+        let housekeeping: Vec<usize> = (0..16).filter(|c| ![2, 3].contains(c)).collect();
+        assert_eq!(placement_verdict(&housekeeping, &[2, 3], &[2, 3]), Ok(()));
+        // Spawned after the client pinned itself: its core and nothing else.
+        let e = placement_verdict(&[3], &[2, 3], &[]).unwrap_err();
+        assert!(e.contains("only on measured cores [3]"), "{e}");
+        // Allowed on an isolated measured core.
+        let e = placement_verdict(&all, &[2, 3], &[2, 3]).unwrap_err();
+        assert!(
+            e.contains("cpu2, a measured core that isolcpus isolates"),
+            "{e}"
         );
     }
 

@@ -584,11 +584,24 @@ impl Observer {
     /// and vice versa, which is the coupling this whole module exists to avoid.
     #[must_use]
     pub fn request(&self) -> Option<Snapshot> {
+        self.ask();
+        self.latest()
+    }
+
+    /// Ask for a snapshot and **take nothing** — raise the flag, and that is
+    /// all: no lock on the cell, no copy, nothing returned.
+    ///
+    /// `[added 2026-09-24]` plan `2026-09-24-p4-metrics-exporter` *Sửa 1*
+    /// (senior review F5). A reader that will wait for [`Self::published`] to
+    /// move and then read with [`Self::latest`] has no use for the snapshot
+    /// [`Self::request`] returns, and copying it holds the cell — during which
+    /// the engine's `try_lock` misses and its publish slips a turn. The engine
+    /// is never blocked either way (non-negotiable 4); this removes the
+    /// contention rather than tolerating it. `fixbolt-metrics` asks with this.
+    /// Proven by `ask_raises_the_flag_and_reads_nothing` in
+    /// `crates/engine/tests/observe_occupancy.rs`.
+    pub fn ask(&self) {
         self.0.wanted.store(true, Ordering::Release);
-        if self.0.published.load(Ordering::Acquire) == 0 {
-            return None;
-        }
-        self.0.cell.lock().ok().map(|s| *s)
     }
 
     /// The most recent snapshot the engine published, **without asking for

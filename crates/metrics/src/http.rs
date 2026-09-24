@@ -10,6 +10,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use std::time::{Duration, Instant};
 
 /// The largest request this exporter reads. A request that has not ended its
 /// headers within this many bytes is refused, not buffered.
@@ -48,15 +49,34 @@ pub(crate) enum Received {
     Complete(usize),
     /// [`REQUEST_CAP`] bytes and still no end of headers.
     TooLarge,
-    /// The peer closed, or said nothing before the read timeout, or the socket
-    /// failed. There is nobody to answer.
+    /// The peer closed, or had not finished its request by the deadline, or
+    /// the socket failed. There is nobody to answer.
     Gone,
 }
 
+/// What is left of `deadline`, or `None` once it has passed. A zero timeout is
+/// not "none left" to the socket API — `set_read_timeout(Some(ZERO))` is an
+/// error — so a passed deadline is answered here, never handed down.
+pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    (!left.is_zero()).then_some(left)
+}
+
 /// Read until the blank line that ends the headers, at most [`REQUEST_CAP`]
-/// bytes. The socket's read timeout bounds how long a silent client holds the
-/// exporter's one thread.
-pub(crate) fn read_request(s: &mut TcpStream, buf: &mut [u8; REQUEST_CAP]) -> Received {
+/// bytes, and **no later than `deadline`**.
+///
+/// The deadline is the connection's, not the read's: before every read the
+/// socket's timeout is set to what is left of it. `[2026-09-24]` the first
+/// version set `read_timeout` once and let each read restart it, so a client
+/// sending one byte every 700 ms against a 1 s timeout was never timed out and
+/// held the exporter's one thread — and `stop()` — for as long as it kept
+/// going (senior review F1). `a_client_that_trickles_bytes_is_dropped_at_the_deadline`
+/// holds it.
+pub(crate) fn read_request(
+    s: &mut TcpStream,
+    buf: &mut [u8; REQUEST_CAP],
+    deadline: Instant,
+) -> Received {
     let mut n = 0;
     loop {
         let Some(room) = buf.get_mut(n..) else {
@@ -64,6 +84,12 @@ pub(crate) fn read_request(s: &mut TcpStream, buf: &mut [u8; REQUEST_CAP]) -> Re
         };
         if room.is_empty() {
             return Received::TooLarge;
+        }
+        let Some(left) = remaining(deadline) else {
+            return Received::Gone;
+        };
+        if s.set_read_timeout(Some(left)).is_err() {
+            return Received::Gone;
         }
         match s.read(room) {
             Ok(0) | Err(_) => return Received::Gone,
@@ -143,15 +169,16 @@ impl Status {
     }
 }
 
-/// Write one whole response. `metrics` picks the scrape's `Content-Type`;
-/// `head` sends the headers — with the length the body would have — and no
-/// body.
+/// Write one whole response, **no later than `deadline`**. `metrics` picks the
+/// scrape's `Content-Type`; `head` sends the headers — with the length the body
+/// would have — and no body.
 pub(crate) fn respond(
     s: &mut TcpStream,
     status: Status,
     metrics: bool,
     body: &[u8],
     head: bool,
+    deadline: Instant,
 ) -> io::Result<()> {
     let mut hdr = Header::default();
     hdr.put(status.line());
@@ -164,11 +191,28 @@ pub(crate) fn respond(
         hdr.put(b"Allow: GET, HEAD\r\n");
     }
     hdr.put(b"Connection: close\r\n\r\n");
-    s.write_all(hdr.bytes())?;
+    write_by(s, hdr.bytes(), deadline)?;
     if !head {
-        s.write_all(body)?;
+        write_by(s, body, deadline)?;
     }
-    s.flush()
+    Ok(())
+}
+
+/// `write_all`, with the timeout of every `write` set to what is left of
+/// `deadline` — a reader that takes one byte at a time is bounded by the
+/// connection's deadline, not by one timeout per write.
+fn write_by(s: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let left = remaining(deadline).ok_or(io::ErrorKind::TimedOut)?;
+        s.set_write_timeout(Some(left))?;
+        match s.write(bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or(&[]),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// A response header on the stack. 256 bytes holds the longest this module

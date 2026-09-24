@@ -146,7 +146,7 @@ fn scrape_the_fixture() -> String {
         .engine("front-door", front_observer.clone())
         .min_request_interval(Duration::from_millis(1))
         .fresh_wait(Duration::from_millis(50))
-        .with_events(|_| {})
+        .with_events(|_, _| {})
         .spawn()
         .expect("the exporter starts");
 

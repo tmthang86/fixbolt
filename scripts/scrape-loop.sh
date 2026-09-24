@@ -13,19 +13,25 @@
 #   unanswered  no HTTP answer at all: nothing listening (a mode script between
 #               two w2w runs), or no reply within the timeout
 #
-# EXIT: 0 when at least one scrape was `ok` and none was `bad`; 1 when any was
-# `bad`, or none was `ok` — a loop that never reached an exporter scraped
-# nothing and must not read as load; 2 on a usage error.
+# EXIT: 0 when at least one scrape was `ok`, none was `bad`, and the attempts
+# went out at no less than 0.9 × <hz>; 1 when any was `bad`, none was `ok` — a
+# loop that never reached an exporter scraped nothing and must not read as
+# load — or the rate sent fell short: load at 3 Hz is not the 10 Hz a gate was
+# promised; 2 on a usage error.
 #
 # WHAT IT CANNOT SEE: whether the body is right (that is
 # `crates/metrics/tests/`), or what a scrape cost the engine (that is row 2's
 # `w2w` pair).
 #
 # PACING: one attempt is STARTED every 1/<hz> seconds and not waited for, so a
-# slow answer does not lower the rate. `[measured 2026-09-24]` the first
+# slow answer does not lower the rate. `[measured 2026-09-24,
+# tmt-B450-I-AORUS-PRO-WIFI on its desktop grub line, no isolcpus]` the first
 # version waited for each answer and then slept; against the exporter's
 # default 100 ms `tick` — a scrape waits up to one tick to be accepted — it
-# reached 4.2 Hz when asked for 10. The summary prints the rate that was sent.
+# reached 4.2 Hz when asked for 10. The summary prints the rate that was sent,
+# and the rate check above FAILs a loop that falls back to waiting: the gates
+# job runs this script for 2 s at 10 Hz against a listener that answers after
+# 300 ms, where a closed loop manages about 2.5 Hz.
 set -uo pipefail
 
 if [[ $# -ne 3 ]]; then
@@ -68,6 +74,11 @@ if ((bad > 0)); then
 fi
 if ((ok == 0)); then
   echo "scrape-loop: FAIL — no scrape reached an exporter" >&2
+  exit 1
+fi
+if awk -v n="${attempts}" -v a="${start_ns}" -v b="${sent_ns}" -v h="${hz}" \
+  'BEGIN { exit !(n / ((b - a) / 1e9) < 0.9 * h) }'; then
+  echo "scrape-loop: FAIL — sent at ${rate} Hz, under 0.9 × the ${hz} Hz asked; the load was not the load promised" >&2
   exit 1
 fi
 exit 0

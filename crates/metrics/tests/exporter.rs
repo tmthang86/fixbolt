@@ -341,6 +341,40 @@ fn the_snapshot_age_grows_while_the_engine_sleeps() {
     );
 }
 
+/// A snapshot somebody else asked for — the application's own `request()` —
+/// is dated when the engine published it, not when the exporter next happens
+/// to be scraped. The exporter looks at `published()` on every tick, so an age
+/// read half a second after a publish says half a second.
+#[test]
+fn a_snapshot_another_reader_asked_for_is_dated_when_it_was_published() {
+    let (mut engine, observer, _peer) = logged_on(InlineDispatch::new(Silent));
+    let exporter = Exporter::builder(any_port())
+        .engine("a", observer.clone())
+        .tick(Duration::from_millis(10))
+        .min_request_interval(Duration::from_millis(1))
+        .fresh_wait(Duration::from_millis(5))
+        .spawn()
+        .expect("the exporter starts");
+
+    // The application asks, the engine publishes once, and then sleeps.
+    let _ = observer.request();
+    engine.turn();
+    assert_eq!(observer.published(), 1);
+    std::thread::sleep(Duration::from_millis(500));
+
+    let (_, body) = get(exporter.local_addr(), "/metrics");
+    exporter.stop();
+    let age: f64 = sample(&body, "fixbolt_snapshot_age_seconds{engine=\"a\"}")
+        .unwrap_or_else(|| panic!("an age: {body}"))
+        .parse()
+        .expect("a number");
+    assert!(
+        age >= 0.4,
+        "the engine published 500 ms before this scrape and nothing since, so the snapshot \
+         is 500 ms old — the exporter read {age} s, the time since IT first looked"
+    );
+}
+
 #[test]
 fn healthz_follows_snapshot_healthy() {
     let serving = Turning::start(true);
@@ -480,6 +514,95 @@ fn a_client_that_sends_nothing_is_dropped_after_the_read_timeout() {
     assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
 }
 
+/// A client that sends one byte every 100 ms never lets a single read time
+/// out, so a per-read timeout would hold the exporter's only thread for as long
+/// as it keeps trickling. **One deadline per connection**, covering its read
+/// and its reply, is what bounds it: the connection is dropped `read_timeout`
+/// after it was accepted, a scrape behind it waits at most that long, and
+/// `stop()` returns within the bound its rustdoc states.
+#[test]
+fn a_client_that_trickles_bytes_is_dropped_at_the_deadline() {
+    const TIMEOUT: Duration = Duration::from_millis(300);
+    let (_engine, observer, _peer) = logged_on(InlineDispatch::new(Silent));
+    let exporter = Exporter::builder(any_port())
+        .engine("a", observer)
+        .read_timeout(TIMEOUT)
+        .tick(Duration::from_millis(10))
+        .fresh_wait(Duration::from_millis(5))
+        .spawn()
+        .expect("the exporter starts");
+    let addr = exporter.local_addr();
+
+    /// Connect, then send one byte every 100 ms for up to 3 s from one thread
+    /// while another waits for the exporter to hang up. Returns when it did.
+    fn loris(addr: SocketAddr) -> std::thread::JoinHandle<Duration> {
+        let s = TcpStream::connect(addr).expect("connect");
+        let began = Instant::now();
+        let mut writer = s.try_clone().expect("a second handle");
+        std::thread::spawn(move || {
+            while began.elapsed() < Duration::from_secs(3) {
+                if writer.write_all(b"X").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        std::thread::spawn(move || {
+            let mut s = s;
+            s.set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("a timeout");
+            let mut buf = [0u8; 64];
+            loop {
+                match s.read(&mut buf) {
+                    // EOF, or a reset: either way the exporter let go.
+                    Ok(0) => break,
+                    Err(e)
+                        if !matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(_) => panic!("still held after 5 s"),
+                    Ok(_) => {}
+                }
+            }
+            began.elapsed()
+        })
+    }
+
+    let held = loris(addr);
+    std::thread::sleep(Duration::from_millis(50));
+    let began = Instant::now();
+    let (head, _) = get(addr, "/metrics");
+    let scrape_took = began.elapsed();
+    let dropped_after = held.join().expect("the loris reader did not panic");
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+    assert!(
+        dropped_after < Duration::from_secs(1),
+        "a client trickling a byte every 100 ms was held {dropped_after:?}; the deadline is \
+         {TIMEOUT:?} from accept, whatever the client sends"
+    );
+    assert!(
+        scrape_took < Duration::from_secs(1),
+        "a scrape queued behind the trickling client waited {scrape_took:?}; it must wait at \
+         most one deadline"
+    );
+
+    // And `stop()` with one trickling client mid-request: one tick, or one
+    // deadline plus `fresh_wait` — `Exporter::stop`'s documented bound.
+    let _held = loris(addr);
+    std::thread::sleep(Duration::from_millis(50));
+    let began = Instant::now();
+    exporter.stop();
+    let stop_took = began.elapsed();
+    assert!(
+        stop_took < Duration::from_secs(1),
+        "stop() took {stop_took:?} with a trickling client connected"
+    );
+}
+
 #[test]
 fn without_events_the_exporter_leaves_the_stream_alone() {
     // The observer exists before the Logon, so the `LoggedOn` event is recorded.
@@ -522,7 +645,7 @@ fn with_events_the_exporter_counts_and_hands_each_event_on() {
         .engine("a", observer.clone())
         .tick(Duration::from_millis(5))
         .fresh_wait(Duration::from_millis(5))
-        .with_events(move |e| {
+        .with_events(move |_, e| {
             if matches!(e.kind(), EventKind::LoggedOn) {
                 counter.fetch_add(1, Ordering::Relaxed);
             }
@@ -558,6 +681,49 @@ fn with_events_the_exporter_counts_and_hands_each_event_on() {
     assert!(
         events.is_empty(),
         "the exporter is the stream's only reader: {events:?}"
+    );
+}
+
+/// Plan Sửa 1, F2. `ConnId` starts again at 0 in every engine, so with two
+/// engines behind one exporter an event's `id()` alone cannot say whose it is.
+/// The handler is given the name passed to `.engine(name, …)` — the same
+/// string as the `engine` label on every series.
+#[test]
+fn with_events_names_the_engine_each_event_came_from() {
+    let (_ea, oa, _pa) = logged_on(InlineDispatch::new(Silent));
+    let (_eb, ob, _pb) = logged_on(InlineDispatch::new(Silent));
+    /// `(engine name, conn, was it a LoggedOn)`, one per event the handler saw.
+    type Seen = Vec<(&'static str, u64, bool)>;
+    let seen: Arc<std::sync::Mutex<Seen>> = Arc::default();
+    let into = Arc::clone(&seen);
+    let exporter = Exporter::builder(any_port())
+        .engine("a", oa)
+        .engine("b", ob)
+        .tick(Duration::from_millis(5))
+        .fresh_wait(Duration::from_millis(5))
+        .with_events(move |engine: &'static str, e| {
+            let logged_on = matches!(e.kind(), EventKind::LoggedOn);
+            into.lock()
+                .expect("not poisoned")
+                .push((engine, e.id(), logged_on));
+        })
+        .spawn()
+        .expect("the exporter starts");
+    let (_, body) = get(exporter.local_addr(), "/metrics");
+    exporter.stop();
+
+    let seen = seen.lock().expect("not poisoned").clone();
+    assert!(
+        seen.contains(&("a", 0, true)) && seen.contains(&("b", 0, true)),
+        "each engine's `LoggedOn`, on conn 0 in both, named by its engine: {seen:?}"
+    );
+    assert_eq!(
+        sample(
+            &body,
+            "fixbolt_events_total{engine=\"b\",kind=\"logged_on\"}"
+        ),
+        Some("1"),
+        "and the counters agree on whose it was: {body}"
     );
 }
 
@@ -638,7 +804,7 @@ fn stop_joins_the_thread() {
     let witness = Dropped(Arc::clone(&gone));
     let exporter = Exporter::builder(any_port())
         .engine("a", observer)
-        .with_events(move |_| {
+        .with_events(move |_, _| {
             let _ = &witness;
         })
         .spawn()

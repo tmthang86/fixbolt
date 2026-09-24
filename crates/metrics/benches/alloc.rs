@@ -182,7 +182,7 @@ fn main() {
         // The worst case: every scrape asks, so every scrape builds.
         .min_request_interval(Duration::ZERO)
         .tick(Duration::from_millis(1))
-        .with_events(move |_| {
+        .with_events(move |_, _| {
             counter.fetch_add(1, Ordering::Relaxed);
         })
         .spawn()

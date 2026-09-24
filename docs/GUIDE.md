@@ -1453,7 +1453,9 @@ Four things to hold onto:
    and the documentation is the only thing standing between this port and the internet.
 4. **A `standard` engine asleep in `poll` is not woken to answer a scrape.**
    `fixbolt_snapshot_age_seconds` grows honestly instead of the exporter forcing a wakeup — the
-   same staleness `request()` already has above, now with a number an alert can watch.
+   same staleness `request()` already has above, now with a number an alert can watch. The
+   exporter looks at `published()` on every `tick`, so a snapshot your own code asked for is
+   dated when the engine published it (to within one `tick`), not at the next scrape.
 
 Two more things worth reading before trusting a scrape's timing: a synchronous scrape loop
 (connect, wait, repeat) is capped near the exporter's own wake interval, not the rate you ask

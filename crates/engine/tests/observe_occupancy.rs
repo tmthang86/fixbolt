@@ -215,6 +215,31 @@ fn latest_reads_without_asking() {
     );
 }
 
+/// Plan Sửa 1, F5: `ask` raises the flag and does nothing else — no lock on
+/// the cell, no copy, nothing returned — so a reader that only wants the next
+/// snapshot built never makes the engine's `try_lock` miss.
+#[test]
+fn ask_raises_the_flag_and_reads_nothing() {
+    let (_peer, mut engine) = logged_on(InlineDispatch::new(Silent));
+    let observer = engine.observer();
+
+    // Before anything was published: nothing to return, nothing to panic on.
+    let () = observer.ask();
+    assert_eq!(observer.published(), 0, "asking builds nothing by itself");
+    engine.turn();
+    assert_eq!(observer.published(), 1, "one ask, one turn, one snapshot");
+    assert!(observer.latest().is_some(), "and there it is");
+
+    for _ in 0..10 {
+        engine.turn();
+    }
+    assert_eq!(observer.published(), 1, "nobody asked again");
+
+    observer.ask();
+    engine.turn();
+    assert_eq!(observer.published(), 2, "asked again, built again");
+}
+
 /// Through the front door, which is the only place a pre-session stage exists:
 /// two sockets that connect and say nothing hold two slots until their
 /// `Logon` deadline.

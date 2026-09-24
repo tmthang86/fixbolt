@@ -37,12 +37,29 @@ not nothing.
 
 ## What guards it, and what does not
 
-**Nothing automated.** Plan step 5's evidence was a one-time manual read —
-`ps -L -o tid,psr,comm` on the desk, showing `fixbolt-metrics` not sharing a `psr` (processor)
-column with the pinned engine thread when `--engine-core` was set. No CI script asserts this,
-and no regression test exists: a future change to `w2w`'s spawn order, or an application that
-spawns its own `Exporter` after pinning its engine thread, would not be caught by any gate in
-this repository. This is documentation-only protection.
+Two guards since senior review F4 (ii):
+
+- **`crates/metrics/tests/inherits_affinity.rs`**
+  (`the_exporter_thread_takes_the_cpu_mask_of_the_thread_that_spawns_it`, Linux): pins a thread
+  to one core, spawns an exporter from it, finds the `fixbolt-metrics` thread under
+  `/proc/self/task` and asserts its `Cpus_allowed_list` is exactly that core. It holds the
+  inheritance itself — the premise every sentence on this page rests on. Its own test binary,
+  because every test in `tests/exporter.rs` runs an exporter of the same name in parallel.
+- **`tools/w2w`, after the pins** (`exporter_placement`, `placement_verdict`): with `--metrics`
+  and `--engine-core`/`--client-core`, it reads the exporter thread's mask back and refuses the
+  run if the exporter may run on a measured core that `isolcpus` isolates, or may run *only* on
+  measured cores. **Not** "the mask contains the engine core": with no `isolcpus` the inherited
+  mask is every core, and that rule would refuse every correctly ordered `--allow-unisolated`
+  run. The reversal — `pin_client` moved before the exporter's spawn — was refused with "may run
+  only on measured cores [3] — it inherited the mask of a thread that was already pinned",
+  exit 1 (`[2026-09-24]`, `tmt-B450-I-AORUS-PRO-WIFI`, desktop grub line, cpu2/cpu3
+  `--allow-unisolated`). The correct order printed `metrics-thread: cpus [0, …, 15]` and ran.
+
+Still unguarded: an application that spawns its own `Exporter` after pinning its engine thread.
+Nothing in this repository runs that application; `GUIDE.md` §8a is its protection. **Not
+proven on the §9 line**: that under `isolcpus` the main thread's default mask — and so the
+exporter's — excludes the isolated cores; the desk was on its desktop grub line when this was
+written.
 
 ## What an operator does about it
 

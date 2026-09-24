@@ -171,7 +171,9 @@ impl Builder {
         self
     }
 
-    /// Give a client this long to send its request and to take the answer.
+    /// Give a client this long, **from the moment it is accepted**, to send its
+    /// request and to take the answer: one deadline per connection, not a
+    /// timeout per read, so a client that trickles bytes is dropped on time.
     /// [`DEFAULT_READ_TIMEOUT`]; at least [`MIN_DURATION`].
     #[must_use]
     pub fn read_timeout(mut self, d: Duration) -> Self {
@@ -182,12 +184,19 @@ impl Builder {
     /// Make the exporter the **only** reader of every watched engine's event
     /// stream: it counts `fixbolt_events_total{kind}` and
     /// `fixbolt_session_ends_total{reason}`, and hands each event to
-    /// `handler`, on the exporter thread, in order.
+    /// `handler`, on the exporter thread, in order — with the `name` its engine
+    /// was given at [`Self::engine`], the same string as that engine's `engine`
+    /// label. Needed as soon as there are two engines: a `ConnId` starts again
+    /// at 0 in each, so an event's `id()` alone cannot say whose it is (plan
+    /// Sửa 1, F2).
     ///
     /// Without this the exporter reads no event — reading one removes it, and
     /// the stream belongs to whoever else reads it.
     #[must_use]
-    pub fn with_events<F: FnMut(&Event) + Send + 'static>(mut self, handler: F) -> Self {
+    pub fn with_events<F>(mut self, handler: F) -> Self
+    where
+        F: FnMut(&'static str, &Event) + Send + 'static,
+    {
         self.on_event = Some(Box::new(handler));
         self
     }
@@ -263,9 +272,11 @@ impl Exporter {
         self.local_addr
     }
 
-    /// Stop the thread and wait for it: at most one `tick`, plus one request's
-    /// `read_timeout` if a client is mid-request. The listener is closed when
-    /// this returns.
+    /// Stop the thread and wait for it: at most one `tick` when it is asleep,
+    /// or, when it is answering a connection, that connection's `read_timeout`
+    /// (its deadline, counted from accept) plus one `fresh_wait`. No further
+    /// connection is taken once stop is asked. The listener is closed when this
+    /// returns.
     pub fn stop(mut self) {
         self.halt();
     }

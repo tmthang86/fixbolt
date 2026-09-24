@@ -36,8 +36,12 @@ The two numbers it needed from the engine — `Snapshot::ring_to_app`,
   message says to add a `CHANGELOG.md` line
 - `tests/exporter.rs` — a real engine behind a real socket: the exact `Content-Type`, the scrape
   storm's ceiling on snapshot builds, the snapshot age growing while an engine sleeps,
-  `/healthz` following `Snapshot::healthy`, refusal of oversized and silent requests, events
+  `/healthz` following `Snapshot::healthy`, refusal of oversized, silent and trickling requests
+  (one deadline per connection), a snapshot another reader asked for dated when it was
+  published, events
   left alone unless handed over, a series with no source left out, `stop` joining the thread
+- `tests/inherits_affinity.rs` (Linux, its own binary) — the exporter thread takes the CPU mask
+  of the thread that spawns it
 - unit tests in `src/encode.rs` (`a_full_snapshot_fits_the_reserved_buffer`, escaping, skew
   printing), `src/series.rs` (`with_events_every_drop_reason_today_has_its_own_label`) and
   `src/http.rs` (request-line judging)
