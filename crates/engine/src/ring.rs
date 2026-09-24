@@ -198,6 +198,14 @@ impl Producer {
         self.shared.buf.len() - (tail.wrapping_sub(head))
     }
 
+    /// The bytes this ring holds: what [`pair`] was asked for, rounded up to a
+    /// power of two. Fixed for the ring's life. `used` is this less
+    /// [`Self::free`].
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.shared.buf.len()
+    }
+
     /// One record, made of `parts` laid end to end.
     ///
     /// `false` means it did not fit and **nothing was written** — a record is

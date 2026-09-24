@@ -183,6 +183,43 @@ impl SessionSnapshot {
     }
 }
 
+/// How much of something bounded is taken: `used` of `capacity`.
+///
+/// `[added 2026-09-24]` ADR-0170 decision 8. Two numbers rather than a ratio,
+/// because the unit differs by source — bytes for
+/// [`Snapshot::ring_to_app`], slots for [`Snapshot::presession_slots`] — and a
+/// reader that wants the ratio can make it, where one that wants the headroom
+/// could not get it back from a ratio.
+///
+/// **Only ever seen inside an `Option`**, and `None` is not "empty": it means
+/// nothing reported this number at all. An exporter omits the series rather
+/// than print a zero that would read as healthy (plan
+/// `docs/plans/2026-09-24-p4-metrics-exporter.md` §A.4).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Occupancy {
+    used: usize,
+    capacity: usize,
+}
+
+impl Occupancy {
+    /// `pub(crate)`: only the engine reports one.
+    pub(crate) const fn new(used: usize, capacity: usize) -> Self {
+        Self { used, capacity }
+    }
+
+    /// How much is taken, in the unit of whatever reported it.
+    #[must_use]
+    pub const fn used(&self) -> usize {
+        self.used
+    }
+
+    /// The bound `used` is measured against, in the same unit.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
 /// One engine, at one instant.
 #[derive(Debug, Clone, Copy)]
 pub struct Snapshot {
@@ -194,6 +231,8 @@ pub struct Snapshot {
     unframeable_prelogon: usize,
     sources_missing: usize,
     log_lost: u64,
+    ring_to_app: Option<Occupancy>,
+    presession_slots: Option<Occupancy>,
 }
 
 impl Default for Snapshot {
@@ -207,6 +246,8 @@ impl Default for Snapshot {
             unframeable_prelogon: 0,
             sources_missing: 0,
             log_lost: 0,
+            ring_to_app: None,
+            presession_slots: None,
         }
     }
 }
@@ -303,6 +344,54 @@ impl Snapshot {
         self.sources_missing = sources_missing;
         self.log_lost = log_lost;
         self.unframeable_prelogon = unframeable_prelogon;
+    }
+
+    /// Fill in the two bounded things the engine reports, each `None` when
+    /// nothing reported it. `pub(crate)`: only the engine builds one of these.
+    /// A setter of its own rather than two more arguments on
+    /// [`Self::set_counters`], which is at clippy's argument ceiling.
+    pub(crate) const fn set_occupancy(
+        &mut self,
+        ring_to_app: Option<Occupancy>,
+        presession_slots: Option<Occupancy>,
+    ) {
+        self.ring_to_app = ring_to_app;
+        self.presession_slots = presession_slots;
+    }
+
+    /// How full the ring from the engine to the application is, **in bytes**,
+    /// record headers included.
+    ///
+    /// `[added 2026-09-24]` ADR-0170 decision 8. This is the direction that
+    /// ends a session when it fills — `DESIGN.md` D10b, ADR-0011 — so a number
+    /// climbing towards `capacity` is an application falling behind, seen
+    /// before it costs a connection. Read from the ring's two cursors when the
+    /// snapshot is built, and at no other time.
+    ///
+    /// **`None` when the dispatch has no such ring** — `InlineDispatch`, or a
+    /// `Dispatch` that keeps [`crate::dispatch::Dispatch::ring_to_app`]'s
+    /// default. Not the same as an empty ring. Proven by
+    /// `crates/engine/tests/observe_occupancy.rs`.
+    #[must_use]
+    pub const fn ring_to_app(&self) -> Option<Occupancy> {
+        self.ring_to_app
+    }
+
+    /// How many pre-session slots — sockets waiting to send their `Logon`,
+    /// plus connections parked while their recovery is not ready — are taken,
+    /// of `presession::Limits::pending()`.
+    ///
+    /// `[added 2026-09-24]` ADR-0170 decision 8. A front door at its ceiling
+    /// refuses the next connection, and nothing on the wire says so.
+    ///
+    /// **`None` when nothing in front of this engine reported it**: an engine
+    /// built by hand, an initiator, or `serve_sharded_hft`'s fan, whose stage
+    /// sits in front of several engines rather than one. Told to the engine
+    /// through [`crate::Engine::note_presession_slots`], once a serving-loop
+    /// iteration. Proven by `crates/engine/tests/observe_occupancy.rs`.
+    #[must_use]
+    pub const fn presession_slots(&self) -> Option<Occupancy> {
+        self.presession_slots
     }
 
     /// Messages the message log never wrote. **Zero on a healthy engine.**
@@ -496,6 +585,23 @@ impl Observer {
     #[must_use]
     pub fn request(&self) -> Option<Snapshot> {
         self.0.wanted.store(true, Ordering::Release);
+        if self.0.published.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        self.0.cell.lock().ok().map(|s| *s)
+    }
+
+    /// The most recent snapshot the engine published, **without asking for
+    /// another**.
+    ///
+    /// `[added 2026-09-24]` ADR-0170 decision 3. A reader that has already
+    /// called [`Self::request`] and is waiting for [`Self::published`] to move
+    /// reads the result with this; a second `request` would cost the engine a
+    /// second build for nothing. `None` before the engine has published
+    /// anything. Proven by `latest_reads_without_asking` in
+    /// `crates/engine/tests/observe_occupancy.rs`.
+    #[must_use]
+    pub fn latest(&self) -> Option<Snapshot> {
         if self.0.published.load(Ordering::Acquire) == 0 {
             return None;
         }
