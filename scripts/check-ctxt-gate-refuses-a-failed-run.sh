@@ -35,12 +35,14 @@ fake="${TMP}/w2w"
 cat >"${fake}" <<'FAKE'
 #!/usr/bin/env bash
 mode=""
+transport=kernel
 while [[ $# -gt 0 ]]; do
   [[ "$1" == --mode ]] && mode="$2"
+  [[ "$1" == --transport ]] && transport="$2"
   shift
 done
-case "${FAKE_W2W}:${mode}" in
-  crash-hft:hft | crash-standard:standard)
+case "${FAKE_W2W}:${mode}:${transport}" in
+  crash-hft:hft:kernel | crash-standard:standard:kernel | crash-uring-hft:hft:uring)
     echo "thread 'main' panicked: a fake w2w that fails to run" >&2
     exit 101
     ;;
@@ -48,6 +50,9 @@ esac
 echo "mode: ${mode}"
 if [[ "${mode}" == hft ]]; then
   echo "engine-ctxt voluntary 0"
+  # The gate's io_uring halves (phase 4 row 5) read the ring's own line back.
+  [[ "${transport}" == uring ]] &&
+    echo "transport: uring arm=enter cqes=1 bytes=1 enobufs=0 unarmed=0 cq-overflow=0 enter-errors=0"
   exit 0
 fi
 echo "engine-ctxt voluntary 300"
@@ -70,6 +75,9 @@ check() {
     echo "FAIL ${name}: the gate exited ${status} but never said: ${want_line}" >&2
     echo "${out}" | sed 's/^/    /' >&2
     rc=1
+  elif [[ "${name}" == crash-uring-hft ]] && grep -qF "GREEN ok — hft over io_uring" <<<"${out}"; then
+    echo "FAIL ${name}: the gate printed GREEN ok for a uring run that never ran" >&2
+    rc=1
   elif [[ "${name}" == crash-hft ]] && grep -qF "GREEN ok" <<<"${out}"; then
     echo "FAIL ${name}: the gate printed GREEN ok for a hft run that never ran" >&2
     rc=1
@@ -81,5 +89,8 @@ check() {
 check healthy 0 "PASS"
 check crash-hft 1 "FAIL: --mode hft produced no result"
 check crash-standard 1 "FAIL: --mode standard produced no result"
+# Phase 4 row 5: the io_uring halves go through the same `read_half`, so a
+# uring run that never ran is refused, not read as green.
+check crash-uring-hft 1 "FAIL: --mode hft --transport uring produced no result"
 
 exit "${rc}"

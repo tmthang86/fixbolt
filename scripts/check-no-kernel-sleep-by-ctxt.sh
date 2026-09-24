@@ -97,15 +97,27 @@ run_and_read() {
 # gate printed GREEN for a run that never happened (senior review of PR #109,
 # L1; docs/reference/a-shell-read-heredoc-swallows-a-failed-functions-exit-status.md).
 # `scripts/check-ctxt-gate-refuses-a-failed-run.sh` is the guard.
+#
+# `[2026-09-24]` phase 4 row 5: the io_uring halves go through here too, with
+# their flags as `$2`. A build without `--features io-uring` refuses
+# `--transport uring` before printing `mode:`, which reads as "produced no
+# result"; that one refusal is told apart and exits 2, SKIPPED, NOT PASSED —
+# callers write `|| exit $?` so the 2 survives the command substitution.
 read_half() {
-  local mode="$1" got voluntary status
-  if ! got="$(run_and_read "${mode}")"; then
-    echo "FAIL: --mode ${mode} produced no result — w2w did not run as asked (the line above says why); nothing was measured" >&2
+  local mode="$1" extra="${2:-}" got voluntary status
+  if ! got="$(run_and_read "${mode}" "${extra}")"; then
+    # shellcheck disable=SC2016 # the literal backticks main.rs prints.
+    if grep -q 'needs `--features io-uring`' "${TMP}/out.${mode}${extra:+.uring}" 2>/dev/null; then
+      echo "io_uring arm SKIPPED, NOT PASSED: this build has no io_uring transport (needs \`--features io-uring\`)." >&2
+      echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
+      exit 2
+    fi
+    echo "FAIL: --mode ${mode}${extra:+ ${extra}} produced no result — w2w did not run as asked (the line above says why); nothing was measured" >&2
     exit 1
   fi
   read -r voluntary status <<<"${got}"
   if ! [[ "${voluntary}" =~ ^[0-9]+$ && "${status}" =~ ^[0-9]+$ ]]; then
-    echo "FAIL: --mode ${mode} produced no result — read voluntary '${voluntary}' and exit '${status}', not two numbers" >&2
+    echo "FAIL: --mode ${mode}${extra:+ ${extra}} produced no result — read voluntary '${voluntary}' and exit '${status}', not two numbers" >&2
     exit 1
   fi
   echo "${voluntary} ${status}"
@@ -155,14 +167,8 @@ fi
 echo
 echo "== io_uring arm: hft over the ring, w2w itself asserts voluntary == 0 =="
 uring_out="${TMP}/out.hft.uring"
-read -r uh_voluntary uh_status <<<"$(run_and_read hft "--transport uring")"
-# shellcheck disable=SC2016 # the literal backticks main.rs prints.
-if grep -q 'needs `--features io-uring`' "${uring_out}" 2>/dev/null; then
-  echo "io_uring arm SKIPPED, NOT PASSED: this build has no io_uring transport (needs \`--features io-uring\`)." >&2
-  echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
-  exit 2
-fi
-[[ -n "${uh_voluntary:-}" ]] || exit 1
+uh_half="$(read_half hft "--transport uring")" || exit $?
+read -r uh_voluntary uh_status <<<"${uh_half}"
 echo "hft+uring voluntary ${uh_voluntary}"
 # The switch count first: w2w's own assertion ends the run before it prints
 # the `transport:` line, and a red must name its cause, not a missing line.
@@ -179,7 +185,8 @@ fi
 
 echo
 echo "== io_uring arm: standard over the ring, the same assertion must go red =="
-read -r us_voluntary us_status <<<"$(run_and_read standard "--transport uring")" || exit 1
+us_half="$(read_half standard "--transport uring")" || exit $?
+read -r us_voluntary us_status <<<"${us_half}"
 echo "standard+uring voluntary ${us_voluntary}"
 us_red="$(grep -oE 'standard: engine thread made [0-9]+ voluntary context switches, expected 0' \
   "${TMP}/out.standard.uring" | head -1)"
@@ -206,7 +213,8 @@ if [[ -z "${FIXBOLT_SQPOLL_CORE:-}" ]]; then
 else
   [[ "${FIXBOLT_SQPOLL_ALLOW_UNISOLATED:-}" == 1 ]] && \
     echo "(FIXBOLT_SQPOLL_ALLOW_UNISOLATED=1: the SQ core is not held to isolcpus — not a DESIGN.md §9 run)"
-  read -r sq_voluntary sq_status <<<"$(run_and_read hft "$(sqpoll_flags)")" || exit 1
+  sq_half="$(read_half hft "$(sqpoll_flags)")" || exit $?
+  read -r sq_voluntary sq_status <<<"${sq_half}"
   echo "hft+sqpoll voluntary ${sq_voluntary}"
   if [[ "${sq_status}" -ne 0 || "${sq_voluntary}" -ne 0 ]]; then
     echo "FAIL: the SQPOLL arm made ${sq_voluntary} voluntary switches (exit ${sq_status}), expected 0" >&2
