@@ -58,6 +58,22 @@ decision 1), so the changes below wait for the next version rather than shipping
   duplicated in `tests/series_names.rs` so a rename or removal is red in `cargo test` before it
   is anyone's broken Grafana panel — a change no `cargo-semver-checks` run can see on its own.
 
+### Added
+
+- **`fixbolt-engine`: the writer bookkeeping a journal outside the engine joins**
+  ([ADR-0181](docs/decisions/ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md)).
+  Additive only; no existing item changes signature, and `FileJournal` now runs on these same
+  handles.
+  - `journal::WriterTicket` (`new`, `retire(stop_pushed) -> bool`, `state() -> TicketState`,
+    `finish`) with `journal::TicketState`: a writer's place in the process-wide count
+    `wait_for_retired_writers` waits on after serving. `retire` counts once; `finish` lowers
+    once, and only a retired ticket's.
+  - `journal::Releaser` and `journal::Released::pair() -> (Releaser, Released)`: the release
+    flag a recovery answers `ready` from, now constructible outside the crate; only the
+    `Releaser`'s owner can set it, once.
+  - `ring::Idle` (`new`, `reset`, `wait`) and the constants `ring::IDLE_SPINS`,
+    `ring::IDLE_SLEEP` are public: one idle rule for every writer thread.
+
 ## Conditions to reach `1.0`
 
 `0.1.0` is a promise about an API no stranger has used yet
