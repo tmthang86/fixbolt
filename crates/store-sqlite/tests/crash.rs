@@ -127,51 +127,78 @@ fn a_killed_process_resumes_from_what_it_committed() {
         started.elapsed()
     );
 
-    // Read with SQLite directly first — the store's own `open` holds the file
-    // exclusively once it has it.
-    let highest_out = {
-        let db = rusqlite::Connection::open(&path).expect("open after the kill");
-        let check: String = db
-            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
-            .expect("integrity_check");
-        assert_eq!(check, "ok", "the database survived the kill whole");
-        let highest_out: u32 = db
-            .query_row("SELECT highest_out FROM session WHERE id = 1", [], |r| {
-                r.get(0)
-            })
-            .expect("the session row");
-        assert!(
-            highest_out >= last,
-            "the database says {highest_out} was committed, the child saw {last} committed"
-        );
-        let mut stmt = db
-            .prepare("SELECT seq, body FROM messages WHERE seq <= ?1 ORDER BY seq")
-            .expect("prepare");
-        let mut want = 1u32;
-        let rows = stmt
-            .query_map([highest_out], |r| {
-                Ok((r.get::<_, u32>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })
-            .expect("query");
-        for row in rows {
-            let (seq, bytes) = row.expect("a row");
-            assert_eq!(
-                seq, want,
-                "every number up to {highest_out} is there, in order"
-            );
-            assert_eq!(bytes, body(seq), "{seq} came back byte for byte");
-            want += 1;
-        }
-        assert_eq!(want, highest_out + 1, "and none is missing at the end");
-        highest_out
+    // **The store opens the killed database first**, the way a restart does:
+    // what the kill left is a database file and a WAL that was never
+    // checkpointed. Opening with plain SQLite first would checkpoint and
+    // delete that WAL on its close, and the store would only ever be shown a
+    // clean file (senior review of PR #109, M1).
+    let wal = {
+        let mut p = path.as_os_str().to_owned();
+        p.push("-wal");
+        PathBuf::from(p)
     };
-
+    let wal_bytes = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    assert!(
+        wal_bytes > 0,
+        "premise: the kill left an uncheckpointed WAL for the store to recover"
+    );
     let j = Db::open(&path, &cfg(), SqliteOptions::default()).expect("the store reopens");
+    let highest_out = j.highest_out().unwrap_or(0);
+    assert!(
+        highest_out >= last,
+        "the store resumed at highest_out {highest_out}, the child saw {last} committed \
+         (a {wal_bytes}-byte WAL was left by the kill)"
+    );
+    assert_eq!(
+        j.get(highest_out),
+        Some(body(highest_out).as_slice()),
+        "the store replays {highest_out} byte for byte after the kill"
+    );
     let resumed = Resumed::from_journal(j).expect("something was left behind");
     assert_eq!(
         resumed.next_out,
         highest_out + 1,
         "the next number is the one after"
     );
+    // Closing the store checkpoints the WAL into the database and lets go.
+    drop(resumed);
+
+    // Then the whole file, with SQLite: whole, and every row up to what the
+    // store resumed at, byte for byte.
+    let db = rusqlite::Connection::open(&path).expect("open after the store closed");
+    let check: String = db
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .expect("integrity_check");
+    assert_eq!(check, "ok", "the database survived the kill whole");
+    let row_out: u32 = db
+        .query_row("SELECT highest_out FROM session WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .expect("the session row");
+    assert_eq!(
+        row_out, highest_out,
+        "the session row agrees with what the store resumed at"
+    );
+    let mut stmt = db
+        .prepare("SELECT seq, body FROM messages WHERE seq <= ?1 ORDER BY seq")
+        .expect("prepare");
+    let mut want = 1u32;
+    let rows = stmt
+        .query_map([highest_out], |r| {
+            Ok((r.get::<_, u32>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })
+        .expect("query");
+    for row in rows {
+        let (seq, bytes) = row.expect("a row");
+        assert_eq!(
+            seq, want,
+            "every number up to {highest_out} is there, in order"
+        );
+        assert_eq!(bytes, body(seq), "{seq} came back byte for byte");
+        want += 1;
+    }
+    assert_eq!(want, highest_out + 1, "and none is missing at the end");
+    drop(stmt);
+    drop(db);
     let _ = std::fs::remove_dir_all(path.parent().expect("a directory"));
 }

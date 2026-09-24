@@ -3,10 +3,10 @@
 > `[found 2026-09-24]` — found reading
 > [scripts/check-no-kernel-sleep-by-ctxt.sh](../../scripts/check-no-kernel-sleep-by-ctxt.sh)
 > while writing [plans/2026-09-24-p4-sqlite-store.md](../plans/2026-09-24-p4-sqlite-store.md)
-> row 7's documentation. **Pre-existing on the script; not fixed here** — recorded in the
-> plan's step-6 commit and in `STATUS.md` open items as something for the architect or a later
-> step to fix; this page is the write-up CLAUDE.md §4 asks for ("if it cost you, write it down"),
-> not a patch.
+> row 7's documentation. `[fixed 2026-09-24]` in the same PR (#109) after its senior review
+> (finding L1) showed the gate could **PASS** on a `w2w` that never ran in `hft` mode; the fix
+> and its guard are at the end of this page. The sections in between describe the script as it
+> was, because the trap is in the shell idiom, not in this one script.
 
 ## What the script does
 
@@ -65,28 +65,58 @@ GREEN ok — engine thread made 0 voluntary context switches
 
 for a run where `w2w` never produced a usable result at all.
 
-## Why this is not silently green overall
+## It could be green overall
 
-The `standard` half runs after the `hft` half regardless, through the same swallowed-failure
-path if it also fails, or normally otherwise. In the case observed while reading this script (an
-argument change that made `w2w` print nothing matching `engine-ctxt voluntary`), the `standard`
-branch's own `elif -z "${red_line}"` catches it: with no `engine-ctxt voluntary` line, `red_line`
-is also empty, and that branch's `FAIL: --mode standard exited ... but printed no assertion
-message` sets `rc=1`, which the script's final `exit "${rc}"` returns. **The script still exits
-red — through its `standard` half's own check, not through the `hft` half where the failure
-actually happened** — and the misleading `GREEN ok` line stays in the transcript above a `FAIL`
-that gives no reason to suspect the `hft` half was the one that was actually broken.
+The `standard` half runs after the `hft` half through the same idiom. When **both** halves fail
+the same way (an argument `w2w` refuses, say), the `standard` branch's own `elif -z
+"${red_line}"` sets `rc=1` and the script exits red — through its `standard` half, with a
+misleading `GREEN ok` above it. But when **only the `hft` half fails**, the `standard` half runs
+normally, prints `RED ok`, and the script prints `PASS` and exits 0. The senior review of PR
+#109 showed exactly that with a fake `w2w` that crashes in `hft` mode only:
 
-## The fix this page does not make
+```
+hft voluntary 
+GREEN ok — engine thread made 0 voluntary context switches
+...
+PASS
+script exit 0
+```
 
-Two independent fixes would close this, and neither is applied here (out of scope for a
-documentation-only step): change every call site to `voluntary=$(run_and_read hft)status=$?; ...`-style
-capture that preserves `run_and_read`'s real exit status, and change the empty-vs-comparison
-paths to test `[[ -z "${hft_voluntary}" ]]` before doing arithmetic on it.
+A gate for non-negotiable 4 passed on a run that measured nothing.
+
+## The fix
+
+Capture the function's output first, so `|| exit 1` sees the function's own status, then read
+it, then refuse anything that is not two numbers. In the script this is one helper both halves
+call, `read_half`:
+
+```bash
+read_half() {
+  local mode="$1" got voluntary status
+  if ! got="$(run_and_read "${mode}")"; then
+    echo "FAIL: --mode ${mode} produced no result — w2w did not run as asked (…)" >&2
+    exit 1
+  fi
+  read -r voluntary status <<<"${got}"
+  if ! [[ "${voluntary}" =~ ^[0-9]+$ && "${status}" =~ ^[0-9]+$ ]]; then
+    echo "FAIL: --mode ${mode} produced no result — read voluntary '…' and exit '…', not two numbers" >&2
+    exit 1
+  fi
+  echo "${voluntary} ${status}"
+}
+hft_half="$(read_half hft)" || exit 1
+read -r hft_voluntary hft_status <<<"${hft_half}"
+```
+
+**The idiom to avoid anywhere**: `read … <<<"$(f)" || …` never reports `f`'s failure. Capture
+with `x="$(f)" || …`, then `read … <<<"${x}"`.
 
 ## Guard
 
-**None yet.** No test or script reverses this behaviour — there is no case in the repository
-that deliberately makes `run_and_read` fail and asserts the script reports that failure honestly
-rather than printing `GREEN ok`. Written down per the trap's own rule (*"every recorded trap
-gets a regression test"*, `CLAUDE.md` §4) as owed, not as done.
+[scripts/check-ctxt-gate-refuses-a-failed-run.sh](../../scripts/check-ctxt-gate-refuses-a-failed-run.sh),
+run by CI's `script-logic` job. No cargo: it points the gate's `W2W_BIN` at three fake `w2w`
+scripts — `healthy` (the gate must `PASS`, so the harness is not a check that is always red),
+`crash-hft` (the gate must exit 1 and say `FAIL: --mode hft produced no result`, and never
+`GREEN ok`), `crash-standard` (exit 1, `FAIL: --mode standard produced no result`). Against the
+unfixed script `crash-hft` read `FAIL crash-hft: the gate exited 0, expected 1` — the defect
+above, red, before the fix.

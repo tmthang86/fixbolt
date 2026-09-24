@@ -163,6 +163,9 @@ jobs:
       # their own siblings. It tests ab_median / ab_complete_rounds /
       # ab_summary / ab_extract, the pure parts of scripts/ab-rotation.sh.
       - run: scripts/check-ab-rotation.sh
+      # The ctxt gate reads a w2w that failed to run as a failure, not as
+      # `voluntary 0` (senior review of PR #109, L1): three fake w2w, no cargo.
+      - run: scripts/check-ctxt-gate-refuses-a-failed-run.sh
       # `[measured 2026-09-10]` This runner CAN offload TLS, and that answer is
       # what made the `tls` job below buildable as written: kernel
       # `6.17.0-1022-azure`, `CONFIG_TLS=m`, module loaded, `/proc/net/tls_stat`

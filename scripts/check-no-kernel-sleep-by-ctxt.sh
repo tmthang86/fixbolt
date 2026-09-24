@@ -41,7 +41,10 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${ROOT}/target/release/w2w"
+# `W2W_BIN` points the gate at another binary — only
+# `scripts/check-ctxt-gate-refuses-a-failed-run.sh` does, with fake w2w
+# scripts that fail on purpose; a real run leaves it unset.
+BIN="${W2W_BIN:-${ROOT}/target/release/w2w}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
@@ -78,10 +81,32 @@ run_and_read() {
   echo "${voluntary} ${status}"
 }
 
+# `run_and_read`, and its two numbers, or exit 1 naming the half that failed.
+# **Captured, then read**: `read -r a b <<<"$(run_and_read …)" || exit 1` binds
+# `|| exit 1` to `read`, which succeeds on an empty here-string, so a w2w that
+# failed to run left both values empty and `[[ "" -ne 0 ]]` read false — the
+# gate printed GREEN for a run that never happened (senior review of PR #109,
+# L1; docs/reference/a-shell-read-heredoc-swallows-a-failed-functions-exit-status.md).
+# `scripts/check-ctxt-gate-refuses-a-failed-run.sh` is the guard.
+read_half() {
+  local mode="$1" got voluntary status
+  if ! got="$(run_and_read "${mode}")"; then
+    echo "FAIL: --mode ${mode} produced no result — w2w did not run as asked (the line above says why); nothing was measured" >&2
+    exit 1
+  fi
+  read -r voluntary status <<<"${got}"
+  if ! [[ "${voluntary}" =~ ^[0-9]+$ && "${status}" =~ ^[0-9]+$ ]]; then
+    echo "FAIL: --mode ${mode} produced no result — read voluntary '${voluntary}' and exit '${status}', not two numbers" >&2
+    exit 1
+  fi
+  echo "${voluntary} ${status}"
+}
+
 rc=0
 
 echo "== GREEN half: hft mode, w2w itself asserts voluntary == 0 =="
-read -r hft_voluntary hft_status <<<"$(run_and_read hft)" || exit 1
+hft_half="$(read_half hft)" || exit 1
+read -r hft_voluntary hft_status <<<"${hft_half}"
 echo "hft voluntary ${hft_voluntary}"
 if [[ "${hft_status}" -ne 0 ]]; then
   echo "FAIL: --mode hft exited ${hft_status} — w2w's own assertion read voluntary != 0" >&2
@@ -96,7 +121,8 @@ fi
 
 echo
 echo "== RED half: the same assertion, --mode standard, must go red =="
-read -r standard_voluntary standard_status <<<"$(run_and_read standard)" || exit 1
+standard_half="$(read_half standard)" || exit 1
+read -r standard_voluntary standard_status <<<"${standard_half}"
 echo "standard voluntary ${standard_voluntary}"
 red_line="$(grep -oE 'standard: engine thread made [0-9]+ voluntary context switches, expected 0' \
   "${TMP}/out.standard" | head -1)"

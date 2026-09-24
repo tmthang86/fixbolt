@@ -1101,18 +1101,19 @@ impl WriterTicket {
     }
 }
 
-/// Writers a [`FileJournal`] retired that have not yet finished — **one count
-/// for the whole process**, shared by every engine in it (ADR-0153
-/// *Consequences*). Raised by [`Journal::retire`], lowered by the writer as the
-/// last thing it does.
+/// Writers retired through any journal's [`WriterTicket`] that have not yet
+/// finished — **one count for the whole process**, shared by every engine in
+/// it (ADR-0153 *Consequences*). Raised by [`WriterTicket::retire`], lowered by
+/// [`WriterTicket::finish`], the writer's last act (ADR-0181 decision 1).
 static RETIRED_WRITERS: AtomicUsize = AtomicUsize::new(0);
 
-/// Every writer [`Journal::retire`] has let go in this process, finished or
-/// not. Only ever rises. See [`writers_retired`].
+/// Every first [`WriterTicket::retire`] in this process, whether its writer had
+/// finished or not. Only ever rises. See [`writers_retired`].
 static WRITERS_RETIRED: AtomicUsize = AtomicUsize::new(0);
 
-/// How many `Async` writers a [`FileJournal`] has retired in this process,
-/// ever — finished or not.
+/// How many writers have been retired through any journal's [`WriterTicket`]
+/// in this process, ever — finished or not: `FileJournal` under `Async`, and
+/// any journal outside this crate that follows ADR-0181's rule.
 ///
 /// **Only ever rises**, so a caller can tell that a retire actually happened
 /// without racing the writer, which lowers the count
@@ -1123,9 +1124,9 @@ pub fn writers_retired() -> usize {
     WRITERS_RETIRED.load(Ordering::Relaxed)
 }
 
-/// Wait until every writer a retired [`FileJournal`] let go has written its
-/// last byte and closed its file, or until `timeout` passes. `true` if they
-/// all finished.
+/// Wait until every writer retired through any journal's [`WriterTicket`] has
+/// written its last byte, closed its storage and finished its ticket, or until
+/// `timeout` passes. `true` if they all finished.
 ///
 /// **Teardown only: this sleeps**, 1 ms between looks at the count, which is
 /// exactly what the engine thread may not do while it serves. Every `serve*`
