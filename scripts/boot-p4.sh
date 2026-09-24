@@ -153,21 +153,37 @@ TOLERATE_ROWS=${TOLERATE_ROWS:-}
 ALLOW_UNISOLATED=${ALLOW_UNISOLATED:-0}
 QUIET_RETRIES=${QUIET_RETRIES:-3}
 QUIET_RETRY_S=${QUIET_RETRY_S:-60}
+die() { echo "boot-p4: $*" >&2; exit 2; }
+isnum() { case "$1" in '' | *[!0-9]*) return 1 ;; esac; }
+# Validated here, before any `$(( ))` reads them: under `set -u`, bash
+# arithmetic takes `RUNS=x` as the name of an unset variable and dies with
+# "unbound variable" (exit 1), naming neither the knob nor this script.
+for v in RUNS MESSAGES MIN_GAP_S QUIET_RETRIES QUIET_RETRY_S; do
+  isnum "${!v}" || die "$v='${!v}' is not a whole number"
+done
 ARM_TIMEOUT_S=${ARM_TIMEOUT_S:-$((RUNS * 120 + 600))}
 BENCH_TIMEOUT_S=${BENCH_TIMEOUT_S:-3600}
+for v in ARM_TIMEOUT_S BENCH_TIMEOUT_S; do
+  isnum "${!v}" || die "$v='${!v}' is not a whole number"
+done
+# Passed to w2w-baseline.sh explicitly, never inherited from whatever the
+# caller's shell happens to export: its own defaults are what ADR-0190
+# decision 10 measured with, and a stray `export GAP=0` must not reach it.
+readonly W2W_PIN=1 W2W_WARMUP=2000 W2W_GAP=8 W2W_CLIENT_CORE=7
 # Fixed by the plan (Sửa 3) and ADR-0190 R6, not knobs: 6 is the engine's, 7
 # the observer's (or the SQ thread's in S), 5 is housekeeping — the observer
 # of U′ and S. 14/15 are 6/7's SMT siblings, offline in the boot.
 readonly ENGINE_CORE=6 OBSERVER_CORE_A=7 OBSERVER_CORE_S=5 SQPOLL_CORE=7
-readonly MIN_REAL_GAP_S=1800 MIN_REAL_RUNS=10 SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10"
+readonly MIN_REAL_GAP_S=1800 MIN_REAL_RUNS=10 REAL_MESSAGES=20000
+# ServerAlive: a Mac that drops off the cable mid-command ends the call in
+# ~15 s instead of never; every call is also under `timeout` (mac() below).
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+readonly SSH_OPTS MAC_TIMEOUT_S=60
 
-die() { echo "boot-p4: $*" >&2; exit 2; }
-isnum() { case "$1" in '' | *[!0-9]*) return 1 ;; esac; }
-for v in RUNS MESSAGES MIN_GAP_S QUIET_RETRIES QUIET_RETRY_S ARM_TIMEOUT_S BENCH_TIMEOUT_S; do
-  isnum "${!v}" || die "$v='${!v}' is not a whole number"
-done
-mkdir -p "$BOOT_ROOT" 2>/dev/null || true
-BOOT_ROOT=$(cd "$BOOT_ROOT" 2>/dev/null && pwd -P) || die "BOOT_ROOT is not a directory"
+# `build` creates BOOT_ROOT; `run` only ever reads one that exists.
+[ "$SUB" != build ] || mkdir -p "$BOOT_ROOT" || die "cannot create BOOT_ROOT $BOOT_ROOT"
+root_abs=$(cd "$BOOT_ROOT" 2>/dev/null && pwd -P) || die "BOOT_ROOT $BOOT_ROOT is not a directory — run 'scripts/boot-p4.sh build' first"
+BOOT_ROOT=$root_abs
 
 has_caps() { # has_caps <w2w> — the NIC tap's file capability is on it, and in force
   getcap "$1" 2>/dev/null | grep -qE 'cap_net_admin,cap_net_raw[=+]ep' || return 1
@@ -181,7 +197,7 @@ has_caps() { # has_caps <w2w> — the NIC tap's file capability is on it, and in
 }
 mac() { # mac <remote command>   — never prompts: BatchMode
   # shellcheck disable=SC2086,SC2029 # SSH_OPTS is options on purpose; the command is built here, on purpose
-  ssh $SSH_OPTS "$GENERATOR_SSH" "$1"
+  timeout --kill-after=5 "$MAC_TIMEOUT_S" ssh $SSH_OPTS "$GENERATOR_SSH" "$1"
 }
 mac_identity() { # prints "<head> <sha256>" of the Mac's checkout and w2w
   mac "h=\$(git -C Projects/nanofixengine rev-parse HEAD 2>/dev/null || echo unknown); \
@@ -195,6 +211,14 @@ if [ "$SUB" = build ]; then
   vendor_src=$(readlink -f vendor) || die "no vendor/ here — scripts/fetch-quickfix-assets.sh"
   [ -d "$vendor_src/quickfix" ] || die "$vendor_src has no quickfix/ — scripts/fetch-quickfix-assets.sh"
   echo "build: commit $COMMIT into $BOOT_ROOT, RUSTFLAGS '$flags'"
+  # Each tree gets a `vendor` SYMLINK below, and `.gitignore`'s `/vendor/`
+  # matches only a directory — so every arm's header read `tree 1 paths:
+  # vendor` (`[measured 2026-09-24]`, the rehearsal). `/vendor` in the shared
+  # info/exclude matches the link in every worktree of this repository and
+  # changes nothing for the real directory, which `.gitignore` already hides.
+  exclude="$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  mkdir -p "$(dirname "$exclude")"
+  grep -qxF /vendor "$exclude" 2>/dev/null || echo /vendor >>"$exclude" || die "cannot write $exclude"
   for set in uring sqlite; do
     tree=$BOOT_ROOT/$set
     if [ -e "$tree" ]; then
@@ -205,6 +229,8 @@ if [ "$SUB" = build ]; then
       git worktree add -q --detach "$tree" "$COMMIT" || die "git worktree add $tree failed"
     fi
     [ -e "$tree/vendor" ] || ln -s "$vendor_src" "$tree/vendor"
+    [ -z "$(git -C "$tree" status --porcelain)" ] ||
+      die "$tree is not clean after the vendor link: $(git -C "$tree" status --porcelain | tr '\n' ' ')"
     case $set in
       uring) feats=affinity,io-uring ;;
       sqlite) feats=affinity,sqlite ;;
@@ -267,6 +293,7 @@ if [ "$REHEARSAL" != 1 ]; then
   [ "$ALLOW_UNISOLATED" = 0 ] || refuse "ALLOW_UNISOLATED=1 is a rehearsal knob — a §9 figure is taken on isolated cores"
   [ "$MIN_GAP_S" -ge "$MIN_REAL_GAP_S" ] || refuse "MIN_GAP_S=$MIN_GAP_S — ADR-0068 decision 1 needs >= $MIN_REAL_GAP_S"
   [ "$RUNS" -ge "$MIN_REAL_RUNS" ] || refuse "RUNS=$RUNS — ADR-0190 decision 10 needs >= $MIN_REAL_RUNS"
+  [ "$MESSAGES" = "$REAL_MESSAGES" ] || refuse "MESSAGES=$MESSAGES — ADR-0190 decision 10 measures $REAL_MESSAGES requests per run"
 fi
 [ "$ALLOW_UNISOLATED" = 0 ] || [ "$ALLOW_UNISOLATED" = 1 ] || refuse "ALLOW_UNISOLATED must be 0 or 1"
 [ -r "$BOOT_ROOT/MANIFEST.txt" ] || refuse "no $BOOT_ROOT/MANIFEST.txt — run 'scripts/boot-p4.sh build' first"
@@ -286,6 +313,82 @@ done
 for b in "$W2W_URING" "$W2W_SQLITE"; do
   has_caps "$b" || refuse "$b has no cap_net_raw,cap_net_admin+ep in force (getcap, and not on a nosuid mount such as /tmp) — the NIC tap needs it; 'scripts/boot-p4.sh build' on a normal mount"
 done
+tolerated() { # tolerated <row name>
+  local IFS=,
+  local t
+  for t in $TOLERATE_ROWS; do [ "$t" = "$1" ] && return 0; done
+  return 1
+}
+
+# ADR-0068 decision 1 wants every arm from a clean tree, and w2w-baseline.sh
+# prints `tree N paths: …` into each arm's header: a boot whose trees are not
+# clean publishes that line beside every figure.
+for set in uring sqlite; do
+  dirty=$(git -C "$BOOT_ROOT/$set" status --porcelain 2>&1)
+  [ -z "$dirty" ] && continue
+  if [ "$REHEARSAL" = 1 ]; then
+    echo "!!! $BOOT_ROOT/$set is not clean ($(printf '%s' "$dirty" | tr '\n' ' ')) — REHEARSAL only"
+  else
+    refuse "$BOOT_ROOT/$set is not clean: $(printf '%s' "$dirty" | tr '\n' ' ')— 'scripts/boot-p4.sh build' excludes /vendor"
+  fi
+done
+# The boot measures what `main` holds, nothing a branch still carries.
+if [ "$REHEARSAL" != 1 ]; then
+  git merge-base --is-ancestor "$BUILD_COMMIT" origin/main 2>/dev/null ||
+    refuse "BUILD-INFO.txt's commit $BUILD_COMMIT is not an ancestor of origin/main (git fetch, then build at the 7a merge commit)"
+fi
+
+# Timers (ADR-0093 decision 3). `check-machine.sh`'s `no timer due` row looks
+# 12 h ahead from each gate's OWN time, and the boot's last gate is hours after
+# its first: a timer due at 00:05 is outside the first gate's window for a boot
+# started at 11:00 and inside a later one's, and the boot then stops on healthy
+# arms. So every timer due before the LAST gate's window closes is refused
+# here, before anything runs — 12 h plus the boot's expected length. The length
+# is estimated from the rehearsal's own clock (`[measured 2026-09-24]`, desktop
+# line, RUNS=2: ~33 s an arm, i.e. ~12.5 s a run plus ~8 s; turn + density
+# ~450 s a procedure), then taken 1.5 times for margin. System and user
+# managers both, since a user timer loads the desk as much as a system one.
+TIMER_ROW_WINDOW_S=$((12 * 3600))
+ARMS_PER_PROCEDURE=10
+BOOT_EXPECTED_S=$((2 * (ARMS_PER_PROCEDURE * (RUNS * 15 + 30) + 600) + MIN_GAP_S))
+TIMER_WINDOW_S=$((TIMER_ROW_WINDOW_S + BOOT_EXPECTED_S * 3 / 2))
+timer_check() { # timer_check <system|user> — prints the verdict line of timers_verdict
+  local json
+  if [ "$1" = user ]; then
+    json=$(systemctl --user list-timers --all --output=json 2>/dev/null) || json='[]'
+  else
+    json=$(systemctl list-timers --all --output=json 2>/dev/null) || json='null'
+  fi
+  # The row's own pure function (check-machine.sh `timers_verdict`), so the
+  # driver and the gate cannot disagree on what "due" means; a subshell, so
+  # none of that script's globals leak into this one.
+  (
+    # shellcheck source=check-machine.sh disable=SC1091
+    MACHINE_SOURCE_ONLY=1 . scripts/check-machine.sh
+    timers_verdict "$(($(date +%s) * 1000000))" "$TIMER_WINDOW_S" "$json"
+  )
+}
+timer_bad=""
+timer_fix=""
+for mgr in system user; do
+  IFS=$'\t' read -r tv_verdict tv_value tv_fix <<<"$(timer_check "$mgr")"
+  case "$tv_verdict" in
+    PASS) ;;
+    FAIL)
+      timer_bad="$timer_bad${timer_bad:+; }$mgr: $tv_value"
+      if [ "$mgr" = user ]; then tv_fix=${tv_fix//sudo -n systemctl stop/systemctl --user stop}; fi
+      timer_fix="$timer_fix${timer_fix:+; }$tv_fix"
+      ;;
+    *) timer_bad="$timer_bad${timer_bad:+; }$mgr: cannot read the timers ($tv_value)" ;;
+  esac
+done
+if [ -n "$timer_bad" ]; then
+  if tolerated "no timer due"; then
+    echo "!!! timers due within $((TIMER_WINDOW_S / 60)) min (12 h + 1.5 × the expected ${BOOT_EXPECTED_S} s), tolerated by TOLERATE_ROWS — REHEARSAL only"
+  else
+    refuse "a timer is due before the boot's last gate closes its 12 h window ($((TIMER_WINDOW_S / 60)) min from now = 12 h + 1.5 × the expected ${BOOT_EXPECTED_S} s): $timer_bad — stop it first: $timer_fix"
+  fi
+fi
 
 # ---------------------------------------------------------------- evidence
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -373,7 +476,16 @@ fi
     ENGINE_CORE OBSERVER_CORE_A OBSERVER_CORE_S SQPOLL_CORE; do
     echo "$v ${!v}"
   done
-  echo "driver_head $(git rev-parse HEAD) $(git status --porcelain -- scripts/boot-p4.sh | cut -c1-2)"
+  echo "driver_head $(git rev-parse HEAD)"
+  echo "driver_sha256 $(sha256sum "$REPO/scripts/boot-p4.sh" | cut -d' ' -f1)"
+  if [ -z "$(git status --porcelain -- scripts/boot-p4.sh)" ] &&
+    git cat-file -e "HEAD:scripts/boot-p4.sh" 2>/dev/null; then
+    echo "driver_committed yes (HEAD:scripts/boot-p4.sh is this file)"
+  else
+    echo "driver_committed NO — the running driver differs from HEAD's or is untracked"
+  fi
+  echo "timer_window_s $TIMER_WINDOW_S (12 h + 1.5 × expected $BOOT_EXPECTED_S s)"
+  echo "w2w_baseline PIN=$W2W_PIN WARMUP=$W2W_WARMUP GAP=$W2W_GAP CLIENT_CORE=$W2W_CLIENT_CORE"
   echo "mac_head $MAC_HEAD"
   echo "mac_w2w_sha256 $MAC_SHA"
   echo "cmdline $CMDLINE"
@@ -402,12 +514,6 @@ note "generator ${MAC_SHA:0:12} at ${MAC_HEAD:0:12} on $GENERATOR_SSH — held t
 # the 22-wide field after them (check-machine.sh `row()`).
 red_rows() { # red_rows <check-machine output file>
   awk '/^(FAIL |\? \? \?)  / { n = substr($0, 8, 22); sub(/ +$/, "", n); print n }' "$1"
-}
-tolerated() { # tolerated <row name>
-  local IFS=,
-  local t
-  for t in $TOLERATE_ROWS; do [ "$t" = "$1" ] && return 0; done
-  return 1
 }
 gate() { # gate <label> <dir>
   local label=$1 dir=$2 attempt=0 f rows bad name tol
@@ -458,16 +564,22 @@ generator_ok() {
 
 # ---------------------------------------------------------- arms
 # arm <id> → "set|ARMS|wire(0/1)|observer|W2W_EXTRA|transport regex"
+# Every uring arm also requires `unarmed=0 cq-overflow=0 enter-errors=0` on
+# its `transport:` line: ADR-0190 Revision 3 makes an unarmed receive a
+# failure, and an overflowed CQ or a failed enter is a ring that did not run
+# the arm it is labelled with.
+# No '|' in it: arm_spec's fields are split on '|'.
+readonly URING_CLEAN=' unarmed=0 cq-overflow=0 enter-errors=0( .*)?$'
 arm_spec() {
   case "$1" in
     K) echo "uring|hft:admin|1|$OBSERVER_CORE_A||^transport: kernel\$" ;;
-    U) echo "uring|hft:admin|1|$OBSERVER_CORE_A|--transport uring|^transport: uring arm=enter " ;;
-    Uprime) echo "uring|hft:admin|1|$OBSERVER_CORE_S|--transport uring|^transport: uring arm=enter " ;;
-    S) echo "uring|hft:admin|1|$OBSERVER_CORE_S|--transport uring --uring-arm sqpoll --sqpoll-core $SQPOLL_CORE|^transport: uring arm=sqpoll " ;;
+    U) echo "uring|hft:admin|1|$OBSERVER_CORE_A|--transport uring|^transport: uring arm=enter cqes=[1-9][0-9]* .*$URING_CLEAN" ;;
+    Uprime) echo "uring|hft:admin|1|$OBSERVER_CORE_S|--transport uring|^transport: uring arm=enter cqes=[1-9][0-9]* .*$URING_CLEAN" ;;
+    S) echo "uring|hft:admin|1|$OBSERVER_CORE_S|--transport uring --uring-arm sqpoll --sqpoll-core $SQPOLL_CORE|^transport: uring arm=sqpoll cqes=[1-9][0-9]* .*$URING_CLEAN" ;;
     stdK) echo "uring|standard:admin|0|||^transport: kernel\$" ;;
     # `standard` reaps its ring by blocking: w2w prints `arm=block` there
     # (`[measured 2026-09-24]` the rehearsal's first stdU read it), never `enter`.
-    stdU) echo "uring|standard:admin|0||--transport uring|^transport: uring arm=block " ;;
+    stdU) echo "uring|standard:admin|0||--transport uring|^transport: uring arm=block cqes=[1-9][0-9]* .*$URING_CLEAN" ;;
     hft-file) echo "sqlite|hft:app|1|$OBSERVER_CORE_A|--journal file-async|^transport: kernel\$" ;;
     hft-sqlite) echo "sqlite|hft:app|1|$OBSERVER_CORE_A|--journal sqlite-async|^transport: kernel\$" ;;
     std-file) echo "sqlite|standard:app|0||--journal file-async|^transport: kernel\$" ;;
@@ -490,12 +602,14 @@ run_arm() { # run_arm <procedure> <block dir> <arm id>
   local wire_nic="" obs_core=""
   if [ "$wire" = 1 ]; then wire_nic=$NIC; obs_core=$obs; fi
   RUNS=$RUNS MESSAGES=$MESSAGES ENGINE_CORE=$ENGINE_CORE ALLOW_UNISOLATED=$ALLOW_UNISOLATED \
+    PIN=$W2W_PIN WARMUP=$W2W_WARMUP GAP=$W2W_GAP CLIENT_CORE=$W2W_CLIENT_CORE \
     LISTEN=$LISTEN GENERATOR_SSH=$GENERATOR_SSH GENERATOR_W2W=$GENERATOR_W2W \
     FIXBOLT_NIC=$NIC WIRE_NIC=$wire_nic OBSERVER_CORE=$obs_core \
     ARMS=$arms W2W_EXTRA=$extra OUT_DIR=$dir \
     timeout --kill-after=30 "$ARM_TIMEOUT_S" "$BOOT_ROOT/$set/scripts/w2w-baseline.sh" >"$dir/baseline.log" 2>&1
   rc=$?
   bin_ok "$bin" || stop "p$p $id: $bin is not MANIFEST.txt's after the arm"
+  has_caps "$bin" || stop "p$p $id: $bin lost its cap_net_raw,cap_net_admin file capability during the arm"
   generator_ok
   sha12=$(manifest_sha "$bin" | cut -c1-12)
   grep -q "^binary $sha12 " "$dir/baseline.log" ||
@@ -661,10 +775,32 @@ sval() { # sval <summary> <wire|plain> <p50|p99|p99.9>
     awk -v k="$3" '$1 == k { print $2; exit }' "$1" 2>/dev/null
   fi
 }
-ratio() { # ratio <a> <b> — a/b to four places, or "missing"
+# A FAILED arm's summary may still carry numbers (a transport line that was
+# not the arm's, a run that exited non-zero after printing): none of them is
+# an input. `[measured 2026-09-24]` the 171428Z rehearsal fed two FAILED stdU
+# arms into "standard half: no".
+arm_failed() { # arm_failed <procedure> <id>
+  local f
+  for f in "${FAILED_ARMS[@]}"; do [ "$f" = "p$1/$2" ] && return 0; done
+  return 1
+}
+aval() { # aval <procedure> <id> <summary> <wire|plain> <pct> — empty for a FAILED arm
+  arm_failed "$1" "$2" && return 0
+  sval "$3" "$4" "$5"
+}
+bval() { # bval <procedure> <turn|density> <file> <case> — empty for a FAILED bench
+  arm_failed "$1" "$2" && return 0
+  bench_ns "$3" "$4"
+}
+# Ratios are kept unrounded for every comparison; `show` rounds for the eye only.
+show() { # show <ratio>
+  [ "$1" = missing ] && { echo missing; return; }
+  awk -v r="$1" 'BEGIN { printf "%.4f", r }'
+}
+ratio() { # ratio <a> <b> — a/b unrounded, or "missing"
   if isnum "$1" || [[ $1 =~ ^[0-9]+\.[0-9]+$ ]]; then
     if isnum "$2" || [[ $2 =~ ^[0-9]+\.[0-9]+$ ]]; then
-      awk -v a="$1" -v b="$2" 'BEGIN { if (b == 0) print "missing"; else printf "%.4f", a / b }'
+      awk -v a="$1" -v b="$2" 'BEGIN { if (b == 0) print "missing"; else printf "%.12g", a / b }'
       return
     fi
   fi
@@ -695,26 +831,26 @@ both() { # both <v1> <v2> — yes only when both are yes
     a=$EVD/p$p/A-uring-w2w
     for id in K U Uprime S; do
       for k in p50 p99; do
-        v=$(sval "$a/$id/summary.txt" wire "$k")
+        v=$(aval "$p" "$id" "$a/$id/summary.txt" wire "$k")
         R[$p.$id.$k]=${v:-missing}
         echo "p$p $id wire $k ${v:-missing}   $a/$id/summary.txt"
       done
     done
     for id in stdK stdU; do
-      v=$(sval "$a/$id/summary.txt" plain p50)
+      v=$(aval "$p" "$id" "$a/$id/summary.txt" plain p50)
       R[$p.$id.p50]=${v:-missing}
       echo "p$p $id counterparty p50 ${v:-missing}   $a/$id/summary.txt"
     done
     for t in kernel uring; do
       for n in 1 16 64; do
-        v=$(bench_ns "$EVD/p$p/B-bench/turn.txt" "idle loop, $n idle sessions, $t")
+        v=$(bval "$p" turn "$EVD/p$p/B-bench/turn.txt" "idle loop, $n idle sessions, $t")
         R[$p.idle$n.$t]=${v:-missing}
         echo "p$p idle loop N=$n $t ${v:-missing} ns/op   $EVD/p$p/B-bench/turn.txt"
       done
     done
     for t in kernel uring; do
       for n in 1 16 64; do
-        v=$(bench_ns "$EVD/p$p/B-bench/density.txt" "busy loop, $n busy sessions, $t")
+        v=$(bval "$p" density "$EVD/p$p/B-bench/density.txt" "busy loop, $n busy sessions, $t")
         echo "p$p busy loop N=$n $t ${v:-missing} ns/op (recorded, not judged)   $EVD/p$p/B-bench/density.txt"
       done
     done
@@ -727,9 +863,9 @@ both() { # both <v1> <v2> — yes only when both are yes
     R[$p.s50]=$(ratio "${R[$p.S.p50]}" "${R[$p.Uprime.p50]}")
     R[$p.s99]=$(ratio "${R[$p.S.p99]}" "${R[$p.Uprime.p99]}")
     R[$p.std]=$(ratio "${R[$p.stdU.p50]}" "${R[$p.stdK.p50]}")
-    echo "p$p U/K wire p50 ${R[$p.u50]}   U/K wire p99 ${R[$p.u99]}   idle N=16 uring/kernel ${R[$p.idle]}"
-    echo "p$p S/U′ wire p50 ${R[$p.s50]}   S/U′ wire p99 ${R[$p.s99]}   (S cannot keep the item alone)"
-    echo "p$p stdU/stdK counterparty p50 ${R[$p.std]}"
+    echo "p$p U/K wire p50 $(show "${R[$p.u50]}")   U/K wire p99 $(show "${R[$p.u99]}")   idle N=16 uring/kernel $(show "${R[$p.idle]}")"
+    echo "p$p S/U′ wire p50 $(show "${R[$p.s50]}")   S/U′ wire p99 $(show "${R[$p.s99]}")   (S cannot keep the item alone)"
+    echo "p$p stdU/stdK counterparty p50 $(show "${R[$p.std]}")"
   done
   echo
   ca=$(both "$(both "$(le "${R[1.u50]}" 0.97)" "$(le "${R[2.u50]}" 0.97)")" \
@@ -751,12 +887,12 @@ both() { # both <v1> <v2> — yes only when both are yes
   echo "## store pair (plan row 4, 4b) — hft: acceptor wire p50; standard: the Mac's p50; 5 % band"
   for p in 1 2; do
     c=$EVD/p$p/C-store
-    hf=$(sval "$c/hft-file/summary.txt" wire p50)
-    hs=$(sval "$c/hft-sqlite/summary.txt" wire p50)
-    sf=$(sval "$c/std-file/summary.txt" plain p50)
-    ss=$(sval "$c/std-sqlite/summary.txt" plain p50)
-    echo "p$p hft-file wire p50 ${hf:-missing}   hft-sqlite wire p50 ${hs:-missing}   sqlite/file $(ratio "${hs:-x}" "${hf:-x}")"
-    echo "p$p std-file counterparty p50 ${sf:-missing}   std-sqlite counterparty p50 ${ss:-missing}   sqlite/file $(ratio "${ss:-x}" "${sf:-x}")"
+    hf=$(aval "$p" hft-file "$c/hft-file/summary.txt" wire p50)
+    hs=$(aval "$p" hft-sqlite "$c/hft-sqlite/summary.txt" wire p50)
+    sf=$(aval "$p" std-file "$c/std-file/summary.txt" plain p50)
+    ss=$(aval "$p" std-sqlite "$c/std-sqlite/summary.txt" plain p50)
+    echo "p$p hft-file wire p50 ${hf:-missing}   hft-sqlite wire p50 ${hs:-missing}   sqlite/file $(show "$(ratio "${hs:-x}" "${hf:-x}")")"
+    echo "p$p std-file counterparty p50 ${sf:-missing}   std-sqlite counterparty p50 ${ss:-missing}   sqlite/file $(show "$(ratio "${ss:-x}" "${sf:-x}")")"
     echo "p$p band verdicts: compare/p$p-hft-file-vs-sqlite.txt, compare/p$p-std-file-vs-sqlite.txt"
   done
   echo "allocs: w2w-baseline.sh asserts 'allocs 0' on both halves of every run; an arm with a"
