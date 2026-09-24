@@ -1,5 +1,6 @@
 # ADR-0161 — 0.1.0 is a git tag, not a crates.io upload, and the stranger and the semver gate read the tag
 
+- **Superseded in part — 2026-09-24:** decision 5's zero-checks exception and the hand-moved baseline literal of the `semver` job by [ADR-0162](ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md).
 - **Status**: **Accepted — 2026-09-24, by the manager under the owner's decision in *Context* ("Không publish").** Proposed the same day. Written by the architect (Opus) from the owner's decision
   recorded verbatim in *Context*. The manager accepts it under that decision; the owner may refuse
   it. On acceptance it **supersedes
