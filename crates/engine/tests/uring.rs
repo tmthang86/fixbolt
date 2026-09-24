@@ -77,7 +77,9 @@ fn reap_until(
     want: usize,
     within: Duration,
 ) -> (Vec<u8>, Io) {
-    let mut got = Vec::with_capacity(want);
+    // `want` may be `usize::MAX` ("until it ends"), so it only caps the
+    // reservation.
+    let mut got = Vec::with_capacity(want.min(1 << 20));
     let mut buf = [0u8; 4096];
     let start = Instant::now();
     let mut last = Io::Idle;
@@ -102,7 +104,7 @@ fn pattern(conn: usize, len: usize, seed: u64) -> Vec<u8> {
         .map(|i| {
             let x = (i as u64)
                 .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .wrapping_add(conn as u64 * 0xBF58_476D_1CE4_E5B9)
+                .wrapping_add((conn as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
                 .wrapping_add(seed);
             (x >> 56) as u8
         })
