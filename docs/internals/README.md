@@ -26,6 +26,7 @@ No measurements, no dates, no status live here — those belong to `STATUS.md`,
 | [engine.md](engine.md) | Where the TCP acceptor/connector and its many modules sit, and what each owns |
 | [metrics.md](metrics.md) | Where the Prometheus exporter's series table, encoder, HTTP and thread live, and what holds each |
 | [library.md](library.md) | Where the application-facing `fixbolt` API adapts the session layer |
+| [store-sqlite.md](store-sqlite.md) | Where the SQLite journal splits into the engine thread's half and its writer, and where the database is locked, checked and read back |
 | [conformance.md](conformance.md) | Where the 59 acceptance definitions are turned into a runnable gate |
 | [tools.md](tools.md) | Where the `tools/` binaries (`w2w`, `interop`, `jrnl`, `attr-scan`) live and what each measures or checks |
 

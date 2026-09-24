@@ -86,6 +86,13 @@ CASES=(
   # and its dev-dependency on the engine WITH `standard` is exactly the sibling
   # that would switch the flag back on at workspace scope. Asked per crate.
   "fixbolt-metrics:libc"
+  # `[2026-09-24]` crates/store-sqlite, phase 4 row 3. ADR-0182 decision 1:
+  # the default `sqlite` feature gates the `mod`s and `rusqlite`, and
+  # `rusqlite`'s `bundled` compiles SQLite's C through `libsqlite3-sys` — the
+  # one thing a machine with nothing optional installed must never be asked
+  # to do. Both asked by name: the second is what compiles the C.
+  "fixbolt-store-sqlite:rusqlite"
+  "fixbolt-store-sqlite:libsqlite3-sys"
 )
 
 rc=0
