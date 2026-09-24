@@ -1,10 +1,11 @@
 # ADR-0170 — The metrics exporter holds an `Observer` and nothing else, allocates nothing per scrape, and is published only after its kill line
 
-- **Status**: Proposed — 2026-09-24
-- Revised in place 2026-09-24 (still Proposed): decision 10 no longer has row 2 publish the crate
-  to crates.io. The owner decided 2026-09-24 that phase 3 closes with the git tag `v0.1.0` and
-  that no crates.io publish is planned (ADR-0161, being written). Row 2 now brings the crate into
-  the tagged release family instead. "Published" in this ADR's title means "released by tag".
+- **Status**: **Accepted — 2026-09-24, by the manager under the owner's delegation of
+  2026-09-18.** Proposed 2026-09-24.
+- Revised in place 2026-09-24, while still Proposed: decision 10 no longer has row 2 publish the
+  crate to crates.io. The owner decided 2026-09-24 that phase 3 closes with the git tag `v0.1.0`
+  and that no crates.io publish is planned (ADR-0161, being written). Row 2 now brings the crate
+  into the tagged release family instead. "Published" in this ADR's title means "released by tag".
 - **Date**: 2026-09-24
 - **Deciders**: written by the architect (Opus) for phase 4 row 1; accepted by the owner, or by
   the manager under the owner's standing mandate.

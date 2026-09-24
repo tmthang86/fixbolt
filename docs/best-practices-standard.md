@@ -175,3 +175,19 @@ the grace is the shape this whole mechanism exists to avoid, and systemd's defau
 `TimeoutStopSec` is 90 s.
 [ADR-0038](decisions/ADR-0038-an-ordered-shutdown-is-a-state-not-a-flag.md),
 [ADR-0054](decisions/ADR-0054-the-handles-are-made-before-the-engine-and-the-engine-adopts-them.md).
+
+---
+
+## 10. Watching it with `fixbolt-metrics`: alert on age, not only on health
+
+`[2026-09-24]` **Run the exporter here without hesitation — it costs this mode nothing it was
+not already paying.** `standard` already gives the core back between wakes (§1), and the
+exporter is one more thread doing the same
+([GUIDE.md §8a](GUIDE.md), [ADR-0170](decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)).
+
+**But size your alert on `fixbolt_snapshot_age_seconds`, not on `fixbolt_healthy` alone.** A
+`standard` engine asleep in `poll` is never woken to answer a scrape (§1 above; GUIDE.md §8a
+constraint 4) — a lightly loaded, perfectly healthy session can leave a snapshot minutes old
+between messages, and `fixbolt_healthy` says nothing about that. An alert threshold copied
+from an `hft` deployment, where the engine never sleeps and a snapshot is always fresh, will
+fire on a `standard` deployment that is doing exactly what this mode is for.

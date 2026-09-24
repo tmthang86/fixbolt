@@ -1,6 +1,7 @@
 # ADR-0171 — A series name is public API, `promtool` is the format oracle, and the dashboard names no data source
 
-- **Status**: Proposed — 2026-09-24
+- **Status**: **Accepted — 2026-09-24, by the manager under the owner's delegation of
+  2026-09-18.** Proposed 2026-09-24.
 - **Date**: 2026-09-24
 - **Deciders**: written by the architect (Opus) for phase 4 rows 1–2; accepted by the owner, or by
   the manager under the owner's standing mandate.

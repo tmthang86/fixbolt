@@ -12,10 +12,35 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 
 ## [Unreleased]
 
-Nothing yet. The six published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`,
-`fixbolt-engine`, `fixbolt-sbe`, `fixbolt`) release in lockstep at one version
+The six published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`,
+`fixbolt-sbe`, `fixbolt`) release in lockstep at one version
 ([ADR-0160](docs/decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)
-decision 1), so a change here waits for the next version rather than shipping alone.
+decision 1), so the changes below wait for the next version rather than shipping alone.
+
+- **`fixbolt-engine`** — additive observability surface for phase 4's metrics exporter
+  ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)):
+  `observe::Occupancy { used, capacity }`; `Snapshot::ring_to_app() -> Option<Occupancy>`, read
+  from the new provided trait method `Dispatch::ring_to_app(&self) -> Option<Occupancy>`
+  (default `None`; `RingDispatch` answers it from the new `Producer::capacity()`);
+  `Snapshot::presession_slots() -> Option<Occupancy>`, filled once per serving-loop iteration by
+  the new `Engine::note_presession_slots(used, capacity)`, called beside every existing
+  `note_unframeable`; and `Observer::latest() -> Option<Snapshot>`, which reads the published
+  cell without asking the engine to build a new one. **`None` means "nothing reported"**
+  (`InlineDispatch`, an initiator, a hand-built engine, `serve_sharded_hft`'s fan) and is
+  distinct from a reported zero. All six items are additive; `cargo-semver-checks` reads the
+  change as "no semver update required."
+- **`fixbolt-metrics`** (new package, crate `fixbolt-metrics`) — a Prometheus exporter that runs
+  on its own thread and reads only an `Observer`, never `Handles` or an `Admin`
+  ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md),
+  [docs/internals/metrics.md](docs/internals/metrics.md)). It merges with **`publish = false`**:
+  it is shaped for the lockstep release family from day one, but does not enter the tagged
+  release family until phase 4 row 2 measures its `w2w` scrape-on/scrape-off kill line
+  (ADR-0170 decision 10) — this line names what exists on this branch, not a release.
+- **Every series name `fixbolt-metrics` exports is public API**
+  ([ADR-0171](docs/decisions/ADR-0171-a-series-name-is-public-api-promtool-is-the-format-oracle-and-the-dashboard-names-no-data-source.md)
+  decision 1): the one definition is the table in `crates/metrics/src/series.rs`, deliberately
+  duplicated in `tests/series_names.rs` so a rename or removal is red in `cargo test` before it
+  is anyone's broken Grafana panel — a change no `cargo-semver-checks` run can see on its own.
 
 ## Conditions to reach `1.0`
 

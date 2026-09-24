@@ -1416,6 +1416,51 @@ The kinds today: `LoggedOn`, `Ended`, `EndedWithoutReason`, `Administered` (§8c
 Gap detected, resend issued and reject sent are **not** here: they are message-rate, and
 nothing message-rate goes on the hot path until its cost has been measured.
 
+### Exporting this to Prometheus
+
+`fixbolt-metrics` turns the same `Observer` this section already showed you into a `/metrics`
+Prometheus can scrape, on its own thread, without a second mechanism and without touching the
+engine's hot path — [ADR-0170](decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md).
+[`docs/internals/metrics.md`](internals/metrics.md) is where the crate's files, its series
+table and its tests are catalogued; this is only the constraints a caller must honour that the
+type system does not enforce.
+
+```rust
+let handles = fixbolt::Handles::new();
+// Spawn the exporter FIRST — before this thread, or any thread, pins itself.
+// A new thread inherits its spawner's CPU affinity, so an exporter spawned
+// after pinning can land on an isolated engine core.
+let exporter = fixbolt_metrics::Exporter::builder("127.0.0.1:9464".parse().unwrap())
+    .engine("acceptor", handles.observer())
+    .spawn()
+    .expect("the exporter binds");
+// ... then fixbolt::serve(addr, table, app, capacity, limits, log, handles) ...
+exporter.stop();
+```
+
+Four things to hold onto:
+
+1. **Spawn it before you pin anything.** The affinity mask a thread has when it calls `.spawn()`
+   is the mask its exporter thread keeps
+   ([an-exporter-thread-inherits-its-spawners-cpu-affinity](reference/an-exporter-thread-inherits-its-spawners-cpu-affinity.md)
+   has the mechanism and what to check). `tools/w2w --metrics` does this from the main thread,
+   before `--engine-core`/`--client-core` pin anything, and that is the order to copy.
+2. **`.with_events(...)` takes the event stream from everyone else.** Reading an event removes
+   it (see above), and the exporter is not exempt: call it only if nothing else is also calling
+   `watch.events(...)`, or route both through the one closure you hand the exporter.
+3. **Bind loopback or a private interface — never the open internet.** No TLS, no keep-alive,
+   no authentication (ADR-0170 decision 6). The listener answers whoever can reach the socket,
+   and the documentation is the only thing standing between this port and the internet.
+4. **A `standard` engine asleep in `poll` is not woken to answer a scrape.**
+   `fixbolt_snapshot_age_seconds` grows honestly instead of the exporter forcing a wakeup — the
+   same staleness `request()` already has above, now with a number an alert can watch.
+
+Two more things worth reading before trusting a scrape's timing: a synchronous scrape loop
+(connect, wait, repeat) is capped near the exporter's own wake interval, not the rate you ask
+for ([a-synchronous-scrape-waits-for-the-exporters-next-tick](reference/a-synchronous-scrape-waits-for-the-exporters-next-tick.md));
+and a request the exporter refuses can reach the client as a reset instead of its `400`
+([a-close-with-unread-bytes-can-race-its-own-reply](reference/a-close-with-unread-bytes-can-race-its-own-reply.md)).
+
 ---
 
 ## 8b. Speaking first: what an initiator can be told to say

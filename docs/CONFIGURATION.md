@@ -294,6 +294,10 @@ Set in code when the engine is built or started.
 | `IDLE_SPINS` | `[added 2026-09-23]` Empty polls a writer thread (`FileJournal` under `Async`, `FileLog`) spins through before it starts to sleep | polls, not configurable | `1024` | compile-time constant, every mode | [`ring.rs`](../crates/engine/src/ring.rs) |
 | `IDLE_SLEEP` | `[added 2026-09-23]` How long an idle writer thread sleeps per empty poll after that. A record pushed to a sleeping writer reaches the file up to this much later; the engine thread never wakes it. `[derived, not measured]` — [ADR-0150](decisions/ADR-0150-the-journal-writer-holds-the-largest-record-the-slot-allows-and-stops-only-on-a-record-no-message-can-be.md) decision 4 | milliseconds, not configurable | `1` | compile-time constant, every mode | [`ring.rs`](../crates/engine/src/ring.rs) |
 | `redact::MASKED` | `[added 2026-09-23]` The fields `FileLog` masks and `FileJournal` never writes for: `554` Password, `925` NewPassword, `1402` EncryptedPassword, `1404` EncryptedNewPassword (every message), `96` RawData (only when any `35=` in the record is `Logon`/`UserRequest`, or there is no `35=`) | fixed list, not configurable | as listed | `fixbolt_engine::redact::MASKED` | [`redact.rs`](../crates/engine/src/redact.rs) |
+| `min_request_interval` | `[added 2026-09-24]` How often, at most, a `fixbolt-metrics` `Exporter` asks a watched engine for a fresh snapshot, whatever the scrape rate — the kill line's 10 Hz ceiling enforced in code rather than left to the caller ([ADR-0170](decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md) decision 2) | `Duration`, no floor | `100 ms` | `Exporter::builder(addr).min_request_interval(d)` | [`crates/metrics/src/lib.rs:74`](../crates/metrics/src/lib.rs#L74) |
+| `fresh_wait` | `[added 2026-09-24]` How long a scrape that asked waits, on the exporter's own thread, for `Observer::published()` to move before it gives up and reports what it has | `Duration`, no floor | `50 ms` | `.fresh_wait(d)` | [`crates/metrics/src/lib.rs:77`](../crates/metrics/src/lib.rs#L77) |
+| `tick` | `[added 2026-09-24]` How long the `fixbolt-metrics` thread sleeps between wakes; below `MIN_DURATION` it is raised, not rejected | `Duration`, floor `MIN_DURATION` (1 ms) | `100 ms` | `.tick(d)` | [`crates/metrics/src/lib.rs:80`](../crates/metrics/src/lib.rs#L80) |
+| `read_timeout` | `[added 2026-09-24]` How long a scraping client has to send its request and take the answer before the exporter gives up on it; below `MIN_DURATION` it is raised, not rejected | `Duration`, floor `MIN_DURATION` (1 ms) | `1 s` | `.read_timeout(d)` | [`crates/metrics/src/lib.rs:83`](../crates/metrics/src/lib.rs#L83) |
 
 ### The three origination numbers
 
@@ -324,6 +328,17 @@ are public traits — and owns that choice in its own code, not in a file a stra
 `NoLog` and `MemJournal` are unaffected either way: they hold nothing on disk to mask.
 ([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)
 decision 6.)
+
+### The exporter's `MIN_DURATION` floor
+
+`[added 2026-09-24]` `fixbolt-metrics`'s `tick` and `read_timeout` cannot be set below
+`MIN_DURATION` (1 ms, `crates/metrics/src/lib.rs:87`): a value under it is **raised, not
+rejected**, the same shape as `Block::MIN_TIMEOUT_MS` above — a caller cannot make the exporter
+thread spin by passing a zero `tick`. `min_request_interval` and `fresh_wait` have **no**
+floor: setting either to zero is legal, and turns off, respectively, the ceiling on how often a
+scrape may ask the engine for a snapshot and the wait for a fresh one to arrive
+([ADR-0170](decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)
+decisions 2–3 say what each is for and why the defaults are what they are).
 
 ### Sizing the resend ring
 
