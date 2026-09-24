@@ -212,6 +212,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fixbolt-metrics"
+version = "0.1.0"
+dependencies = [
+ "fixbolt-conformance",
+ "fixbolt-engine",
+ "fixbolt-session",
+ "libc",
+]
+
+[[package]]
 name = "fixbolt-sbe"
 version = "0.1.0"
 dependencies = [
@@ -243,6 +253,7 @@ dependencies = [
  "fixbolt-codec",
  "fixbolt-dict",
  "fixbolt-engine",
+ "fixbolt-metrics",
  "fixbolt-session",
  "libc",
  "rcgen",

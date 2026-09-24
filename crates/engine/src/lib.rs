@@ -226,6 +226,12 @@ pub struct Engine<
     ///
     /// [ADR-0020]: ../../../docs/decisions/ADR-0020-a-pre-session-stage-owns-the-socket-until-logon.md
     unframeable_prelogon: usize,
+    /// How many pre-session slots the stage in front of this engine has taken,
+    /// of how many. **Told, like [`Self::unframeable_prelogon`]**, and `None`
+    /// until something tells it — an engine built by hand has no stage in front
+    /// of it, and saying zero would say it had an empty one. ADR-0170
+    /// decision 8.
+    presession_slots: Option<crate::observe::Occupancy>,
     cfg: Config,
     dispatch: D,
     clock: C,
@@ -323,6 +329,7 @@ where
             interests: self.interests,
             sources_missing: self.sources_missing,
             unframeable_prelogon: self.unframeable_prelogon,
+            presession_slots: self.presession_slots,
             speak_first_sends: self.speak_first_sends,
             refused_connections: self.refused_connections,
             cfg: self.cfg,
@@ -375,6 +382,7 @@ where
             log: L::default(),
             log_lost_reported: 0,
             unframeable_prelogon: 0,
+            presession_slots: None,
             require_kernel: false,
             shard: 0,
             // Two more than the connections: `serve` adds the listener, and the
@@ -837,6 +845,21 @@ where
         self.unframeable_prelogon = self.unframeable_prelogon.saturating_add(n);
     }
 
+    /// Tell this engine how many pre-session slots the stage in front of it has
+    /// taken — sockets waiting to identify themselves plus connections parked
+    /// for recovery — of how many (`presession::Limits::pending()`).
+    ///
+    /// `[added 2026-09-24]` ADR-0170 decision 8. The stage is not part of the
+    /// engine, so, like the unframeable count above, the number is handed over:
+    /// `serve` calls this once a serving-loop iteration, beside that call. One
+    /// store; nothing is built until somebody asks for a snapshot.
+    ///
+    /// **Not cumulative** — the arguments are the state now. Until this is
+    /// called, [`crate::observe::Snapshot::presession_slots`] is `None`.
+    pub const fn note_presession_slots(&mut self, used: usize, capacity: usize) {
+        self.presession_slots = Some(crate::observe::Occupancy::new(used, capacity));
+    }
+
     /// Tell this engine how many TLS handshakes were refused in front of it —
     /// `presession::Progress::tls_refused` on an acceptor, `1` for a dial whose
     /// handshake was refused on an initiator.
@@ -1138,6 +1161,8 @@ where
         sources_missing: usize,
         log_lost: u64,
         unframeable_prelogon: usize,
+        ring_to_app: Option<crate::observe::Occupancy>,
+        presession_slots: Option<crate::observe::Occupancy>,
     ) -> crate::observe::Snapshot {
         let mut snap = crate::observe::Snapshot::default();
         for c in conns {
@@ -1161,6 +1186,7 @@ where
             log_lost,
             unframeable_prelogon,
         );
+        snap.set_occupancy(ring_to_app, presession_slots);
         snap
     }
 
@@ -1212,6 +1238,8 @@ where
                 self.sources_missing,
                 self.log.lost(),
                 self.unframeable_prelogon,
+                self.dispatch.ring_to_app(),
+                self.presession_slots,
             );
             shared.publish(&snap);
         }
@@ -3516,6 +3544,10 @@ fn pump_loop<
         // The pre-session stage is in front of the engine and keeps its own
         // counts; this is the one line that lets an operator see this one.
         engine.note_unframeable(p.unframeable);
+        // Beside it, and for the same reason: the slots are the stage's, and
+        // this is the one line that lets an operator see them (ADR-0170
+        // decision 8). A connection parked for recovery still holds one.
+        engine.note_presession_slots(set.len() + parked.len(), limits.pending());
         // ADR-0151 decision 4: a handshake TLS refused is an event, where a
         // peer that left (`p.gone`) is not.
         engine.note_tls_refused(p.tls_refused);

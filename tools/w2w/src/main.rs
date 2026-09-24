@@ -277,6 +277,26 @@
 //!   and says so: its label names every thread counted ([`counted_threads`]).
 //!   Any tap drop or buffer overflow withholds the wire column: a request the
 //!   tap never recorded would put its reply against its neighbour.
+//!
+//! # `--metrics <addr>`
+//!
+//! `[2026-09-24]` phase 4 row 1 step 5, ADR-0170. Starts a `fixbolt-metrics`
+//! exporter on `addr` watching the engine, and prints `metrics: <addr>`. For the
+//! combined run and `--listen`; `--connect` has no engine and refuses it. It is
+//! the instrument of row 2's scrape-on/scrape-off pair, so three things about
+//! it are deliberate:
+//!
+//! * **Spawned on the main thread before any thread is pinned.** A thread
+//!   inherits its spawner's affinity; spawned after `--engine-core` or
+//!   `--client-core` took effect it would share a measured core.
+//! * **Adopted by the engine before the serving window opens** — the same
+//!   one relaxed load per turn a deployment with an exporter pays.
+//! * **Counted.** `allocs` counts every thread, the exporter's included, and
+//!   its label says `exporter` when one ran. A scrape that allocated would
+//!   fail the combined run's `allocs 0` assertion.
+//!
+//! The scraper is `scripts/scrape-loop.sh`, another process, so its own
+//! allocations are not in the count.
 #![allow(unsafe_code)]
 // Two kinds of `unsafe` live here, each with its own SAFETY note naming what
 // proves it: the counting allocator below, and — Linux only, `mod wire` and
@@ -311,6 +331,14 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 /// (ADR-0072 decision 1). `0` means "not yet known". `AtomicI32` because a
 /// linux tid is a `pid_t`.
 static ENGINE_TID: AtomicI32 = AtomicI32::new(0);
+
+/// `--metrics`: the cell the exporter watches, made on the main thread before
+/// any engine exists and adopted by [`pump`]'s engine before its serving window
+/// opens. A `static` rather than one more argument through the four functions
+/// between `main` and `pump`, the shape [`ENGINE_TID`] and [`ARMED`] already
+/// have. Unset, `pump` adopts nothing and the engine carries no cell — every
+/// run without the flag is the run it was before.
+static METRICS: std::sync::OnceLock<fixbolt_engine::observe::Handles> = std::sync::OnceLock::new();
 
 struct Counting;
 
@@ -802,6 +830,11 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "a split run already picks one transport per process, with --tls; there is no \
          second half in this process to give a different one to",
     ),
+    (
+        "--metrics",
+        "the exporter watches the engine, and this process has none; pass it to the \
+         --listen process",
+    ),
 ];
 
 /// `--mode standard --wire-timestamps` on a NIC that is not loopback: refused.
@@ -1065,6 +1098,127 @@ fn value_of<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<
             .map_err(|_| format!("{name} {v}: not a valid value")),
         _ => Err(format!("{name} needs a value")),
     }
+}
+
+/// `--metrics` beside `--engine-core`/`--client-core`: read the exporter
+/// thread's CPU mask back, after the pins, and refuse a run it would disturb.
+///
+/// Senior review F4 (ii). The exporter takes the mask of the thread that spawns
+/// it (`docs/reference/an-exporter-thread-inherits-its-spawners-cpu-affinity.md`),
+/// so the spawn order in `main` is the whole protection — and an order is a
+/// thing a later edit breaks without a sound. This reads the kernel's answer,
+/// the way ADR-0015 reads every other pin back. [`placement_verdict`] says
+/// what is refused, and why the rule is not "the mask contains the engine core".
+fn exporter_placement(
+    engine_core: Option<usize>,
+    client_core: Option<usize>,
+) -> std::io::Result<()> {
+    if METRICS.get().is_none() || (engine_core.is_none() && client_core.is_none()) {
+        return Ok(());
+    }
+    #[cfg(all(feature = "affinity", target_os = "linux"))]
+    {
+        use fixbolt_engine::affinity::Topology;
+        let mask = exporter_mask()?;
+        let topo = Topology::read().map_err(std::io::Error::other)?;
+        let isolated: Vec<usize> = topo.isolated().iter().map(|c| c.0).collect();
+        let measured: Vec<usize> = [engine_core, client_core].into_iter().flatten().collect();
+        if let Err(why) = placement_verdict(&mask, &measured, &isolated) {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+        println!("metrics-thread: cpus {mask:?}");
+    }
+    Ok(())
+}
+
+/// The CPUs the `fixbolt-metrics` thread may run on, read from
+/// `/proc/self/task/*/status`. `std` names a thread from inside it, so the name
+/// is waited for, briefly.
+#[cfg(all(feature = "affinity", target_os = "linux"))]
+fn exporter_mask() -> std::io::Result<Vec<usize>> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        for t in std::fs::read_dir("/proc/self/task")?.flatten() {
+            let named = std::fs::read_to_string(t.path().join("comm"))
+                .is_ok_and(|c| c.trim_end() == "fixbolt-metrics");
+            if !named {
+                continue;
+            }
+            let status = std::fs::read_to_string(t.path().join("status"))?;
+            return status
+                .lines()
+                .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+                .and_then(|v| cpu_list(v.trim()))
+                .ok_or_else(|| {
+                    std::io::Error::other("w2w: the exporter thread's mask is unreadable")
+                });
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(
+                "w2w: --metrics started no fixbolt-metrics thread",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Whether an exporter allowed on `mask` may run beside threads pinned to
+/// `measured`, on a machine whose `isolcpus` is `isolated`.
+///
+/// Two refusals, and **not** "the mask contains a measured core": with no
+/// `isolcpus` the scheduler may put any thread on any core, the exporter's
+/// inherited mask is every core, and that rule would refuse every correctly
+/// ordered `--allow-unisolated` run. What is refused is what the spawn order
+/// exists to prevent:
+///
+/// 1. the exporter may run on a measured core that `isolcpus` isolates — the
+///    isolation exists to keep every other thread off it;
+/// 2. the exporter may run **only** on measured cores — the mask it inherits
+///    from a thread that was already pinned, the reversal of the spawn order.
+#[cfg_attr(not(all(feature = "affinity", target_os = "linux")), allow(dead_code))]
+fn placement_verdict(mask: &[usize], measured: &[usize], isolated: &[usize]) -> Result<(), String> {
+    if let Some(cpu) = measured
+        .iter()
+        .find(|c| mask.contains(c) && isolated.contains(c))
+    {
+        return Err(format!(
+            "the fixbolt-metrics thread may run on cpu{cpu}, a measured core that isolcpus \
+             isolates (its cpus: {mask:?}) — it was spawned after a thread was pinned there"
+        ));
+    }
+    if !mask.is_empty() && mask.iter().all(|c| measured.contains(c)) {
+        return Err(format!(
+            "the fixbolt-metrics thread may run only on measured cores {mask:?} — it inherited \
+             the mask of a thread that was already pinned; spawn it before any pin"
+        ));
+    }
+    Ok(())
+}
+
+/// A kernel CPU list — `0-3,8,10-11` — as the CPUs it names.
+#[cfg_attr(not(all(feature = "affinity", target_os = "linux")), allow(dead_code))]
+fn cpu_list(text: &str) -> Option<Vec<usize>> {
+    let mut out = Vec::new();
+    for part in text.split(',').filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                let (a, b): (usize, usize) = (a.parse().ok()?, b.parse().ok()?);
+                if a > b {
+                    return None;
+                }
+                out.extend(a..=b);
+            }
+            None => out.push(part.parse().ok()?),
+        }
+    }
+    Some(out)
+}
+
+/// `--metrics <addr>`: where the exporter listens, or `None` without the flag.
+/// A value that is not a socket address is refused, not defaulted.
+fn metrics_of(args: &[String]) -> Result<Option<std::net::SocketAddr>, String> {
+    value_of(args, "--metrics")
 }
 
 /// `--interval`: spin until one interval after the previous send.
@@ -1364,6 +1518,33 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    // `--metrics <addr>`: the exporter, spawned HERE — on the main thread,
+    // before `spawn_engine` pins the engine thread and before `pin_client` pins
+    // this one — because a thread inherits the affinity of the thread that
+    // spawns it (ADR-0170 decision 5). Spawned any later, it would share a
+    // measured core. `--connect` has refused the flag in `half_of`. Its
+    // buffers are reserved here, outside every timed window; the exporter
+    // allocates nothing after this, and `allocs` counts its thread too.
+    let exporter = match metrics_of(&args) {
+        Ok(None) => None,
+        Ok(Some(addr)) => {
+            let handles = fixbolt_engine::observe::Handles::new();
+            let exporter = fixbolt_metrics::Exporter::builder(addr)
+                .engine("w2w", handles.observer())
+                .spawn()
+                .map_err(std::io::Error::other)?;
+            if METRICS.set(handles).is_err() {
+                return Err(std::io::Error::other("w2w: --metrics set twice"));
+            }
+            println!("metrics: {}", exporter.local_addr());
+            Some(exporter)
+        }
+        Err(why) => {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+    };
+
     let run = Run {
         path,
         warmup,
@@ -1403,6 +1584,11 @@ fn main() -> std::io::Result<()> {
         // `generator_half` never receives a choice it has no engine to act on.
         Half::Connect(addr) => generator_half(&addr, run, client_core, dump.as_deref()),
     };
+    // After the run, whatever it returned: the engine thread has been joined,
+    // so there is nothing left for the exporter to watch.
+    if let Some(e) = exporter {
+        e.stop();
+    }
     // Only `--wire-timestamps` installs a handler (`signal`). By here every
     // thread that run started has been joined or has returned, and every
     // `Drop` has run — the observer's, and `HwConfig`'s, whose `restored`
@@ -1559,6 +1745,7 @@ fn both_halves(
     let engine = spawn_engine(body, engine_core)?;
 
     pin_client(client_core)?;
+    exporter_placement(engine_core, client_core)?;
 
     let peer = Peer::InProcess {
         stop: &stop,
@@ -1797,6 +1984,7 @@ fn engine_half(
         }
     };
     let engine = spawn_engine(body, engine_core)?;
+    exporter_placement(engine_core, None)?;
     // The main thread blocks here and allocates nothing, so the count below is
     // the engine thread's.
     engine
@@ -1890,6 +2078,12 @@ fn counted_threads(client: bool, observer: bool, journal: JournalKind, log: LogK
     }
     if log == LogKind::File {
         names.push("log writer");
+    }
+    // `--metrics`: the exporter is a thread of this process, so `ALLOCS`
+    // counted it. Read from the static rather than passed, so every call site
+    // written before the flag reads as it did.
+    if METRICS.get().is_some() {
+        names.push("exporter");
     }
     match names.as_slice() {
         ["engine", "client"] => "both threads".to_string(),
@@ -2946,6 +3140,11 @@ fn pump<
         8,
     )
     .with_log(log);
+    // `--metrics`: adopt the cell the exporter watches. Before the serving
+    // window, and one `Arc` clone — nothing here allocates.
+    if let Some(handles) = METRICS.get() {
+        let _ = engine.adopt(handles);
+    }
     let listener = acceptor.source().map(Interest::readable);
     let extra: &[Interest] = listener.as_slice();
     let mut first: Option<ConnId> = None;
@@ -5034,6 +5233,60 @@ mod tests {
                 "{e}"
             );
         }
+    }
+
+    /// `--metrics` belongs to a process with an engine: the combined run and
+    /// `--listen`. `--connect` refuses it rather than start an exporter with
+    /// nothing to watch.
+    #[test]
+    fn metrics_is_refused_on_connect_and_parsed_elsewhere() {
+        let e = half_of(&argv("--connect 127.0.0.1:1 --metrics 127.0.0.1:9464")).unwrap_err();
+        assert!(
+            e.starts_with("--metrics does not apply to --connect"),
+            "{e}"
+        );
+        assert!(half_of(&argv("--listen 127.0.0.1:1 --metrics 127.0.0.1:9464")).is_ok());
+        assert_eq!(
+            metrics_of(&argv("--metrics 127.0.0.1:9464")),
+            Ok(Some("127.0.0.1:9464".parse().unwrap()))
+        );
+        assert_eq!(metrics_of(&argv("--messages 5")), Ok(None));
+        assert_eq!(
+            metrics_of(&argv("--metrics 9464")),
+            Err("--metrics 9464: not a valid value".into())
+        );
+        assert_eq!(
+            metrics_of(&argv("--metrics")),
+            Err("--metrics needs a value".into())
+        );
+    }
+
+    #[test]
+    fn a_cpu_list_reads_as_the_kernel_writes_it() {
+        assert_eq!(cpu_list("0-3,8,10-11"), Some(vec![0, 1, 2, 3, 8, 10, 11]));
+        assert_eq!(cpu_list("2"), Some(vec![2]));
+        assert_eq!(cpu_list("3-1"), None);
+        assert_eq!(cpu_list("x"), None);
+    }
+
+    /// Senior review F4 (ii): the two refusals, and the run that must pass.
+    #[test]
+    fn the_exporter_is_refused_beside_a_measured_core_it_could_take() {
+        let all: Vec<usize> = (0..16).collect();
+        // No isolcpus, spawned before the pins: every core, and allowed.
+        assert_eq!(placement_verdict(&all, &[2, 3], &[]), Ok(()));
+        // isolcpus 2-3, spawned before the pins: the housekeeping cores only.
+        let housekeeping: Vec<usize> = (0..16).filter(|c| ![2, 3].contains(c)).collect();
+        assert_eq!(placement_verdict(&housekeeping, &[2, 3], &[2, 3]), Ok(()));
+        // Spawned after the client pinned itself: its core and nothing else.
+        let e = placement_verdict(&[3], &[2, 3], &[]).unwrap_err();
+        assert!(e.contains("only on measured cores [3]"), "{e}");
+        // Allowed on an isolated measured core.
+        let e = placement_verdict(&all, &[2, 3], &[2, 3]).unwrap_err();
+        assert!(
+            e.contains("cpu2, a measured core that isolcpus isolates"),
+            "{e}"
+        );
     }
 
     #[test]

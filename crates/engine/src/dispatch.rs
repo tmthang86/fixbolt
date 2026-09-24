@@ -115,6 +115,20 @@ pub trait Dispatch {
     fn take_refusal(&mut self) -> bool {
         false
     }
+
+    /// How full the ring to the application is, in bytes, for
+    /// [`crate::observe::Snapshot::ring_to_app`].
+    ///
+    /// Asked **only when a snapshot is built** — never on a turn nobody
+    /// observes — so an answer may read a cursor or two and nothing more; it
+    /// must not allocate (non-negotiable 1, `benches/alloc.rs` case
+    /// `observe-asked-ring`) or block.
+    ///
+    /// Defaults to `None`, which means *"no such ring"*, not *"an empty one"*:
+    /// [`InlineDispatch`] keeps it. [`RingDispatch`] answers.
+    fn ring_to_app(&self) -> Option<crate::observe::Occupancy> {
+        None
+    }
 }
 
 /// The handler runs on the engine thread. The default (ADR-0002).
@@ -314,6 +328,17 @@ impl<const M: usize> Dispatch for RingDispatch<M> {
 
     fn take_refusal(&mut self) -> bool {
         core::mem::replace(&mut self.refused_since, false)
+    }
+
+    /// Two relaxed-and-acquire loads of the ring's cursors. `used` counts every
+    /// record header still in the ring, because those bytes are just as
+    /// unavailable to the next `deliver`.
+    fn ring_to_app(&self) -> Option<crate::observe::Occupancy> {
+        let capacity = self.to_app.capacity();
+        Some(crate::observe::Occupancy::new(
+            capacity.saturating_sub(self.to_app.free()),
+            capacity,
+        ))
     }
 }
 

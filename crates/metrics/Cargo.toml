@@ -1,0 +1,57 @@
+[package]
+name = "fixbolt-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A Prometheus exporter for fixbolt engines: holds an Observer, allocates nothing per scrape"
+readme = "README.md"
+keywords = ["fix", "fix-protocol", "prometheus", "metrics", "observability"]
+categories = ["finance", "network-programming"]
+# ADR-0170 decision 10: the lockstep family's mould from the day it merges —
+# inherited version, `=`-pinned internal dependency, this allowlist, the two
+# licence copies — but OUTSIDE the release family until phase 4 row 2's `w2w`
+# pair passes ADR-0098's kill line. `scripts/check-release-versions.sh` holds
+# the mould through its "shaped, not released" list, and its rule 4 holds this
+# line. `examples/**` is left out: the examples need `fixbolt-engine`'s
+# `standard` through the path-only dev-dependency below, which the `.crate`
+# strips.
+publish = false
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+# ADR-0170 decision 9: the only runtime dependency, and taken WITHOUT its
+# default features. The exporter needs `observe`, which no feature gates, so a
+# user building `hft` without `standard` gets no `libc` from this crate —
+# `scripts/check-no-optional-deps.sh` case `fixbolt-metrics:libc` holds it.
+# No `[features]` block: this crate has nothing to switch.
+[dependencies]
+fixbolt-engine = { version = "=0.1.0", path = "../engine", default-features = false }
+
+# Path-only, so none of them reaches a consumer (ADR-0160 decision 1).
+# `standard` is what the tests, the bench and the example need to run a real
+# engine behind `serve`; `fixbolt-conformance` is the corpus's fixed instant
+# and checksum helper; `fixbolt-session` is there only so a unit test can NAME
+# every `DropReason` variant — `fixbolt-engine` does not re-export it, and
+# ADR-0170 decision 9 allows this crate no second runtime dependency.
+[dev-dependencies]
+fixbolt-engine = { path = "../engine", features = ["standard"] }
+fixbolt-conformance = { path = "../conformance" }
+fixbolt-session = { path = "../session" }
+
+# `tests/inherits_affinity.rs` only: pinning the test's own thread needs
+# `sched_setaffinity`. Not `fixbolt-engine`'s `affinity` feature, which would do
+# it safely: a dev-dependency's feature is unified into every crate of a
+# `cargo test --all` invocation (docs/reference/feature-flags-unify-across-a-workspace.md),
+# and that would switch the engine's own affinity tests on for the whole
+# workspace. A dev-dependency reaches no consumer, and
+# `scripts/check-no-optional-deps.sh` asks with `-e normal`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "alloc"
+harness = false

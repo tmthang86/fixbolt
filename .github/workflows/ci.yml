@@ -642,6 +642,52 @@ jobs:
       - name: The instruction-count verdict rule, its stub self-test
         run: scripts/check-bench-instructions.sh
 
+      # ADR-0171 decision 5: nothing in the toolchain sees a series renamed
+      # inside a JSON blob, and Grafana's own "export for sharing" shape
+      # carries `__inputs` / `${DS_PROMETHEUS}`, which file provisioning
+      # cannot fill in (grafana/grafana#10786). This is the dashboard-shape
+      # oracle: valid JSON, no `__inputs`, no `${DS_`, every panel and target
+      # on the `${datasource}` template variable, every target has an `expr`,
+      # panel ids unique. It does not know whether a queried series exists —
+      # that is `cargo test -p fixbolt-metrics --test dashboard` above (part
+      # of `cargo test --all`), which scrapes a real fixture and compares
+      # names.
+      - name: The Grafana dashboard names no data source and every panel has an expr
+        run: python3 scripts/check-grafana-dashboard.py
+
+      # ADR-0171 decision 4: `promtool check metrics` is the format's own
+      # oracle, not this crate's encoder read back by itself. A pinned
+      # Prometheus release (version and SHA-256 in the script) is fetched
+      # into `target/`, never the repository tree, and checked against the
+      # release's own `sha256sums.txt` before it runs a single byte — the
+      # same pattern `scripts/interop-qfj.sh` uses for a pinned JVM oracle
+      # (ADR-0130). No `--allow-skip` here: on this runner, absence of
+      # `promtool` is a real gate failure, not an accepted local shortcut.
+      - name: The Prometheus exposition format, checked by promtool
+        run: scripts/check-metrics-format.sh
+
+      # Phase 4 row 1 senior review F4 (i). `scripts/scrape-loop.sh` is the 10 Hz
+      # load the mode scripts run under and row 2's scrape-on arm, and it once
+      # waited for each answer before the next — 4.2 Hz asked 10
+      # (docs/reference/a-synchronous-scrape-waits-for-the-exporters-next-tick.md).
+      # Against a listener that answers after 300 ms, an open loop still sends
+      # at ~10 Hz and a closed one at ~2.5 Hz; the script FAILs under 0.9 × the
+      # rate asked. Its reversal — the `&` after `curl` removed — goes red here.
+      - name: scrape-loop.sh keeps its rate against a slow listener
+        run: |
+          python3 -c '
+          import http.server as h, time
+          class H(h.BaseHTTPRequestHandler):
+              def do_GET(s):
+                  time.sleep(0.3); s.send_response(200); s.end_headers(); s.wfile.write(b"ok\n")
+              def log_message(s, *a): pass
+          h.ThreadingHTTPServer(("127.0.0.1", 19465), H).serve_forever()' &
+          srv=$!
+          for _ in $(seq 50); do curl -s -o /dev/null 127.0.0.1:19465/metrics && break; sleep 0.1; done
+          scripts/scrape-loop.sh 127.0.0.1:19465 10 2; rc=$?
+          kill "${srv}"
+          exit "${rc}"
+
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —
   # `[measured 2026-08-30]` clippy::byte_char_slices did exactly that. Pinning

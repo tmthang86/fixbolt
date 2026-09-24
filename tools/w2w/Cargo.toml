@@ -52,6 +52,13 @@ fixbolt-session = { path = "../../crates/session" }
 fixbolt-codec = { path = "../../crates/codec" }
 fixbolt-dict = { path = "../../crates/dict" }
 
+# `--metrics <addr>` (phase 4 row 1 step 5, ADR-0170): the exporter beside the
+# engine, so the kill line's scrape-on/scrape-off pair (row 2) is measured by the
+# same binary, in the same process, with `allocs` counted on every thread —
+# the exporter's included. It has no dependency of its own beyond
+# `fixbolt-engine`, so this adds no crate from outside the workspace.
+fixbolt-metrics = { path = "../../crates/metrics" }
+
 # The `tls` feature above, and nothing else. `ring` rather than rustls's default
 # `aws_lc_rs`, for the reason `crates/engine/Cargo.toml` gives: `aws-lc-sys`
 # needs cmake. rcgen 0.14's own defaults are `crypto`, `pem` and `ring`, the same

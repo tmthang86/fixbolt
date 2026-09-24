@@ -245,3 +245,22 @@ small allocations, counted exactly by
 How often that happens is the *peer's* choice, not a setting here: a rustls peer rekeys at
 roughly 2^24 records, OpenSSL does not rekey on its own. **Nothing in this repository has timed
 what a rekey costs the `hft` p50** — §5's "Not measured" applies here too.
+
+---
+
+## 10. Watching it with `fixbolt-metrics`: spawn it before you pin anything
+
+`[2026-09-24]` **Create the `Exporter` from the orchestrating thread, before that thread — or
+any thread — pins itself to a core.** A new thread inherits its spawner's CPU affinity mask, so
+an exporter spawned after `affinity::pin_current_thread` (§3) or `serve_hft_pinned` has run can
+land on the very isolated core §3 exists to keep clean
+([an-exporter-thread-inherits-its-spawners-cpu-affinity](reference/an-exporter-thread-inherits-its-spawners-cpu-affinity.md);
+[GUIDE.md §8a](GUIDE.md)). `tools/w2w --metrics` spawns it on the main thread before
+`--engine-core`/`--client-core` take effect — copy that order.
+
+**On a sharded deployment, one `Exporter` can watch every shard** through repeated
+`.engine(name, observer)` calls, one per `serve_sharded_hft` shard. Spawn that one exporter
+from the thread that builds the `ShardPlan`, before any shard thread pins — never from inside a
+shard thread, which by the time it can call anything is already pinned. Nothing in this
+repository checks placement automatically; `ps -L -o tid,psr,comm` against `isolcpus` is the
+only proof there is one.

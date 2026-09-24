@@ -698,6 +698,87 @@ fn main() {
         watcher.published()
     );
 
+    // The same worst case over a `RingDispatch`, so building a snapshot also
+    // reads the ring to the application (ADR-0170 decision 8). The application
+    // end is never drained: an order sits in the ring, so the case asserts a
+    // non-empty `ring_to_app` — a zero here would be counted off a path that
+    // reported nothing.
+    let (to_ring_app, _ring_app_end) = ring::pair(1 << 16);
+    let (_ring_back, from_ring_app) = ring::pair(1 << 16);
+    let (mut ring_peer, ring_side) = Loopback::pair();
+    let mut ring_watched: Engine<
+        Loopback,
+        fixbolt_session::Acceptor,
+        RingDispatch<1024>,
+        ManualClock,
+        Yield,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        RingDispatch::new(to_ring_app, from_ring_app),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        Yield,
+        4,
+    );
+    let ring_watcher = ring_watched.observer();
+    ring_watched.add(ring_side);
+    let _ = ring_peer.send(&traffic[0]);
+    ring_watched.turn();
+    let _ = ring_peer.recv(&mut sink);
+    // An application message, header fields in tag order: `wire` puts the
+    // identity fields after its body, which for a body field is `373=14`.
+    let ring_order = {
+        let body = "35=D\x0134=2\x0149=TW44\x0152=20260828-12:00:00.000\x0156=ISLD\x01\
+                    11=ID-1\x0121=1\x0138=100\x0140=1\x0154=1\x0155=INTC\x01\
+                    60=20260828-12:00:00.000\x01";
+        with_real_checksum(format!("8=FIX.4.4\x019={}\x01{body}10=0\x01", body.len()).as_bytes())
+    };
+    let _ = ring_peer.send(&ring_order);
+    ring_watched.turn();
+    let _ = ring_peer.recv(&mut sink);
+    let ring_first = {
+        let _ = ring_watcher.request();
+        ring_watched.turn();
+        ring_watcher
+            .request()
+            .expect("the ring engine published on request")
+    };
+    assert_eq!(
+        ring_first.sessions().len(),
+        1,
+        "the ring engine must hold a session to describe: {ring_first:?}"
+    );
+    let ring_seen = ring_first
+        .ring_to_app()
+        .expect("observe-asked-ring: a RingDispatch reports its ring");
+    assert!(
+        ring_seen.used() > 0,
+        "observe-asked-ring: the order must be in the ring, or the case reads the \
+         ring on a path where there is nothing in it: {ring_seen:?}"
+    );
+    let ring_published_before = ring_watcher.published();
+    let observe_asked_ring_allocs = count(|| {
+        for _ in 0..10_000 {
+            let _ = ring_watcher.request();
+            ring_watched.turn();
+            core::hint::black_box(ring_watcher.request());
+        }
+    });
+    assert!(
+        ring_watcher.published() - ring_published_before >= 10_000,
+        "observe-asked-ring: asked ten thousand times, published {} — the window \
+         must have built the snapshots it counted",
+        ring_watcher.published() - ring_published_before
+    );
+    assert_eq!(
+        ring_watcher.latest().and_then(|s| s.ring_to_app()),
+        Some(ring_seen),
+        "observe-asked-ring: the ring still holds the order at the end of the count"
+    );
+
     // --- events -------------------------------------------------------------
     //
     // Unlike a snapshot, an event is **pushed**: the engine records it when it
@@ -1584,6 +1665,7 @@ fn main() {
          pending-idle {pending_idle_allocs} pending-busy {pending_busy_allocs} \
          pending-cycle {cycle_allocs} registry-lookup {registry_lookup_allocs} \
          observe-idle {observe_idle_allocs} observe-asked {observe_asked_allocs} \
+         observe-asked-ring {observe_asked_ring_allocs} \
          events-idle {events_idle_allocs} events-busy {events_busy_allocs} \
          admin-idle {admin_idle_allocs} admin-busy {admin_busy_allocs} \
          shutdown {shutdown_allocs} reconnect {reconnect_allocs} \
@@ -1611,6 +1693,7 @@ fn main() {
             registry_lookup_allocs,
             observe_idle_allocs,
             observe_asked_allocs,
+            observe_asked_ring_allocs,
             events_idle_allocs,
             events_busy_allocs,
             admin_idle_allocs,
@@ -1631,7 +1714,7 @@ fn main() {
             redact_scan_allocs,
             retire_allocs
         ],
-        [0; 34],
+        [0; 35],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
 }
