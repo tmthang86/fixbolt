@@ -8,6 +8,11 @@
   unchanged. The superseded text of decisions 1–4 named an Onload block, `FIXBOLT_BYPASS` values, a
   `turn`/`density` rotation of two binaries between the procedures, and Onload's uninstall after
   the boot. Stays Proposed until the preparing PR (7a) merges.
+  **Revised in place 2026-09-25, second time** (the driver `scripts/boot-p4.sh` built and rehearsed
+  for 7a.1, PR #113): decision 1 now names what the pre-build must also do and who does it — the
+  file capability on both `w2w`, never a `nosuid` mount, the driver's `build` subcommand, the Mac's
+  manual build recorded in `BUILD-INFO.txt` — and says the store pair's one-binary reading overrides
+  the store plan's step 4b, which named two binaries.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus).
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
@@ -41,9 +46,21 @@ the desk is taken on.
    (`affinity,sqlite`). Each A/B takes both arms **from one binary**, so the flag is the only
    variable: K and U are the `uring` build without and with `--transport uring`; the `turn`/`density`
    cases `…, kernel` and `…, uring` live in the `uring` bench binary, paired by suffix; the store
-   pair is the `sqlite` build with `--journal file-async` and `--journal sqlite-async`. sha256 go in
-   `MANIFEST.txt`; the Mac's `w2w` is built at the same commit and its sha256 recorded. The boot
-   checks the hashes before and after.
+   pair is the `sqlite` build with `--journal file-async` and `--journal sqlite-async` — **one
+   binary, the two arms differing by exactly the journal flag**; the store plan's step 4b, which
+   names a separate control binary for `file-async`, is read through this decision for this boot.
+   `BOOT_ROOT=../fb-p4-boot scripts/boot-p4.sh build` makes both worktrees, then sets
+   `cap_net_raw,cap_net_admin+ep` on both `w2w` with `sudo -n /usr/sbin/setcap` and reads it back
+   with `getcap` — the NIC tap opens `AF_PACKET`, a fresh build carries no file capability, and the
+   capability is an extended attribute that does not change the sha256 and is lost on a rebuild —
+   then writes `MANIFEST.txt` (sha256 of both `w2w` and both bench binaries) and `BUILD-INFO.txt`
+   (commit, rustflags, rustc, bench paths, and the Mac's `mac_head` and `mac_w2w_sha256`). The
+   Mac's `w2w` is built by hand at the same commit, before `build`, with the commands in the
+   script's header. No binary that needs the capability is built or run from a `nosuid` mount
+   (`/tmp`, the scratchpad): the kernel ignores file capabilities there although `getcap` shows
+   them. `run` refuses before anything runs (exit 2) on a missing manifest or build record, a
+   missing capability or a `nosuid` mount, and stops (exit 3) when the Mac's HEAD or `w2w` sha256
+   differs from `BUILD-INFO.txt`, or when a hash or a capability changes before or after any arm.
 2. **A committed driver runs the boot unattended.** `scripts/boot-p4.sh` runs the blocks below in
    order, reads `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` before each block, stops on a red row, and keeps every output under `target/boot-p4-evidence/` (never
    `/tmp`, which is tmpfs on the desk). Its `sudo -n` lines follow ADR-0093. It is rehearsed on the
