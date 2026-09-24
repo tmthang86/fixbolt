@@ -247,10 +247,17 @@ const ABORT: u8 = 2;
 /// sound only where each shard serves an identity of its own — which the API
 /// above cannot yet arrange.
 ///
-/// **Dropping this shuts them down.** Each thread's loop ends when its channel
-/// disconnects, which happens when the last [`Shards`] holding the sender is
-/// dropped; the engine goes with it, and so do the connections it owned. That
-/// is process shutdown, and it is the only shutdown this offers.
+/// **Dropping this shuts them down, and returns only once they are down.**
+/// Each thread's loop ends when its channel disconnects, which the drop does
+/// first; the engine goes with it, and so do the connections it owned; then
+/// the thread waits for the journal writers those connections retired
+/// (ADR-0153 decision 4). **The drop joins every shard thread**, so when it
+/// returns an `Async` journal's writer has written its last byte — or the
+/// shard's wait timed out first. That is process shutdown, and it is the only
+/// shutdown this offers: no `Logout` is sent (ADR-0088 decision 5). It blocks
+/// the dropping thread, which is never a shard thread, for up to one idle
+/// wait plus that timeout; a [`Shardable::idle`] that never returns makes it
+/// never return. `crates/engine/tests/after_serving.rs` holds the join.
 ///
 /// `J` is the journal its engines hold, and it defaults to
 /// [`Store`](crate::journal::Store) so `Shards::<PRE>` keeps meaning what it
@@ -513,6 +520,25 @@ impl<const PRE: usize, J> Shards<PRE, J> {
     #[must_use]
     pub fn all_alive(&self) -> bool {
         self.threads.iter().all(|h| !h.is_finished())
+    }
+}
+
+/// **Disconnect, then join.** Without the join, the thread that dropped this
+/// raced the shard's teardown: a `wait_for_retired_writers` asked right after
+/// the drop could read zero **before** the shard had retired anything, and a
+/// process exiting there lost what the writer had not reached. `[measured
+/// 2026-09-24]` main's CI run 35918095562, 1990 of 2000 records; locally 2 of
+/// 100 runs. Trap: `docs/reference/a-drop-that-only-signals-is-not-a-shutdown.md`.
+impl<const PRE: usize, J> Drop for Shards<PRE, J> {
+    fn drop(&mut self) {
+        // The order is the whole fix: a thread joined while its sender is
+        // alive never sees the disconnect, and the join never returns.
+        self.senders.clear();
+        for h in self.threads.drain(..) {
+            // A shard that panicked has nothing left to wait for, and a drop
+            // may not panic in turn.
+            let _ = h.join();
+        }
     }
 }
 

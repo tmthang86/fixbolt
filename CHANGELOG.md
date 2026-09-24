@@ -607,6 +607,16 @@ and `fixbolt-sbe-gen` (the SBE schema compiler — available by git, pinned to t
 
 ### Fixed
 
+- **Dropping `shard::Shards` now joins every shard thread.** It disconnects the channels, then
+  waits for each thread to drop its engine and run its wait for retired journal writers
+  (ADR-0153 decision 4). Before, the drop only signalled the threads: a
+  `wait_for_retired_writers` asked right after it could read zero before any shard had retired
+  its journal, return `true` with nothing awaited, and let a clean exit lose what an `Async`
+  writer had not reached. `[measured 2026-09-24]` main's CI run 35918095562, 1990 records of
+  2000. The drop now blocks the dropping thread for up to one idle wait plus the shard's
+  retired-writer timeout (1 s floor). Test `shard_serve_returns_after_its_writers_finished`;
+  [the trap](docs/reference/a-drop-that-only-signals-is-not-a-shutdown.md).
+
 - **A session with a `FileJournal` ending no longer makes the engine thread wait.** Removing a
   finished connection dropped its journal on the engine thread, and the drop joined the `Async`
   writer: a `futex` wait mid-serving — rule 4 broken in `hft`, a stall of every other session

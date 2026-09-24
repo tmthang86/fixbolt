@@ -1124,7 +1124,13 @@ instead, call `fixbolt_engine::journal::wait_for_retired_writers(timeout)` after
 before the process exits** — otherwise a clean exit can lose what a writer had not yet written,
 the loss `Async` accepts on a crash and not on a clean stop. It returns `false` if the timeout
 passed first. Dropping the `Engine` retires every journal it still holds, so drop it *before*
-the wait. The compiler cannot hold this line; nothing but this paragraph and the rustdoc does.
+the wait. **If you drive `shard::Shards` yourself, dropping it is the wait**: since
+`[2026-09-24]` the drop joins every shard thread, and each one has dropped its engine and waited
+for its writers before it ends. Do not call `wait_for_retired_writers` right after the drop *instead
+of* relying on it: before that date the drop only signalled the threads, and a wait asked at
+once read zero writers before any shard had retired one — it returned `true` with nothing
+awaited ([the trap](reference/a-drop-that-only-signals-is-not-a-shutdown.md)). A zero count
+means no retired writer is running; it does not mean a retire that has not happened yet will not. The compiler cannot hold this line; nothing but this paragraph and the rustdoc does.
 **`ready` and `recover` run on the engine thread in `serve*`**, between turns, while other
 sessions are being served — `ready` must not make a system call, and a `recover` that reads a file costs every
 one of them that read (a known cost, ADR-0154 *Consequences*; the sharded runtime asks both on
