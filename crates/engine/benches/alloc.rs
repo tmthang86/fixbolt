@@ -141,6 +141,152 @@ impl Application for Bounce {
     }
 }
 
+/// Answers every order with one prepared `ExecutionReport` — `density.rs`'s
+/// `Desk`, for the same reason: the template-patching cost is priced
+/// elsewhere, and this case is about the transport. `34=`, `52=`, `9=` and
+/// `10=` are the session's to write.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+struct Desk {
+    reply: Vec<u8>,
+    seen: usize,
+}
+
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+impl Application for Desk {
+    fn on_message(
+        &mut self,
+        _: &[u8],
+        _: fixbolt_session::Header<'_>,
+        out: &mut [u8],
+    ) -> Option<Range<usize>> {
+        self.seen += 1;
+        let n = self.reply.len();
+        out.get_mut(..n)?.copy_from_slice(&self.reply);
+        Some(0..n)
+    }
+}
+
+/// **`uring-exchange`** — phase 4 row 5, non-negotiable 1 for the `io_uring`
+/// transport: a `Logon`, then a thousand `NewOrderSingle` → `ExecutionReport`
+/// round trips over a real loopback socket, through `UringTransport` and
+/// `UringSpin` — the reap, the staging list, the buffer handed back, the
+/// re-arm — with the engine thread's allocations counted.
+///
+/// **It proves its own path ran**: a thousand orders reached the application,
+/// a thousand reports reached the client, and the ring reaped completions
+/// during the count (`report().cqes` moved). A zero about a path that did not
+/// run is the failure every case in this file guards against.
+///
+/// Returns the count and the completions reaped inside it.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+fn uring_exchange() -> (usize, u64) {
+    /// A whole message around a body that already carries its header in
+    /// order. [`wire`] appends `49=`/`52=`/`56=` after the body, which a
+    /// session accepts only when the body is nothing but `35=` and `34=`:
+    /// `[measured 2026-09-24]` a `35=D` framed that way is rejected with
+    /// *Tag specified out of required order* (371=49), and this case then
+    /// measured the reject path.
+    fn whole(body: &str) -> Vec<u8> {
+        with_real_checksum(format!("8=FIX.4.4\x019={}\x01{body}10=0\x01", body.len()).as_bytes())
+    }
+
+    use fixbolt_engine::transport::uring::{HftArm, Uring, UringConfig, UringSpin, UringTransport};
+
+    let ring = UringConfig::new(64, 4096, 4).expect("a valid ring size");
+    let (uring, spin) = Uring::hft(ring, HftArm::Enter)
+        .unwrap_or_else(|e| panic!("uring-exchange measures the io_uring path or nothing: {e}"));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let client = TcpStream::connect(listener.local_addr().expect("bound")).expect("connect");
+    let (accepted, _) = listener.accept().expect("accept");
+    let mut client = TcpTransport::new(client).expect("non-blocking");
+    let mut engine: Engine<
+        UringTransport,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Desk>,
+        ManualClock,
+        UringSpin,
+        Store,
+        256,
+        4096,
+        8192,
+    > = Engine::new(
+        cfg(),
+        InlineDispatch::new(Desk {
+            reply: whole(
+                "35=8\x0134=0\x0149=ISLD\x0152=20260828-12:00:00.000\x0156=TW44\x01\
+                 37=E0000001\x0117=X0000001\x01150=F\x0139=2\x0111=W1\x01\
+                 55=INTC\x0154=1\x0138=2000\x0132=2000\x0131=20.15\x01151=0\x0114=2000\x016=20.15\x01",
+            ),
+            seen: 0,
+        }),
+        ManualClock::at(FIXED_TIME_MILLIS),
+        spin,
+        4,
+    );
+    let _ = engine.add(
+        uring
+            .register(TcpTransport::new(accepted).expect("non-blocking"))
+            .expect("a free slot"),
+    );
+
+    // Rendered before the count: rendering is a `format!` in the harness.
+    let logon = wire("35=A\x0134=1\x0198=0\x01108=30\x01");
+    let orders: Vec<Vec<u8>> = (2..=1_001)
+        .map(|n| {
+            whole(&format!(
+                "35=D\x0134={n}\x0149=TW44\x0152=20260828-12:00:00.000\x0156=ISLD\x01\
+                 11=W{n}\x0121=1\x0155=INTC\x0154=1\x01\
+                 60=20260828-12:00:00.000\x0138=2000\x0140=2\x0144=20.15\x01"
+            ))
+        })
+        .collect();
+    let mut sink = [0u8; 8192];
+
+    // One message out, turn and reap until the client has its answer.
+    let mut exchange = |engine: &mut Engine<_, _, _, _, _, _, 256, 4096, 8192>,
+                        client: &mut TcpTransport,
+                        m: &[u8]|
+     -> usize {
+        let _ = client.send(m);
+        let mut reports = 0;
+        for _ in 0..1_000_000 {
+            engine.turn();
+            engine.idle();
+            if let Io::Ready(n) = client.recv(&mut sink) {
+                reports += sink[..n]
+                    .windows(6)
+                    .filter(|w| w == b"\x0135=8\x01")
+                    .count();
+                break;
+            }
+        }
+        reports
+    };
+    let _ = exchange(&mut engine, &mut client, &logon);
+    assert_eq!(
+        engine.connections(),
+        1,
+        "uring-exchange: the Logon was refused"
+    );
+
+    let cqes_before = uring.report().cqes;
+    let mut reports = 0;
+    let allocs = count(|| {
+        for m in &orders {
+            reports += exchange(&mut engine, &mut client, m);
+        }
+    });
+    let cqes = uring.report().cqes - cqes_before;
+    let seen = engine.dispatch_mut().handler_mut().seen;
+    assert!(
+        seen == 1_000 && reports == 1_000 && cqes > 0 && engine.connections() == 1,
+        "uring-exchange: {seen} orders reached the application, {reports} reports the \
+         client, {cqes} completions were reaped — its zero is about a path that did \
+         not run"
+    );
+    (allocs, cqes)
+}
+
 fn count<F: FnOnce()>(f: F) -> usize {
     let before = ALLOCS.load(Ordering::Relaxed);
     f();
@@ -1717,4 +1863,16 @@ fn main() {
         [0; 35],
         "non-negotiable 1: the engine allocates nothing on the byte path"
     );
+
+    // Its own line, because it exists only with the feature: the line above
+    // keeps its shape in every build.
+    #[cfg(all(feature = "io-uring", target_os = "linux"))]
+    {
+        let (uring_exchange_allocs, cqes) = uring_exchange();
+        println!("allocations: uring-exchange {uring_exchange_allocs} (cqes {cqes})");
+        assert_eq!(
+            uring_exchange_allocs, 0,
+            "non-negotiable 1: the io_uring transport allocates nothing on the byte path"
+        );
+    }
 }

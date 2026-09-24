@@ -377,6 +377,21 @@ where
     where
         L: Default,
     {
+        // ADR-0190 decision 1, the shape ADR-0014 decision 4 gave `idle_with`.
+        // A transport whose bytes arrive only when the idle strategy reaps
+        // them, under a strategy that does not, is an engine that runs and
+        // never receives a byte — the 59 definitions would time out rather
+        // than fail. The pairing is a property of the types, so it is refused
+        // when it is compiled; `transport::uring`'s `compile_fail` doctests
+        // hold it.
+        const {
+            assert!(
+                !T::NEEDS_REAPER || W::REAPS,
+                "this transport receives only through an idle strategy that reaps \
+                 its completions, and this waiting strategy does not. The engine \
+                 would run and never receive a byte."
+            )
+        };
         Self {
             conns: Vec::with_capacity(capacity),
             log: L::default(),
@@ -3151,6 +3166,141 @@ pub fn serve_hft_pinned<A: Application, L: MessageLog>(
     serve_hft_with::<256, 4096, 8192, 1024, A, L>(addr, table, app, capacity, limits, log, handles)
 }
 
+/// As [`serve_hft`], **receiving through `io_uring`** — phase 4 row 5,
+/// [ADR-0190]. Linux, behind the `io-uring` feature.
+///
+/// Every accepted socket is registered on one ring
+/// ([`transport::uring::Uring::register`]) with a multishot `recv` into a
+/// provided buffer ring; the idle turn is [`transport::uring::UringSpin`],
+/// which enters the kernel once per idle turn **without waiting**
+/// (`min_complete = 0`) and reaps every completion. Sends are unchanged
+/// `write(2)`.
+///
+/// # The order, and why it is this one
+///
+/// 1. The registry is checked ([`ServeError::NoCounterparties`]).
+/// 2. Under `HftArm::Sqpoll` (with the `affinity` feature), the SQ thread's
+///    core goes through `affinity::CorePin::validate` — every rule
+///    `affinity::Topology` has, the check `serve_hft_pinned` makes for the
+///    engine's own core (`ServeError::Affinity`).
+/// 3. **The ring is made here, on the calling thread** — it is
+///    `SINGLE_ISSUER | DEFER_TASKRUN`, so the thread that makes it is the only
+///    one that may reap it, and this is the thread that serves. A ring the
+///    kernel, a sysctl or a seccomp filter refuses is
+///    [`ServeError::Uring`], **before any socket exists and with no fallback
+///    to `read(2)`** (ADR-0190 decision 7).
+/// 4. Only then is the listener bound, and the loop is [`serve_hft`]'s.
+///
+/// # Sizing the ring
+///
+/// Sockets are registered **when they are accepted**, before their `Logon`,
+/// so `ring.connections()` must cover `capacity` **plus**
+/// `limits.pending()`. A socket that finds no free slot is dropped — the
+/// answer the loop already gives a connection it has no room for.
+///
+/// # Errors
+///
+/// As [`serve_hft`], plus [`ServeError::Uring`] and, for the SQPOLL arm,
+/// `ServeError::Affinity` — both before any socket exists.
+///
+/// [ADR-0190]: ../../../docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+// **Nine, and clippy's ceiling is seven** — the same count as `serve_tls`, and
+// under ADR-0054's reopening condition (*the first time an eleventh parameter
+// is wanted*): the ring's size and its arm are two things.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_hft_uring<A: Application, L: MessageLog>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+    handles: crate::observe::Handles,
+    ring: crate::transport::uring::UringConfig,
+    arm: crate::transport::uring::HftArm,
+) -> Result<Shutdown, ServeError> {
+    use crate::transport::uring::{Uring, UringSpin, UringTransport};
+    let cfg = default_config(&table)?;
+    #[cfg(feature = "affinity")]
+    if let crate::transport::uring::HftArm::Sqpoll { core } = arm {
+        affinity::CorePin::to(core)
+            .validate()
+            .map_err(ServeError::Affinity)?;
+    }
+    let (uring, spin) = Uring::hft(ring, arm).map_err(ServeError::Uring)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
+    let mut engine: AcceptorEngineOver<UringTransport, A, UringSpin> = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        spin,
+        capacity,
+    );
+    let _ = engine.adopt(&handles);
+    pump(
+        acceptor,
+        move |t| uring.register(t),
+        engine.with_log(log),
+        table,
+        limits,
+        crate::recovery::NoRecovery,
+    )
+}
+
+/// As [`serve`], **receiving through `io_uring`** — `standard` mode, phase 4
+/// row 5, [ADR-0190] decision 5. Linux, behind `io-uring` and `standard`.
+///
+/// The idle turn is [`transport::uring::UringBlock`]: it waits in
+/// `io_uring_enter(min_complete = 1)` with the 100 ms timeout that delivers
+/// `Input::Tick`, woken by a completion — a connection's bytes, or a one-shot
+/// `POLL_ADD` on the listener or the dispatch waker. It gives the core back
+/// exactly as [`serve`] does. **There is no SQPOLL here, by type.**
+///
+/// Same order as [`serve_hft_uring`]: registry, ring on this thread
+/// ([`ServeError::Uring`], before any socket, no fallback), then bind. Same
+/// sizing rule: `ring.connections()` covers `capacity + limits.pending()`.
+///
+/// # Errors
+///
+/// As [`serve`], plus [`ServeError::Uring`].
+///
+/// [ADR-0190]: ../../../docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md
+#[cfg(all(feature = "io-uring", feature = "standard", target_os = "linux"))]
+// Eight: `serve`'s seven and the ring's size. ADR-0054, as above.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_uring<A: Application, L: MessageLog>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    log: L,
+    handles: crate::observe::Handles,
+    ring: crate::transport::uring::UringConfig,
+) -> Result<Shutdown, ServeError> {
+    use crate::transport::uring::{Uring, UringBlock, UringTransport};
+    let cfg = default_config(&table)?;
+    let (uring, block) = Uring::standard(ring).map_err(ServeError::Uring)?;
+    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
+    let mut engine: AcceptorEngineOver<UringTransport, A, UringBlock> = Engine::new(
+        cfg,
+        InlineDispatch::new(app),
+        crate::clock::SystemClock,
+        block,
+        capacity,
+    );
+    let _ = engine.adopt(&handles);
+    pump(
+        acceptor,
+        move |t| uring.register(t),
+        engine.with_log(log),
+        table,
+        limits,
+        crate::recovery::NoRecovery,
+    )
+}
+
 /// As [`serve_hft`], asking `recovery` what each counterparty left behind. See
 /// `serve_with_recovery`.
 ///
@@ -3292,6 +3442,17 @@ pub enum ServeError {
     /// `[2026-09-13]` added with [`serve_hft_pinned`], `STATUS.md` item 21.
     #[cfg(all(feature = "affinity", target_os = "linux"))]
     Affinity(crate::affinity::AffinityError),
+    /// The kernel, a sysctl or a seccomp filter would not give this process
+    /// an `io_uring` — raised by [`serve_hft_uring`] and [`serve_uring`],
+    /// **always before a socket exists**, and **never followed by a fallback
+    /// to `read(2)`** (ADR-0190 decision 7). The
+    /// [`transport::uring::UringRefused`] it carries says where the operator
+    /// goes next.
+    ///
+    /// Behind the same `cfg` as `mod transport::uring`, the shape
+    /// [`Self::Affinity`] has.
+    #[cfg(all(feature = "io-uring", target_os = "linux"))]
+    Uring(crate::transport::uring::UringRefused),
 }
 
 impl core::fmt::Display for ServeError {
@@ -3316,6 +3477,8 @@ impl core::fmt::Display for ServeError {
             Self::Tls(e) => write!(f, "setting up TLS: {e}"),
             #[cfg(all(feature = "affinity", target_os = "linux"))]
             Self::Affinity(e) => write!(f, "pinning the engine thread: {e}"),
+            #[cfg(all(feature = "io-uring", target_os = "linux"))]
+            Self::Uring(e) => write!(f, "setting up io_uring: {e}"),
         }
     }
 }
@@ -3329,6 +3492,8 @@ impl std::error::Error for ServeError {
             Self::Io(e) | Self::LogPath(e) => Some(e),
             #[cfg(all(feature = "affinity", target_os = "linux"))]
             Self::Affinity(e) => Some(e),
+            #[cfg(all(feature = "io-uring", target_os = "linux"))]
+            Self::Uring(e) => Some(e),
         }
     }
 }

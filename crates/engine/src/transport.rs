@@ -185,6 +185,21 @@ pub trait Transport {
     /// still pass the corpus while waking only on its own timeout.
     const POLLABLE: bool = false;
 
+    /// Whether this transport's bytes arrive only when an idle strategy
+    /// **reaps** them.
+    ///
+    /// `false` for every transport whose `recv` asks the kernel itself.
+    /// `true` for `uring::UringTransport` (behind the `io-uring` feature):
+    /// its `recv` makes no system call and reads what
+    /// [`crate::wait::Waiting::idle`] moved out of the completion queue, so
+    /// under a strategy that does not reap — [`crate::wait::Spin`],
+    /// `block::Block` — it would compile, run, and never receive a byte.
+    /// [`crate::Engine::new`] refuses that pairing when it is compiled:
+    /// `!T::NEEDS_REAPER || W::REAPS` (ADR-0190 decision 1).
+    ///
+    /// Defaulted, so no transport outside this crate changes a line.
+    const NEEDS_REAPER: bool = false;
+
     /// Read what has arrived, if anything.
     fn recv(&mut self, buf: &mut [u8]) -> Io;
     /// Write what fits. A short write is [`Io::Ready`] with fewer bytes than

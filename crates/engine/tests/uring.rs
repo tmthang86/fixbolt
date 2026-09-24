@@ -789,3 +789,56 @@ fn a_blocked_io_uring_refuses_to_start_and_names_seccomp() {
     );
     assert!(e.to_string().contains("seccomp"), "{e}");
 }
+
+/// The serving door refuses a blocked `io_uring` **before any socket exists**,
+/// as [`fixbolt_engine::ServeError::Uring`], and never falls back to `read(2)`.
+///
+/// `addr` is a port this test is already listening on — the shape
+/// `tests/hft_pinned.rs` uses for the core: a door that bound first would
+/// answer `Io`, and a door that fell back would bind and serve. Only a door
+/// that asked for the ring first, and stopped, answers `Uring(Blocked)`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn serve_hft_uring_under_seccomp_binds_no_socket() {
+    use fixbolt_engine::presession::{Limits, Table};
+    use fixbolt_engine::{Config, ServeError};
+    /// Never reached: the door must refuse before any session exists.
+    struct Unreached;
+    impl fixbolt_session::Application for Unreached {
+        fn on_message(
+            &mut self,
+            _m: &[u8],
+            _s: fixbolt_session::Header<'_>,
+            _o: &mut [u8],
+        ) -> Option<core::ops::Range<usize>> {
+            None
+        }
+    }
+    let _g = shared();
+    let held = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = held.local_addr().expect("bound").to_string();
+    let got = std::thread::spawn(move || {
+        refuse_io_uring_setup_on_this_thread();
+        fixbolt_engine::serve_hft_uring(
+            &addr,
+            Table::with_capacity(1).serving(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+            Unreached,
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+            fixbolt_engine::msglog::NoLog,
+            fixbolt_engine::observe::Handles::new(),
+            config(8, 4096, 16),
+            HftArm::Enter,
+        )
+    })
+    .join()
+    .expect("the serving thread did not panic");
+    match got {
+        Err(ServeError::Uring(UringRefused::Blocked)) => {}
+        other => panic!(
+            "expected Uring(Blocked) before any bind, got {other:?}: a door that binds \
+             first answers Io, and one that falls back to read(2) serves"
+        ),
+    }
+    drop(held);
+}

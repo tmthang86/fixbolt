@@ -214,6 +214,10 @@ pub struct UringReport {
     /// [`Waiting::idle`] returns `()`, so an error that cannot be returned is
     /// counted here rather than lost — the principle `block::Block` keeps.
     pub enter_errors: u64,
+    /// `standard` only: sources a `POLL_ADD` could not be armed for because
+    /// its table or the submission queue was full. Each one wakes the engine
+    /// only by the timeout that turn — correct, and late, so it is counted.
+    pub unarmed: u64,
 }
 
 /// Why this process was not given a ring. Each variant says where the
@@ -320,6 +324,13 @@ const SQPOLL_FLUSH_SPINS: u32 = 10_000_000;
 const KIND_SHIFT: u32 = 62;
 const KIND_RECV: u64 = 0;
 const KIND_CANCEL: u64 = 1;
+#[cfg(feature = "standard")]
+const KIND_POLL: u64 = 2;
+/// Sources a `standard` wait may be shown besides the connections: the
+/// listener, the dispatch waker, and room to spare.
+const EXTRA_SOURCES: u32 = 16;
+/// An empty cell of [`FdTable`].
+const NO_FD: std::os::fd::RawFd = -1;
 /// The slot index: 30 bits above the generation's 32.
 const SLOT_SHIFT: u32 = 32;
 const SLOT_MASK: u64 = (1 << 30) - 1;
@@ -498,8 +509,166 @@ enum Setup {
     #[cfg(feature = "affinity")]
     Sqpoll(u32),
     #[cfg(feature = "standard")]
-    #[expect(dead_code, reason = "step 1 skeleton: `standard` arrives in step 3")]
     Block,
+}
+
+/// The descriptors of the registered connections, so a `standard` wait can
+/// tell a connection its multishot `recv` already covers from a source it must
+/// arm a `POLL_ADD` for. Open addressing, linear probing, at most half full;
+/// allocated once.
+struct FdTable {
+    keys: Box<[std::os::fd::RawFd]>,
+    mask: usize,
+}
+
+impl FdTable {
+    fn new(connections: usize) -> Self {
+        let cap = (2 * connections).next_power_of_two().max(2);
+        Self {
+            keys: vec![NO_FD; cap].into_boxed_slice(),
+            mask: cap - 1,
+        }
+    }
+
+    fn home(&self, fd: std::os::fd::RawFd) -> usize {
+        (fd as u32).wrapping_mul(0x9E37_79B1) as usize & self.mask
+    }
+
+    fn find(&self, fd: std::os::fd::RawFd) -> Option<usize> {
+        let mut i = self.home(fd);
+        for _ in 0..self.keys.len() {
+            match self.keys.get(i).copied() {
+                Some(k) if k == fd => return Some(i),
+                Some(NO_FD) | None => return None,
+                Some(_) => i = (i + 1) & self.mask,
+            }
+        }
+        None
+    }
+
+    fn insert(&mut self, fd: std::os::fd::RawFd) {
+        let mut i = self.home(fd);
+        for _ in 0..self.keys.len() {
+            match self.keys.get_mut(i) {
+                Some(k) if *k == NO_FD || *k == fd => {
+                    *k = fd;
+                    return;
+                }
+                _ => i = (i + 1) & self.mask,
+            }
+        }
+    }
+
+    /// Remove `fd`, shifting back whatever probed past it so every remaining
+    /// key is still reachable from its home.
+    fn remove(&mut self, fd: std::os::fd::RawFd) {
+        let Some(mut hole) = self.find(fd) else {
+            return;
+        };
+        let mut j = hole;
+        loop {
+            j = (j + 1) & self.mask;
+            let Some(k) = self.keys.get(j).copied() else {
+                break;
+            };
+            if k == NO_FD || j == hole {
+                break;
+            }
+            let home = self.home(k);
+            // `k` may move into the hole only if its home is not strictly
+            // between the hole and `j`, cyclically.
+            let stays = if hole <= j {
+                hole < home && home <= j
+            } else {
+                hole < home || home <= j
+            };
+            if !stays {
+                if let Some(h) = self.keys.get_mut(hole) {
+                    *h = k;
+                }
+                hole = j;
+            }
+        }
+        if let Some(h) = self.keys.get_mut(hole) {
+            *h = NO_FD;
+        }
+    }
+
+    #[cfg(feature = "standard")]
+    fn contains(&self, fd: std::os::fd::RawFd) -> bool {
+        self.find(fd).is_some()
+    }
+}
+
+/// `standard`'s one-shot `POLL_ADD`s: a fixed table, each entry with a
+/// generation so a late answer for an entry already reused is recognised.
+///
+/// **Every poll armed for a turn is cancelled when that turn's wait is over**
+/// if it has not fired, and armed afresh on the next turn. A table keyed by
+/// descriptor *number* and kept armed across turns cannot tell a listener that
+/// was closed — its `POLL_ADD` still holding the old file — from a new one the
+/// kernel handed the same number (plan *Bẫy*: the reused descriptor). Arming
+/// per turn costs two submission entries per extra source per idle turn, and
+/// no system call: they ride on the one `io_uring_enter` the turn makes.
+#[cfg(feature = "standard")]
+struct Polls {
+    generation: Box<[u32]>,
+    pending: Box<[bool]>,
+    free: Box<[u32]>,
+    free_len: usize,
+    /// This turn's, to cancel after the wait.
+    armed: Box<[u32]>,
+    armed_len: usize,
+}
+
+#[cfg(feature = "standard")]
+impl Polls {
+    fn new(cap: u32) -> Self {
+        let n = cap as usize;
+        Self {
+            generation: vec![0; n].into_boxed_slice(),
+            pending: vec![false; n].into_boxed_slice(),
+            free: (0..cap).rev().collect::<Vec<_>>().into_boxed_slice(),
+            free_len: n,
+            armed: vec![0; n].into_boxed_slice(),
+            armed_len: 0,
+        }
+    }
+
+    fn open(&mut self) -> Option<(u32, u32)> {
+        self.free_len = self.free_len.checked_sub(1)?;
+        let ix = *self.free.get(self.free_len)?;
+        let p = self.pending.get_mut(ix as usize)?;
+        *p = true;
+        Some((ix, self.generation.get(ix as usize).copied().unwrap_or(0)))
+    }
+
+    fn close(&mut self, ix: u32) {
+        let i = ix as usize;
+        if let (Some(p), Some(g)) = (self.pending.get_mut(i), self.generation.get_mut(i)) {
+            *p = false;
+            *g = g.wrapping_add(1);
+        }
+        if let Some(f) = self.free.get_mut(self.free_len) {
+            *f = ix;
+            self.free_len += 1;
+        }
+    }
+
+    /// Its answer arrived — fired, or cancelled. The entry is free again.
+    fn answered(&mut self, ix: u32, generation: u32) {
+        let i = ix as usize;
+        if self.pending.get(i) == Some(&true) && self.generation.get(i) == Some(&generation) {
+            self.close(ix);
+        }
+    }
+
+    fn is_pending(&self, ix: u32) -> Option<u32> {
+        let i = ix as usize;
+        (self.pending.get(i) == Some(&true))
+            .then(|| self.generation.get(i).copied())
+            .flatten()
+    }
 }
 
 /// Everything but the ring itself.
@@ -524,6 +693,14 @@ struct State {
     kernel_owned: u32,
     /// How many slots have `rearm` set.
     rearm_pending: u32,
+    /// How many live slots have bytes staged and not yet read. A `standard`
+    /// wait must not sleep while any does: those bytes are invisible to the
+    /// kernel, so nothing would wake it for them.
+    staged_slots: u32,
+    fds: FdTable,
+    #[cfg(feature = "standard")]
+    polls: Polls,
+    unarmed: u64,
     arm: UringArm,
     cqes: u64,
     bytes: u64,
@@ -554,6 +731,11 @@ impl State {
             free_len: connections,
             kernel_owned: 0,
             rearm_pending: 0,
+            staged_slots: 0,
+            fds: FdTable::new(connections),
+            #[cfg(feature = "standard")]
+            polls: Polls::new(2 * (u32::from(config.connections) + EXTRA_SOURCES)),
+            unarmed: 0,
             arm,
             cqes: 0,
             bytes: 0,
@@ -573,6 +755,7 @@ impl State {
             rearms: self.rearms,
             stale: self.stale,
             enter_errors: self.enter_errors,
+            unarmed: self.unarmed,
         }
     }
 
@@ -669,6 +852,7 @@ impl State {
         s.tail = bid;
         if last == NIL {
             s.head = bid;
+            self.staged_slots += 1;
         } else if let Some(n) = self.next.get_mut(usize::from(last)) {
             *n = bid;
         }
@@ -677,6 +861,12 @@ impl State {
     /// One completion.
     fn complete(&mut self, ud: u64, res: i32, flags: u32) {
         self.cqes += 1;
+        #[cfg(feature = "standard")]
+        if ud >> KIND_SHIFT == KIND_POLL {
+            let ix = ((ud >> SLOT_SHIFT) & SLOT_MASK) as u32;
+            self.polls.answered(ix, ud as u32);
+            return;
+        }
         if ud >> KIND_SHIFT != KIND_RECV {
             // A cancel's own answer: there is nothing to do with it.
             return;
@@ -763,6 +953,9 @@ impl State {
                 self.provide(done);
             }
         }
+        if s.head != NIL && head == NIL {
+            self.staged_slots = self.staged_slots.saturating_sub(1);
+        }
         if let Some(s) = self.slots.get_mut(slot) {
             s.head = head;
             s.tail = tail;
@@ -785,7 +978,9 @@ impl State {
             generation: s.generation,
             ..Slot::FREE
         };
-        Some((slot, s.generation))
+        let generation = s.generation;
+        self.fds.insert(fd);
+        Some((slot, generation))
     }
 
     /// Free `slot`: its staged buffers go back to the kernel, its generation
@@ -803,6 +998,12 @@ impl State {
         }
         if s.rearm {
             self.rearm_pending = self.rearm_pending.saturating_sub(1);
+        }
+        if s.head != NIL {
+            self.staged_slots = self.staged_slots.saturating_sub(1);
+        }
+        if s.live {
+            self.fds.remove(s.fd);
         }
         if let Some(s) = self.slots.get_mut(ix) {
             *s = Slot {
@@ -862,8 +1063,11 @@ struct Inner {
 impl Inner {
     fn new(config: UringConfig, setup: Setup) -> Result<Self, UringRefused> {
         let connections = u32::from(config.connections);
-        let sq = (2 * connections + 8).next_power_of_two();
-        let cq = (u32::from(config.buffers) + 4 * connections + 64).next_power_of_two();
+        // Room for one turn's re-arms, cancels and `standard` polls without a
+        // flush; a full queue is flushed without waiting, never an error.
+        let sq = (4 * connections + 2 * EXTRA_SOURCES).next_power_of_two();
+        let cq = (u32::from(config.buffers) + 6 * connections + 2 * EXTRA_SOURCES + 64)
+            .next_power_of_two();
         let mut builder = IoUring::builder();
         builder.setup_cqsize(cq).setup_clamp();
         match setup {
@@ -893,6 +1097,11 @@ impl Inner {
             opcode::AsyncCancel::CODE,
         ];
         if !needs.iter().all(|op| probe.is_supported(*op)) {
+            return Err(UringRefused::KernelTooOld);
+        }
+        // `standard` waits with a timeout passed through `EXT_ARG` (5.11).
+        #[cfg(feature = "standard")]
+        if matches!(setup, Setup::Block) && !ring.params().is_feature_ext_arg() {
             return Err(UringRefused::KernelTooOld);
         }
 
@@ -983,11 +1192,40 @@ impl Inner {
                 .submitter()
                 .enter::<libc::sigset_t>(to_submit, min_complete, flags, None)
         };
+        self.note(r);
+    }
+
+    /// `EINTR` is a wake and `ETIME` the timeout: neither is an error.
+    fn note(&mut self, r: io::Result<usize>) {
         if let Err(e) = r
-            && e.raw_os_error() != Some(libc::EINTR)
+            && !matches!(e.raw_os_error(), Some(libc::EINTR | libc::ETIME))
         {
             self.state.enter_errors += 1;
         }
+    }
+
+    /// Submit, then wait in the kernel for `min_complete` completions or
+    /// `timeout_ms`, whichever is first. `standard` only.
+    #[cfg(feature = "standard")]
+    fn enter_waiting(&mut self, to_submit: u32, min_complete: u32, timeout_ms: u32) {
+        let ts = types::Timespec::from(std::time::Duration::from_millis(u64::from(timeout_ms)));
+        let args = types::SubmitArgs::new().timespec(&ts);
+        let flags = io_uring::EnterFlags::GETEVENTS.bits() | io_uring::EnterFlags::EXT_ARG.bits();
+        // SAFETY (U4): with `EXT_ARG` the kernel reads one
+        // `io_uring_getevents_arg` (`SubmitArgs` is `repr(transparent)` over
+        // it, and its size is what `enter` passes) and, through it, the
+        // `Timespec` — both on this stack frame, alive for the whole
+        // synchronous call, and not retained after it returns. Proved by
+        // `standard_wakes_on_its_own_timeout_to_tick` (the timeout is read
+        // correctly: 50 ms returns in [40, 500] ms) and
+        // `standard_is_woken_by_the_data_not_the_timeout`.
+        #[allow(unsafe_code)]
+        let r = unsafe {
+            self.ring
+                .submitter()
+                .enter(to_submit, min_complete, flags, Some(&args))
+        };
+        self.note(r);
     }
 
     /// Queue a fresh multishot `recv` for every slot whose last one ended,
@@ -1034,9 +1272,78 @@ impl Inner {
             let n = self.ring.submission().len() as u32;
             self.enter(n, 0, io_uring::EnterFlags::GETEVENTS.bits());
         }
+        self.drain();
+    }
+
+    /// Move every posted completion to where it belongs.
+    fn drain(&mut self) {
         let Self { ring, state } = self;
         for cqe in ring.completion() {
             state.complete(cqe.user_data(), cqe.result(), cqe.flags());
+        }
+    }
+
+    /// One `standard` idle turn — ADR-0190 decision 5.
+    ///
+    /// 1. Re-arm the `recv`s that ended.
+    /// 2. Arm a one-shot `POLL_ADD` for every source the ring does not already
+    ///    cover: a readable source that is not a registered connection (the
+    ///    listener, the waker's pipe, …), and every `writable` interest.
+    /// 3. Submit and wait in `io_uring_enter` for one completion or the
+    ///    timeout — **unless bytes are already staged**, which the kernel
+    ///    cannot see; then it does not wait at all.
+    /// 4. Reap, and cancel this turn's polls that did not fire.
+    #[cfg(feature = "standard")]
+    fn reap_standard(&mut self, interests: &[Interest], timeout_ms: u32) {
+        self.rearm();
+        self.state.polls.armed_len = 0;
+        for i in interests {
+            let fd = i.source.as_raw_fd();
+            let events = match (self.state.fds.contains(fd), i.writable) {
+                (true, false) => continue,
+                (true, true) => libc::POLLOUT,
+                (false, false) => libc::POLLIN,
+                (false, true) => libc::POLLIN | libc::POLLOUT,
+            };
+            self.arm_poll(fd, events as u32);
+        }
+        let min_complete = u32::from(self.state.staged_slots == 0);
+        let n = self.ring.submission().len() as u32;
+        self.enter_waiting(n, min_complete, timeout_ms);
+        self.drain();
+        for k in 0..self.state.polls.armed_len {
+            let Some(ix) = self.state.polls.armed.get(k).copied() else {
+                break;
+            };
+            if let Some(generation) = self.state.polls.is_pending(ix) {
+                let cancel = opcode::AsyncCancel::new(user_data(KIND_POLL, ix, generation))
+                    .build()
+                    .user_data(user_data(KIND_CANCEL, ix, generation));
+                // Queued for the next turn's enter. If it cannot be queued the
+                // poll stays armed until it fires, which frees its entry then.
+                let _ = self.push(&cancel);
+            }
+        }
+    }
+
+    #[cfg(feature = "standard")]
+    fn arm_poll(&mut self, fd: std::os::fd::RawFd, events: u32) {
+        let Some((ix, generation)) = self.state.polls.open() else {
+            self.state.unarmed += 1;
+            return;
+        };
+        let e = opcode::PollAdd::new(types::Fd(fd), events)
+            .build()
+            .user_data(user_data(KIND_POLL, ix, generation));
+        if !self.push(&e) {
+            self.state.polls.close(ix);
+            self.state.unarmed += 1;
+            return;
+        }
+        let at = self.state.polls.armed_len;
+        if let Some(a) = self.state.polls.armed.get_mut(at) {
+            *a = ix;
+            self.state.polls.armed_len += 1;
         }
     }
 }
@@ -1099,15 +1406,39 @@ impl Uring {
     /// A `standard` ring, and the blocking idle strategy that reaps it.
     ///
     /// **There is no SQPOLL here, by type**: `standard` + a spinning kernel
-    /// thread cannot be written (ADR-0190 decision 4).
+    /// thread cannot be written (ADR-0190 decision 4). [`HftArm`] is the only
+    /// type that can carry `Sqpoll`, and this constructor has no parameter it
+    /// could go in:
+    ///
+    /// ```compile_fail,E0061
+    /// use fixbolt_engine::transport::uring::{HftArm, Uring, UringConfig};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = UringConfig::new(64, 4096, 4)?;
+    /// let _ring = Uring::standard(config, HftArm::default());
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Made on the engine thread, as for [`Self::hft`]: the ring is
+    /// `SINGLE_ISSUER | DEFER_TASKRUN`.
     ///
     /// # Errors
     ///
-    /// [`UringRefused`], as for [`Self::hft`].
+    /// [`UringRefused`], as for [`Self::hft`]; also
+    /// [`UringRefused::KernelTooOld`] without `IORING_FEAT_EXT_ARG`.
     #[cfg(feature = "standard")]
     pub fn standard(config: UringConfig) -> Result<(Self, UringBlock), UringRefused> {
-        let _ = config;
-        Err(UringRefused::Other(io::ErrorKind::Unsupported))
+        let inner = Rc::new(RefCell::new(Inner::new(config, Setup::Block)?));
+        Ok((
+            Self {
+                inner: Rc::clone(&inner),
+            },
+            UringBlock {
+                inner,
+                timeout_ms: crate::block::DEFAULT_TIMEOUT_MS,
+            },
+        ))
     }
 
     /// Put `transport` on the ring: its multishot `recv` is queued and goes to
@@ -1144,6 +1475,7 @@ impl Uring {
                 rearms: 0,
                 stale: 0,
                 enter_errors: 0,
+                unarmed: 0,
             },
             |i| i.state.report(),
         )
@@ -1185,6 +1517,36 @@ impl Uring {
 
 /// One connection on a [`Uring`].
 ///
+/// # Only a reaping strategy can drive it
+///
+/// Its `recv` makes no system call: bytes reach it only when [`UringSpin`] or
+/// [`UringBlock`] reaps the ring. Under [`crate::wait::Spin`] it would run and
+/// never receive a byte, so [`crate::Engine::new`] refuses the pairing when it
+/// is compiled — `Transport::NEEDS_REAPER` against `Waiting::REAPS`, ADR-0190
+/// decision 1:
+///
+/// ```compile_fail,E0080
+/// # struct App;
+/// # impl fixbolt_session::Application for App {
+/// #     fn on_message(&mut self, _m: &[u8], _h: fixbolt_session::Header<'_>, _o: &mut [u8])
+/// #         -> Option<core::ops::Range<usize>> { None }
+/// # }
+/// use fixbolt_engine::{Engine, clock::SystemClock, wait::Spin};
+/// use fixbolt_engine::{dispatch::InlineDispatch, journal::Store};
+/// use fixbolt_engine::transport::uring::UringTransport;
+///
+/// let _engine: Engine<
+///     UringTransport, fixbolt_session::Acceptor, InlineDispatch<App>,
+///     SystemClock, Spin, Store, 256, 4096, 8192,
+/// > = Engine::new(
+///     fixbolt_session::Config::acceptor(b"FIX.4.4", b"ISLD", b"TEST"),
+///     InlineDispatch::new(App),
+///     SystemClock,
+///     Spin,
+///     4,
+/// );
+/// ```
+///
 /// Dropping it shuts the socket down (`shutdown(2)`, which ends the pending
 /// `recv` and sends the peer its FIN at once), hands its staged buffers back,
 /// moves its slot's generation on, and submits an `ASYNC_CANCEL` for its
@@ -1198,6 +1560,7 @@ pub struct UringTransport {
 
 impl Transport for UringTransport {
     const POLLABLE: bool = true;
+    const NEEDS_REAPER: bool = true;
 
     fn recv(&mut self, buf: &mut [u8]) -> Io {
         if buf.is_empty() {
@@ -1256,6 +1619,7 @@ pub struct UringSpin {
 impl Waiting for UringSpin {
     const SLEEPS: bool = false;
     const NEEDS_SOURCES: bool = false;
+    const REAPS: bool = true;
 
     fn idle(&mut self, _interests: &[Interest]) {
         if let Ok(mut inner) = self.inner.try_borrow_mut() {
@@ -1266,12 +1630,36 @@ impl Waiting for UringSpin {
 
 /// `standard`'s idle strategy over a [`Uring`]: wait in the kernel for one
 /// completion or the timeout, reap.
+///
+/// # `block::Block` cannot stand in for it
+///
+/// `Block` waits in `poll(2)` and never looks at the ring, so a
+/// [`UringTransport`] under it would sleep through every completion. The
+/// pairing is refused when it is compiled, as it is for `Spin`:
+///
+/// ```compile_fail,E0080
+/// # struct App;
+/// # impl fixbolt_session::Application for App {
+/// #     fn on_message(&mut self, _m: &[u8], _h: fixbolt_session::Header<'_>, _o: &mut [u8])
+/// #         -> Option<core::ops::Range<usize>> { None }
+/// # }
+/// use fixbolt_engine::{Engine, block::Block, clock::SystemClock};
+/// use fixbolt_engine::{dispatch::InlineDispatch, journal::Store};
+/// use fixbolt_engine::transport::uring::UringTransport;
+///
+/// let _engine: Engine<
+///     UringTransport, fixbolt_session::Acceptor, InlineDispatch<App>,
+///     SystemClock, Block, Store, 256, 4096, 8192,
+/// > = Engine::new(
+///     fixbolt_session::Config::acceptor(b"FIX.4.4", b"ISLD", b"TEST"),
+///     InlineDispatch::new(App),
+///     SystemClock,
+///     Block::new(8),
+///     4,
+/// );
+/// ```
 #[cfg(feature = "standard")]
 pub struct UringBlock {
-    #[expect(
-        dead_code,
-        reason = "step 1 skeleton: the reap arrives in step 3 of the plan"
-    )]
     inner: Rc<RefCell<Inner>>,
     timeout_ms: u32,
 }
@@ -1298,8 +1686,13 @@ impl UringBlock {
 impl Waiting for UringBlock {
     const SLEEPS: bool = true;
     const NEEDS_SOURCES: bool = true;
+    const REAPS: bool = true;
 
-    fn idle(&mut self, _interests: &[Interest]) {}
+    fn idle(&mut self, interests: &[Interest]) {
+        if let Ok(mut inner) = self.inner.try_borrow_mut() {
+            inner.reap_standard(interests, self.timeout_ms);
+        }
+    }
 }
 
 #[cfg(test)]
