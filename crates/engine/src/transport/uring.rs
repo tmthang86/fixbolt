@@ -11,14 +11,14 @@
 //! - [`UringTransport`], one per connection, made by [`Uring::register`] from a
 //!   [`TcpTransport`]. `recv` copies from what was already reaped and **makes
 //!   no system call**; `send` is the same `write(2)` as before.
-//! - [`UringSpin`] (`hft`) or [`UringBlock`] (`standard`): **the idle strategy
+//! - [`UringSpin`] (`hft`) or `UringBlock` (`standard`): **the idle strategy
 //!   is the reaper.** `idle` submits what is queued, enters the kernel —
 //!   never waiting in `hft`, waiting with a timeout in `standard` — and moves
 //!   every completion into its connection's staging list.
 //!
 //! # Blocked means refused, never a fallback
 //!
-//! [`Uring::hft`] and [`Uring::standard`] return [`UringRefused`] when the
+//! [`Uring::hft`] and `Uring::standard` return [`UringRefused`] when the
 //! kernel, a sysctl or a seccomp filter will not give this process a ring.
 //! Nothing in this module falls back to `read(2)`: a transport that silently
 //! became the kernel arm would publish a number about the wrong code path
@@ -178,10 +178,10 @@ impl UringConfig {
 /// How an `hft` ring is reaped. [`HftArm::Enter`] unless the caller names the
 /// other one — ADR-0190 decision 4, the owner's Q8.
 ///
-/// **[`HftArm::Sqpoll`] exists only when the `affinity` feature is on too.**
-/// Its core is an [`crate::affinity::CoreId`], the type every other pinned
+/// **`HftArm::Sqpoll` exists only when the `affinity` feature is on too.**
+/// Its core is an `crate::affinity::CoreId`, the type every other pinned
 /// core in this crate has, and it is validated through
-/// [`crate::affinity::Topology`] by the serving entry point before any socket
+/// `crate::affinity::Topology` by the serving entry point before any socket
 /// exists — the same check `serve_hft_pinned` makes. Without `affinity` the
 /// variant is not there, so an unpinned SQ thread cannot be asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -209,7 +209,7 @@ pub enum HftArm {
 pub enum UringArm {
     /// `hft`, [`HftArm::Enter`].
     Enter,
-    /// `hft`, [`HftArm::Sqpoll`].
+    /// `hft`, `HftArm::Sqpoll`.
     Sqpoll,
     /// `standard`: the idle turn waits in `io_uring_enter` with a timeout.
     Block,
@@ -1688,9 +1688,9 @@ impl Uring {
     /// **Make it on the engine thread**, before any listener is bound: the
     /// ring is `SINGLE_ISSUER`, and a refusal then leaves nothing half-open.
     ///
-    /// [`HftArm::Sqpoll`]'s core is handed to the kernel as `sq_thread_cpu`
+    /// `HftArm::Sqpoll`'s core is handed to the kernel as `sq_thread_cpu`
     /// here and is **not** checked against `isolcpus` here: the serving entry
-    /// point does that through [`crate::affinity::Topology`] before calling
+    /// point does that through `crate::affinity::Topology` before calling
     /// this, as `serve_hft_pinned` does for the engine's own core.
     ///
     /// # Errors
@@ -1850,7 +1850,7 @@ impl Uring {
 /// # Only a reaping strategy can drive it
 ///
 /// Its `recv` makes no system call: bytes reach it only when [`UringSpin`] or
-/// [`UringBlock`] reaps the ring. Under [`crate::wait::Spin`] it would run and
+/// `UringBlock` reaps the ring. Under [`crate::wait::Spin`] it would run and
 /// never receive a byte, so [`crate::Engine::new`] refuses the pairing when it
 /// is compiled — `Transport::NEEDS_REAPER` against `Waiting::REAPS`, ADR-0190
 /// decision 1:

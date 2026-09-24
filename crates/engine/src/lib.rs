@@ -3483,14 +3483,14 @@ pub enum ServeError {
     #[cfg(all(feature = "affinity", target_os = "linux"))]
     Affinity(crate::affinity::AffinityError),
     /// The kernel, a sysctl or a seccomp filter would not give this process
-    /// an `io_uring` — raised by [`serve_hft_uring`] and [`serve_uring`],
+    /// an `io_uring` — raised by [`serve_hft_uring`] and `serve_uring`,
     /// **always before a socket exists**, and **never followed by a fallback
     /// to `read(2)`** (ADR-0190 decision 7). The
     /// [`transport::uring::UringRefused`] it carries says where the operator
     /// goes next.
     ///
     /// Behind the same `cfg` as `mod transport::uring`, the shape
-    /// [`Self::Affinity`] has.
+    /// `Self::Affinity` has.
     #[cfg(all(feature = "io-uring", target_os = "linux"))]
     Uring(crate::transport::uring::UringRefused),
 }

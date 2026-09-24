@@ -39,7 +39,10 @@ skip() {
 
 [[ "$(uname -s)" == "Linux" ]] || skip "io_uring is Linux-only"
 [[ -r "${SYSCTL}" ]] || skip "${SYSCTL} does not exist (kernel older than 6.6)"
-sudo -n true 2>/dev/null || skip "sudo -n is not available here; this is a desk-only script"
+# By absolute path: root resolves a bare name against `secure_path`, never this
+# PATH (ADR-0093 decision 2, `scripts/check-sudo-names-what-root-can-find.sh`
+# R1); `/usr/bin/true` is coreutils on every merged-/usr Debian or Ubuntu.
+sudo -n /usr/bin/true 2>/dev/null || skip "root is not available here without a password; this is a desk-only script"
 [[ -x "${BIN}" ]] || skip "build it first: cargo build --release -p fixbolt-w2w --features io-uring"
 
 old="$(cat "${SYSCTL}")"
@@ -56,6 +59,7 @@ trap 'exit 130' INT TERM
 # The binary must be able to run the arm at all before the sysctl moves, or a
 # refusal below could be the build's rather than the kernel's.
 if ! "${BIN}" --mode hft --transport uring --messages 10 --warmup 2 >"${TMP}/before.out" 2>&1; then
+  # shellcheck disable=SC2016 # the literal backticks main.rs prints.
   if grep -q 'needs `--features io-uring`' "${TMP}/before.out"; then
     skip "this w2w has no io_uring transport; build it with --features io-uring"
   fi
