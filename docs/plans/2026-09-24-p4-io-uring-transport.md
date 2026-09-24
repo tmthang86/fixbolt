@@ -1,6 +1,6 @@
 # Phase 4, hàng 5: transport `io_uring` cho cả `hft` lẫn `standard`
 
-> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đề xuất
+> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đã duyệt (manager duyệt 2026-09-24 theo uỷ quyền 2026-09-18)
 > **Phạm vi:** phase 4, hàng 5 của bảng *Chia việc* trong
 > [2026-09-23-phase-4-scope.md](2026-09-23-phase-4-scope.md); hạng mục 1 của
 > [ADR-0098](../decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
@@ -150,6 +150,8 @@ Chỉ ghi phương án được chọn; phương án bị loại nằm ở ADR-0
   `Waiting::REAPS = false`; `Engine::new` khẳng định `!T::NEEDS_REAPER || W::REAPS` trong khối
   `const`. Ghép `UringTransport` với `Spin` hay `Block` là **lỗi biên dịch** — nếu không, engine
   sẽ chạy và không bao giờ nhận được byte nào.
+- `Transport::carrier()` có mặc định và `Engine::carrier(id)` — cái mà dòng `transport:` của w2w
+  đọc (mục 4).
 - `ServeError::Uring(UringRefused)` dưới cùng `cfg` với `mod uring`.
 - Hai điểm vào: `serve_hft_uring` (tham số như `serve_hft`, cộng `UringConfig`, `HftArm`) và
   `serve_uring` (như `serve`, cộng `UringConfig`). Cả hai tạo ring **trước khi bind listener**,
@@ -182,21 +184,45 @@ Chỉ ghi phương án được chọn; phương án bị loại nằm ở ADR-0
 
 ### 4. `tools/w2w` và bench
 
+- **Giao diện hàng 7 cần** (plan `docs/plans/2026-09-24-p4-bypass-and-s9-boot.md` — chưa merge, đang ở
+  nhánh `plan/p4-bypass-boot` — mục *Giao diện cần từ hàng 5*) — bốn thứ, tên cố định ở đây để
+  bước 7a dùng đúng tên này:
+  1. feature `io-uring` trên `fixbolt-engine`, và feature **cùng tên** trên `tools/w2w` chuyển tiếp
+     nó (`io-uring = ["fixbolt-engine/io-uring"]`);
+  2. cờ `--transport kernel|uring` (mặc định `kernel`), từ chối khi build thiếu feature; nửa engine
+     in dòng `transport:` **đọc từ engine** (mục dưới);
+  3. ca bench có tên riêng, ghép cặp theo tên: tiền tố giống hệt, chỉ khác hậu tố `, kernel` /
+     `, uring` (mục `turn.rs`, `density.rs` dưới);
+  4. arm SQPOLL: cờ riêng `--uring-arm sqpoll` cộng `--sqpoll-core <cpu>` nhận lõi.
 - `tools/w2w/src/main.rs`: `--transport kernel|uring` (mặc định `kernel`), `--uring-arm
-  enter|sqpoll`, `--sqpoll-core <cpu>`. In một dòng đọc lại **từ `Uring::report()`**:
-  `transport: uring arm=<enter|sqpoll> cqes=<n> bytes=<n> enobufs=<n>` (và `transport: kernel` cho
-  arm cũ). Từ chối: `--transport uring` khi thiếu feature hoặc không phải Linux; `--uring-arm
-  sqpoll` với `--mode standard`; `--sqpoll-core` khi thiếu `--uring-arm sqpoll`. Đếm cấp phát hai
-  luồng như cũ.
+  enter|sqpoll`, `--sqpoll-core <cpu>`, nhận ở lần chạy gộp và ở `--listen`; `--connect` từ chối
+  cả ba (nửa phát không có engine). **Dòng `transport:` đọc từ engine, không từ cờ** — cùng khuôn
+  với `tls:` (`Engine::tls_mode`, ADR-0060 quyết định 3): trait `Transport` thêm phương thức có
+  mặc định `carrier(&self) -> Carrier` (`Carrier::{Kernel, Uring, Other}`, mặc định `Other`;
+  `TcpTransport` trả `Kernel`, `UringTransport` trả `Uring`), `Engine::carrier(id)` đọc sau logon
+  như `Engine::tls_mode(id)`. w2w in `transport: kernel` hoặc
+  `transport: uring arm=<enter|sqpoll> cqes=<n> bytes=<n> enobufs=<n>` — `uring`/`kernel` lấy từ
+  `Engine::carrier`, `arm` và các số đếm từ `Uring::report()`. Từ chối: `--transport uring` khi
+  thiếu feature hoặc không phải Linux; `--uring-arm sqpoll` với `--mode standard`;
+  `--sqpoll-core` khi thiếu `--uring-arm sqpoll`. Đếm cấp phát hai luồng như cũ.
 - `crates/engine/benches/turn.rs`: **giữ nguyên** các case cũ; thêm, dưới `cfg(feature =
   "io-uring")`, cặp case *idle loop, N idle sessions, kernel* (`turn()` + `Spin::idle`) và
   *…, uring* (`turn()` + `UringSpin::idle`), N = 1, 16, 64. So đúng "một vòng rảnh" ở cả hai arm,
-  vì với uring `turn()` không còn syscall nào — so riêng `turn()` sẽ là so sai.
+  vì với uring `turn()` không còn syscall nào — so riêng `turn()` sẽ là so sai. Tên đúng từng
+  chữ: `idle loop, {N} idle sessions, kernel` và `idle loop, {N} idle sessions, uring`.
+- `crates/engine/benches/density.rs`: **giữ nguyên** các ca `Feed` (không kernel, có chủ đích);
+  thêm, dưới `cfg(feature = "io-uring")`, một mục riêng **có syscall có chủ đích** — N phiên TCP
+  loopback thật, mỗi vòng đo phía client ghi một `NewOrderSingle` cho mỗi phiên, engine chạy
+  `turn()` + `idle()` cho tới khi đủ N `ExecutionReport` được đếm: `busy loop, {N} busy sessions,
+  kernel` (`TcpTransport` + `Spin`) và `busy loop, {N} busy sessions, uring` (`UringTransport` +
+  `UringSpin`), N = 1, 16, 64. Chú thích đầu file ghi rõ mục này đo syscall, khác các ca `Feed`.
+  Ghi lại ở hàng 7, không xét (ADR-0190 quyết định 10).
 - `crates/engine/benches/alloc.rs`: case `uring-exchange` (Logon, `NewOrderSingle` →
   `ExecutionReport` qua `UringTransport` + `UringSpin`), đếm luồng engine = 0, tự khẳng định
   đường chạy là thật (`report().cqes > 0`).
 - `scripts/w2w-baseline.sh`: đọc lại `transport:` như đã đọc `journal:`/`log:` — nếu `W2W_EXTRA`
-  có `--transport uring` mà output không có `transport: uring … cqes=<n>` với n > 0 thì FAIL.
+  có `--transport uring` mà output không có `transport: uring … cqes=<n>` với n > 0 thì FAIL; không
+  có `--transport` thì đòi `transport: kernel`.
 
 ### 5. Script mode (ADR-0191)
 
@@ -268,7 +294,7 @@ Chỉ ghi phương án được chọn; phương án bị loại nằm ở ADR-0
 Toàn bộ là **một** pull request, **một** senior developer (opus) làm bước 1–7 liên tục (bước sau
 gửi tiếp bằng `SendMessage` cho cùng agent — cùng các file `engine`, một người ghi một file).
 Bước 8 là docs (sonnet), bước 9 review. Manager chạy lại gate đóng mỗi bước và commit; developer
-không commit. **Phụ thuộc chung:** bước 0 của plan phạm vi phase 4 (phase 3 đã đóng) và việc
+không commit. **Phụ thuộc chung:** bước 0 của plan phạm vi phase 4 (phase 3 đã đóng — theo quyết định của anh 2026-09-24, đóng bằng git tag `v0.1.0`, không đưa lên crates.io; ADR-0161) và việc
 duyệt plan này cùng ADR-0190, ADR-0191.
 
 | Bước | Kết quả | Người làm | File được sửa / không được sửa | Gate | Phụ thuộc |
@@ -277,7 +303,7 @@ duyệt plan này cùng ADR-0190, ADR-0191.
 | 2 | **Lõi ring + `hft`.** `Uring::hft` (arm `Enter` và `Sqpoll`), probe, phân loại từ chối, buffer ring chạm trước, `RecvMulti`, gom, thế hệ, `UringTransport`, `UringSpin`, đóng kết nối, huỷ ring; bảy chỗ `unsafe` với comment `SAFETY:` | senior developer, cùng agent | Như bước 1, chỉ `src/transport/uring.rs`, `tests/uring.rs` | `cargo test -p fixbolt-engine --features io-uring --test uring` — mọi test `hft`, từ chối, byte-exact, đóng, canary xanh; test `standard` còn đỏ; `cargo clippy -p fixbolt-engine --all-targets --features io-uring -- -D warnings`; `scripts/check-indexing-debt.sh`; `scripts/check-no-crate-root-allow.sh` | 1 |
 | 3 | **`standard`.** `Uring::standard`, `UringBlock` (`EXT_ARG`, `POLL_ADD` một lần, bảng gắn, huỷ khi nguồn biến mất); hai hằng `NEEDS_REAPER`/`REAPS`, khẳng định `const` trong `Engine::new`; ba doctest `compile_fail` (`UringTransport` + `Spin`, `UringTransport` + `Block`, `standard` + SQPOLL) | senior developer, cùng agent | Sửa: `src/transport/uring.rs`, `src/transport.rs`, `src/wait.rs`, `src/lib.rs` (chỉ `Engine::new`), `tests/uring.rs`. **Không**: `turn`, `pump`, `presession.rs`, `block.rs`, `poll.rs` | `cargo test -p fixbolt-engine --features io-uring --test uring` xanh hết; `cargo test -p fixbolt-engine --features io-uring --doc`; `cargo test --all`; `cargo test --no-default-features` | 2 |
 | 4 | **Điểm vào + 59 / 59 + alloc.** Trước tiên viết `serve_hft_uring_under_seccomp_binds_no_socket` và cho thấy nó đỏ; rồi `serve_hft_uring`, `serve_uring`, `ServeError::Uring`; test không-quay-về (`serve_hft_uring_under_seccomp_binds_no_socket`); case `uring-exchange` trong `benches/alloc.rs` | senior developer, cùng agent | Sửa: `src/lib.rs` (điểm vào, `ServeError`), `benches/alloc.rs`, `tests/uring.rs`. **Không**: `tests/wire.rs` (đã xong ở bước 1), `crates/session/` | `cargo test -p fixbolt-engine --features io-uring --test wire` **59 / 59 ở cả bốn test**, `lifeline hit: 0`; `cargo bench -p fixbolt-engine --features io-uring --bench alloc` (`uring-exchange 0`, mọi case cũ vẫn 0); `cargo test -p fixbolt-session --test score` 59 / 59; `cargo test -p fixbolt-engine --features fix50sp2 --test wire_fixt` không đổi | 3 |
-| 5 | **`w2w` + bench.** Cờ `--transport`, `--uring-arm`, `--sqpoll-core`, dòng đọc lại, các lời từ chối; case mới trong `turn.rs`; đọc lại `transport:` trong `w2w-baseline.sh` | senior developer, cùng agent | Sửa: `tools/w2w/{Cargo.toml, src/main.rs}`, `crates/engine/benches/turn.rs`, `scripts/w2w-baseline.sh`. **Không**: `tools/w2w/src/pair.rs`, case cũ của `turn.rs` | `cargo build --release -p fixbolt-w2w --features io-uring`; `target/release/w2w --mode hft --transport uring` và `--mode standard --transport uring` in `transport: uring … cqes=<n>` với n > 0 và `allocs 0`; `cargo bench -p fixbolt-engine --features io-uring --bench turn` chạy ra đủ case (số **không** công bố); `scripts/check-w2w-baseline-summary.sh` xanh | 4 |
+| 5 | **`w2w` + bench — bốn thứ hàng 7 cần.** Feature `io-uring` trong `tools/w2w/Cargo.toml`; `Transport::carrier()` + `Engine::carrier(id)`; cờ `--transport`, `--uring-arm`, `--sqpoll-core` (combined và `--listen`, `--connect` từ chối), dòng `transport:` đọc từ engine, các lời từ chối; ca mới đúng tên trong `turn.rs` và `density.rs`; đọc lại `transport:` trong `w2w-baseline.sh` | senior developer, cùng agent | Sửa: `tools/w2w/{Cargo.toml, src/main.rs}`, `crates/engine/src/transport.rs` (`carrier`), `crates/engine/src/transport/uring.rs`, `crates/engine/src/lib.rs` (`Engine::carrier`), `crates/engine/benches/{turn.rs, density.rs}`, `scripts/w2w-baseline.sh`. **Không**: `tools/w2w/src/pair.rs`, các ca cũ của `turn.rs` và `density.rs` | `cargo build --release -p fixbolt-w2w --features io-uring`; `target/release/w2w --mode hft --transport uring` và `--mode standard --transport uring` in `transport: uring … cqes=<n>` với n > 0 và `allocs 0`; không cờ thì in `transport: kernel`; `w2w --listen … --transport uring` cũng in dòng đó; build **thiếu** feature thì `--transport uring` exit ≠ 0 với câu từ chối; `cargo bench -p fixbolt-engine --features io-uring --bench turn` và `--bench density` in đủ các ca `…, kernel` / `…, uring` với N = 1, 16, 64 (số **không** công bố); `cargo test -p fixbolt-engine --test tls_mode` không đổi; `scripts/check-w2w-baseline-summary.sh` xanh | 4 |
 | 6 | **Gate.** ADR-0191 trong `check-no-kernel-sleep.sh`; lần chạy uring trong ba script mode; `check-no-optional-deps.sh`; `check-uring-refused-under-sysctl.sh` (mới); bước `io-uring` trong `ci.yml` | senior developer, cùng agent | Sửa: bốn script nêu tên + một script mới, `.github/workflows/ci.yml`. **Không**: `crates/` | Ba script mode xanh trên Linux, **trích đủ output** kể cả nửa đỏ; `scripts/check-no-optional-deps.sh` xanh | 5 |
 | 7 | **Đảo ngược + máy bàn.** R1–R10 ở *Cách kiểm chứng* mục 6, mỗi cái viết câu FAIL trước, đỏ, khôi phục, xanh; trên máy bàn: `check-uring-refused-under-sysctl.sh`, arm SQPOLL qua ba script với `FIXBOLT_SQPOLL_CORE` (và `--allow-unisolated` nếu chưa ở boot §9, ghi rõ), `tests/uring.rs` dưới ASan nightly | senior developer, cùng agent; manager kiểm máy bàn không có phiên khác đang đo | Như bước 2–6; mọi đảo ngược khôi phục, `git diff` cuối giống hệt trước bước 7 | Từng đảo ngược đỏ đúng câu đã ghi; `RUSTFLAGS=-Zsanitizer=address cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p fixbolt-engine --features io-uring --test uring` xanh (thiếu nightly → ghi *SKIPPED, NOT PASSED*, không phải xanh) | 6 |
 | 8 | **Tài liệu**, cùng commit với code: danh sách ở *Tài liệu phải cập nhật*; ADR-0190/0191 → `Accepted` (manager ghi dòng trạng thái) | developer (sonnet); runner (haiku) chạy `check-links.py` | Chỉ `docs/`, `CHANGELOG.md`, `README.md` nếu cần. **Không** `crates/`, `STATUS.md`, `CLAUDE.md` (manager/anh sửa dòng *Machine checks*) | `python3 scripts/check-links.py`; `scripts/check-adr-numbers.sh` | 7 |
@@ -294,7 +320,7 @@ duyệt plan này cùng ADR-0190, ADR-0191.
 | 5 | Ghép sai không biên dịch | `cargo test -p fixbolt-engine --features io-uring --doc` | ba doctest `compile_fail` xanh — và **đảo ngược R8**: bỏ khối `const` thì doctest thứ nhất biên dịch được, tức đỏ |
 | 6 | Đảo ngược (bước 7) | từng cái | **R1** `UringSpin` dùng `min_complete = 1` → `check-no-kernel-sleep.sh` FAIL *"the engine thread slept in the kernel"* có `io_uring_enter_wait`, và ctxt script đỏ; **R2** dòng trace sửa tay có tham số thứ ba không đọc được → FAIL có `io_uring_enter_unparsed`; **R3** `UringBlock` dùng `min_complete = 0` → `check-standard-gives-the-core-back.sh` đỏ ở khẳng định CPU/trạng thái `S`; **R4** bỏ `POLL_ADD` cho listener → `standard_is_woken_by_a_connect` đỏ; **R5** bỏ tăng thế hệ → `a_late_completion_…` đỏ; **R6** bỏ `shutdown` khi đóng → `…_peer_sees_fin` đỏ; **R7** bỏ nộp lại sau `ENOBUFS` → `…_rearms_and_loses_nothing` đỏ (hết thời gian, byte thiếu); **R8** như mục 5; **R9** tiêm `black_box(Vec::with_capacity(1))` vào đường gom → `uring-exchange` > 0; **R10** bỏ chạm trước vùng đệm → `buffers_are_resident_…` đỏ |
 | 7 | Mode, cả hai nửa | ba script mode | `hft` + uring xanh, `io_uring_enter_nowait` > 0, ctxt 0; `standard` + uring vấp script `hft` với `_wait` và vấp ctxt; `standard` + uring qua đủ bốn khẳng định; `hft` + uring vấp script `standard` |
-| 8 | Không phá gì đã có | `cargo test --all`; `cargo test --no-default-features`; `cargo test -p fixbolt-engine --no-default-features --features io-uring`; `cargo clippy --all-targets -- -D warnings` (và với `--features io-uring`); `cargo fmt --check`; `scripts/check-lint-config.sh`; `scripts/check-indexing-debt.sh`; `scripts/check-no-crate-root-allow.sh`; `scripts/check-no-optional-deps.sh`; `cargo semver-checks` | xanh; test có sẵn **không sửa** (riêng harness `wire.rs` được làm generic, thân hai test cũ giữ nguyên, vẫn 59 / 59) |
+| 8 | Không phá gì đã có | `cargo test --all`; `cargo test --no-default-features`; `cargo test -p fixbolt-engine --no-default-features --features io-uring`; `cargo clippy --all-targets -- -D warnings` (và với `--features io-uring`); `cargo fmt --check`; `scripts/check-lint-config.sh`; `scripts/check-indexing-debt.sh`; `scripts/check-no-crate-root-allow.sh`; `scripts/check-no-optional-deps.sh`; `cargo semver-checks` so với git tag `v0.1.0` (baseline theo ADR-0161, không có bản trên registry) | xanh; test có sẵn **không sửa** (riêng harness `wire.rs` được làm generic, thân hai test cũ giữ nguyên, vẫn 59 / 59) |
 | 9 | CI thấy test dưới feature đã chạy | bước `io-uring` của CI | `check-feature-gated-tests-ran.sh fixbolt-engine io-uring <log>` xanh; đầu job in `uname -r` và `io_uring_disabled` của runner |
 
 "Bản ghi thật": 59 định nghĩa QuickFIX qua socket kernel thật, `Logon` có checksum thật; không
@@ -341,7 +367,8 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
 - [ ] `docs/CONFIGURATION.md` — feature `io-uring`; `UringConfig` (số vùng, độ dài, số kết nối);
   `HftArm`; timeout 100 ms của `UringBlock`
 - [ ] `CHANGELOG.md` `[Unreleased]` — *Added*: feature, module, `serve_uring`, `serve_hft_uring`,
-  `ServeError::Uring`, `Transport::NEEDS_REAPER`, `Waiting::REAPS`; cờ `w2w`
+  `ServeError::Uring`, `Transport::NEEDS_REAPER`, `Transport::carrier`, `Engine::carrier`,
+  `Waiting::REAPS`; cờ `w2w`
 - [ ] `docs/internals/engine.md` — `transport/uring.rs`: file giữ gì, thứ tự đọc, test canh
 - [ ] `docs/best-practices-hft.md`, `docs/best-practices-standard.md` — khi nào thử `io_uring`
   (nhiều phiên một luồng), nói rõ chưa có số đo
@@ -377,6 +404,8 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
 | Trace `strace -f` tách `io_uring_enter` thành `<unfinished>`/`<resumed>` → đếm hai lần hoặc đọc sai tham số | ADR-0191 quyết định 2; R2 |
 | So `turn()` của uring (không syscall) với `turn()` của kernel → thắng giả 100 % | case bench mới đo `turn() + idle()` ở cả hai arm; case cũ giữ nguyên |
 | Feature `io-uring` không có `standard` → xả waker không tồn tại | `UringBlock` gate thêm `feature = "standard"`; CI build `--no-default-features --features io-uring` |
+| Tên cờ, feature hay ca bench lệch với tên hàng 7 dùng → bước 7a dừng giữa boot | mục *Cách làm* 4 cố định từng tên; bước 5 kiểm từng tên bằng lệnh; senior review đối chiếu với mục *Giao diện cần từ hàng 5* của plan hàng 6–7 |
+| Dòng `transport:` đọc từ cờ thay vì từ engine → arm kernel mang nhãn uring | `Engine::carrier`; build thiếu feature thì từ chối; `w2w-baseline.sh` đòi `cqes > 0` |
 | Test dưới feature không bao giờ chạy trên CI | `check-feature-gated-tests-ran.sh` trong bước CI; không dùng `#[ignore]` |
 | MSRV: crate mới hoặc API mới cần Rust > 1.89 | `cargo +1.89 check … --features io-uring` ở bước 1; job `package` của CI |
 | Máy bàn đang có phiên khác đo, hoặc sysctl bị bỏ ở 2 | manager kiểm trước bước 7; script sysctl khôi phục bằng `trap` và in giá trị sau |
@@ -392,7 +421,7 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
 | Tin nhận được chờ thêm một vòng userspace sau một vòng có việc | Thấp | chấp nhận có chủ đích; arm U của hàng 7 cho thấy cái giá |
 | `[chưa kiểm trên kernel này]` NAPI busy poll không chạy trong `enter` với `min_complete = 0` | Thấp | NAPI không dựng ở hàng này (ADR-0190 quyết định 4) |
 | Gate phụ thuộc định dạng tham số của `strace` | Thấp | không đọc được → FAIL (đỏ, không xanh); R2 |
-| Hai hằng mới trên trait công khai làm `cargo semver-checks` kêu | Thấp | cả hai có mặc định (thay đổi minor); gate `semver-checks` chạy ở bước 9 |
+| Hai hằng và một phương thức mới trên trait công khai làm `cargo semver-checks` kêu | Thấp | cả ba có mặc định (thay đổi minor); `semver-checks` so với git tag `v0.1.0` (ADR-0161) chạy ở bước 9 |
 
 ## Ngoài phạm vi
 

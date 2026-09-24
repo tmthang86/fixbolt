@@ -259,8 +259,10 @@ procedure, two procedures ≥ 30 min apart with the arm order reversed in the se
 **Good**
 
 - The engine loop, the pre-session stage and every existing transport are unchanged; the only
-  edits outside the new module are two defaulted associated constants, one `const` assertion, one
-  `ServeError` variant and two entry points.
+  edits outside the new module are two defaulted associated constants, one defaulted
+  `Transport::carrier` method with its `Engine::carrier` reader (so `tools/w2w` prints the
+  transport the engine reports, the way it prints `tls:` — row 7's interface), one `const`
+  assertion, one `ServeError` variant and two entry points.
 - The idle cost becomes one kernel entry per turn whatever N is — the lever the 703 ns-per-socket
   finding pointed at since 2026-08-30.
 - `hft` never waits and the engine core takes no interrupt from the ring; SQPOLL exists for the
