@@ -1,6 +1,6 @@
 # Phase 4, hàng 1: xem engine qua Prometheus và Grafana mà engine không phải trả giá
 
-> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đề xuất
+> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đã duyệt (manager duyệt 2026-09-24 theo uỷ quyền 2026-09-18)
 > **Phạm vi:** phase 4, hàng 1 của bảng *Chia việc* trong
 > [2026-09-23-phase-4-scope.md](2026-09-23-phase-4-scope.md), cộng **nửa tài liệu** của hàng 2
 > (`tools/grafana/fixbolt.json` và docs). Cặp đo `w2w` scrape bật/tắt trên máy bàn **vẫn là hàng
@@ -69,8 +69,9 @@ sang ứng dụng, và số chỗ đang dùng ở tầng chờ Logon), viết fi
 - **Khuôn publish** (ADR-0160): `version.workspace = true`, dependency nội bộ ghim `=0.1.0`,
   `include` là danh sách cho phép, hai file licence chép vào crate, `rust-version` thừa kế (hiện
   1.89). `scripts/check-release-versions.sh` giữ sáu crate; mọi member khác phải `publish = false`.
-- **Phase 3 chưa đóng**: `STATUS.md` *Start here* 2026-09-24 — việc tiếp theo là anh `cargo
-  publish`. Bước 0 của phase 4 là kiểm chuyện đó.
+- **Phase 3 chưa đóng** lúc viết plan (`STATUS.md` *Start here* 2026-09-24). Anh quyết ngày
+  2026-09-24: **không publish lên crates.io**; phase 3 đóng bằng tag `v0.1.0` (ADR-0161, đang
+  viết). Bước 0 của phase 4 là kiểm chuyện đó.
 - **`DropReason`** là enum không có field, `#[non_exhaustive]`, khoảng 24 biến thể
   (`crates/session/src/lib.rs:1235`).
 
@@ -126,10 +127,12 @@ Lý do và phương án bị loại ở ADR-0170, ADR-0171. Ở đây chỉ phư
 - **Dependency duy nhất**: `fixbolt-engine = { version = "=0.1.0", path = "../engine",
   default-features = false }`. Dev-dependency: `fixbolt-engine` có `standard`, `fixbolt-conformance`
   (lấy fixture Logon), cả hai chỉ path. Không feature nào.
-- **Khuôn publish ngay từ đầu, nhưng `publish = false`** (ADR-0170 quyết định 10): thừa kế
-  version, ghim `=`, `include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]`, hai
-  file licence chép vào crate, `README.md` riêng. Hàng 2 đổi sang publish **cùng commit** với cặp
-  đo qua vạch.
+- **Đúng khuôn gia đình lockstep ngay từ đầu, nhưng `publish = false`** (ADR-0170 quyết định
+  10): thừa kế version, ghim `=`, `include = ["src/**", "README.md", "LICENSE-MIT",
+  "LICENSE-APACHE"]`, hai file licence chép vào crate, `README.md` riêng. Hàng 2 đưa crate **vào
+  gia đình release theo tag** (thêm vào danh sách của `check-release-versions.sh`, cờ `publish`
+  theo đúng cách ADR-0161 để cho sáu crate kia) **cùng commit** với cặp đo qua vạch. **Publish lên
+  crates.io không nằm trong kế hoạch** (ADR-0161).
 - **API** (tên chốt ở bước 3, hình dạng chốt ở đây):
   `Exporter::builder(addr: SocketAddr)` → `.engine(name: &'static str, observer: Observer)` (gọi
   nhiều lần được) → `.min_request_interval(Duration)` (mặc định 100 ms) → `.fresh_wait(Duration)`
@@ -254,7 +257,7 @@ scrape_fixture.rs}`, `crates/engine/tests/observe_occupancy.rs`, `tools/grafana/
 
 | Bước | Kết quả | Người làm | File được sửa / không được sửa | Gate | Phụ thuộc |
 |---|---|---|---|---|---|
-| 0 | Phase 3 đã đóng (anh đã `cargo publish`; `scripts/stranger-check.sh --from registry` xanh); plan này, ADR-0170, ADR-0171 được duyệt | manager | — | dòng *Start here* mới nhất của `STATUS.md` ghi phase 3 đóng | anh |
+| 0 | Phase 3 đóng bằng tag `v0.1.0` (ADR-0161); plan này đã duyệt (manager, 2026-09-24); ADR-0170, ADR-0171 được duyệt | manager | — | tag `v0.1.0` có trên `origin`; dòng *Start here* mới nhất của `STATUS.md` ghi phase 3 đóng | ADR-0161 |
 | 1 | **Engine, test đỏ trước rồi code.** `crates/engine/tests/observe_occupancy.rs`: `a_ring_dispatch_reports_how_full_the_ring_to_the_application_is` (app không rút, `used` > 0, `capacity` = kích thước đã cấp), `an_inline_dispatch_reports_no_ring`, `the_front_door_reports_its_presession_slots` (qua `serve`, hai socket chưa gửi Logon → `used = 2`, `capacity = Limits::pending()`), `a_hand_built_engine_reports_no_presession_slots`, `latest_reads_without_asking` (`latest()` rồi nhiều `turn()` → `published()` không đổi). Đỏ = lỗi biên dịch vì API chưa có, trích nguyên văn. Rồi code mục A; thêm case `observe-asked-ring` vào `benches/alloc.rs` và vào dòng `allocations:` | senior developer (opus) | Sửa: `crates/engine/src/{observe.rs, dispatch.rs, ring.rs, lib.rs}`, `crates/engine/benches/alloc.rs`; tạo `crates/engine/tests/observe_occupancy.rs`. **Không** sửa: file test có sẵn, `crates/session/`, `crates/codec/`, `conn.rs`, `journal.rs`, `shard.rs` | `cargo test -p fixbolt-engine --test observe_occupancy`; test có sẵn **không sửa** vẫn xanh: `cargo test -p fixbolt-engine --test observe --test events --test admin --test dispatch`; `cargo test --all`; `cargo test --no-default-features`; `cargo bench -p fixbolt-engine --bench alloc` (`observe-asked-ring 0`, mọi case cũ 0); `grep -c note_unframeable` = `grep -c note_presession_slots` trong `crates/engine/src/lib.rs` (trích cả hai số); `cargo clippy --all-targets -- -D warnings`; `cargo fmt --check`; `scripts/check-indexing-debt.sh` | 0 |
 | 2 | **Đảo ngược phần engine**, từng cái, viết câu FAIL trước: R1 `RingDispatch` không override `ring_to_app`; R2 bỏ lời gọi `note_presession_slots` trong `pump_loop`; R3 `latest()` bật cờ `wanted`; R4 tiêm `std::hint::black_box(Vec::<u8>::with_capacity(1))` vào `RingDispatch::ring_to_app` | senior developer (opus), cùng agent | Như bước 1; `git diff` sau bước 2 giống hệt sau bước 1 | R1 đỏ ở `a_ring_dispatch_reports…`; R2 đỏ ở `the_front_door_reports…`; R3 đỏ ở `latest_reads_without_asking`; R4 `observe-asked-ring` > 0 | 1 |
 | 3 | **Crate `fixbolt-metrics`**, test trước: `tests/series_names.rs` (danh sách mục C viết tay, so với `series.rs`), `tests/exporter.rs` gồm `the_content_type_is_exactly_the_one_prometheus_3_parses`, `a_scrape_before_the_first_snapshot_says_so`, `a_scrape_storm_builds_at_most_one_snapshot_per_interval` (500 scrape trong 1 s, `published()` tăng ≤ 11), `the_snapshot_age_grows_while_the_engine_sleeps`, `healthz_follows_snapshot_healthy`, `a_request_larger_than_4_kib_is_refused_not_buffered`, `a_client_that_sends_nothing_is_dropped_after_the_read_timeout`, `without_events_the_exporter_leaves_the_stream_alone`, `with_events_every_drop_reason_today_has_its_own_label`, `a_series_with_no_source_is_omitted_not_zeroed`, `stop_joins_the_thread`; unit test trong `encode.rs`: `a_full_snapshot_fits_the_reserved_buffer` (64 phiên, giá trị dài nhất, dung lượng buffer không đổi), `label_values_are_escaped`, `skew_is_printed_as_seconds_without_a_float`. Rồi code mục B; `benches/alloc.rs` hai case; khuôn publish; `Cargo.toml` members; `check-release-versions.sh` thêm danh sách "đủ khuôn, chưa publish" kiểm luật 2 (trừ `publish`), 3, 5 cho `fixbolt-metrics`; `check-no-optional-deps.sh` thêm case | senior developer (opus) | Tạo mọi file dưới `crates/metrics/` trừ `tests/dashboard.rs` và `examples/scrape_fixture.rs`; sửa `Cargo.toml`, `scripts/check-release-versions.sh`, `scripts/check-no-optional-deps.sh`. **Không** sửa `crates/engine/`, `crates/session/`, `tools/`, `.github/` | `cargo test -p fixbolt-metrics`; `cargo bench -p fixbolt-metrics --bench alloc` (`metrics-idle 0 metrics-scraped 0`); `scripts/check-release-versions.sh`; `scripts/check-no-optional-deps.sh`; `scripts/check-every-crate-is-licensed.sh`; `cargo package -p fixbolt-metrics --list --allow-dirty` (chỉ file trong `include`); `cargo test --all`; `cargo test --no-default-features`; clippy, fmt, `scripts/check-indexing-debt.sh`, `scripts/check-no-crate-root-allow.sh` | 1 |
@@ -266,9 +269,9 @@ scrape_fixture.rs}`, `crates/engine/tests/observe_occupancy.rs`, `tools/grafana/
 | 9 | **Review + CI**: một senior review, context mới, được đưa plan này, ADR-0170, ADR-0171 và các gate; manager kiểm từng phát hiện theo `CLAUDE.md` §12; PR nháp từ commit đầu, CI xanh trên commit đóng, ghi run id | senior developer (opus) review; manager | — | CI xanh trên commit đóng, run id ghi vào *Nhật ký giao hàng* | 8 |
 
 Bước 1 và 3 không chạy song song: bước 3 cần API của bước 1. Bước 5 và 6 chạy song song được (file
-rời nhau). Hàng 2 (cặp `w2w` scrape bật/tắt trên máy bàn §9, hai procedure, và đổi
-`publish = false` → publish nếu qua vạch) là PR sau, dùng `w2w --metrics` và `scrape-loop.sh` của
-plan này.
+rời nhau). Hàng 2 (cặp `w2w` scrape bật/tắt trên máy bàn §9, hai procedure, và nếu qua
+vạch thì đưa crate vào gia đình release theo tag — không publish crates.io, ADR-0161) là PR sau,
+dùng `w2w --metrics` và `scrape-loop.sh` của plan này.
 
 ## Cách kiểm chứng
 
@@ -301,7 +304,7 @@ Theo bảng `CLAUDE.md` §4, đi từng dòng:
 - [ ] `docs/internals/metrics.md` (mới) — file nào giữ gì, đọc theo thứ tự nào, test nào canh;
       `docs/internals/engine.md` — dòng `observe`; `docs/internals/tools.md` — `w2w --metrics`,
       `tools/grafana/`
-- [ ] `CHANGELOG.md` — API thêm của `fixbolt-engine`; crate mới (chưa publish); **danh sách tên
+- [ ] `CHANGELOG.md` — API thêm của `fixbolt-engine`; crate mới (chưa vào gia đình release); **danh sách tên
       series là API công khai**
 - [ ] `docs/GUIDE.md` §8a — gắn exporter; bẫy affinity (tạo exporter trước khi ghim luồng
       engine); bật event là lấy event của người khác; bind loopback hoặc mạng riêng, không TLS,
@@ -338,7 +341,7 @@ Theo bảng `CLAUDE.md` §4, đi từng dòng:
 | Exporter thừa hưởng lõi đã ghim của luồng engine | `w2w` tạo exporter trước khi ghim, kiểm bằng `ps -L` ở bước 5; `GUIDE.md` |
 | Exporter spin khi rảnh, làm hỏng script `standard` | script `standard` chạy với exporter + scrape ở bước 5 |
 | Biến thể `DropReason` mới thành `reason="other"` mà không ai để ý | `with_events_every_drop_reason_today_has_its_own_label` liệt kê tay các biến thể hôm nay; ghi trong `docs/internals/metrics.md` |
-| Crate mới lọt vào bản release lockstep trước khi có phán quyết | `publish = false` + `check-release-versions.sh` luật 4 |
+| Crate mới lọt vào bản release theo tag trước khi có phán quyết | `publish = false` + `check-release-versions.sh` luật 4 |
 | Kéo `libc` vào build `hft` của người dùng qua crate mới | `check-no-optional-deps.sh` case `fixbolt-metrics:libc`; R11 |
 | Case alloc xanh vì không chạy gì | mỗi case tự kiểm: scrape trả 200, thân có đúng giá trị, `published()` tăng |
 | `promtool` vắng trên máy → tưởng là đạt | script in `SKIPPED, NOT PASSED` và thoát khác 0 |
@@ -357,7 +360,8 @@ Theo bảng `CLAUDE.md` §4, đi từng dòng:
 
 ## Ngoài phạm vi
 
-- Cặp `w2w` scrape bật/tắt trên máy bàn và việc đổi sang publish — **hàng 2**.
+- Cặp `w2w` scrape bật/tắt trên máy bàn và việc đưa crate vào gia đình release theo tag —
+  **hàng 2**. Publish lên crates.io: không có trong kế hoạch (ADR-0161).
 - Quan sát runtime chia shard (`serve_sharded_hft` không có `Handles`) — việc riêng, cần plan.
 - Tên đối tác (SenderCompID/TargetCompID) làm label — `SessionSnapshot` chưa mang; cần plan riêng.
 - Độ đầy ring chiều ứng dụng → engine.
@@ -370,7 +374,7 @@ Theo bảng `CLAUDE.md` §4, đi từng dòng:
 
 Không có câu hỏi mới. Mọi quyết định ở đây nằm trong khung ADR-0098 anh đã duyệt; hai ADR mới chỉ
 chốt những chỗ khung đó để ngỏ. Nếu anh muốn đổi, ba chỗ đáng xem nhất: bảng tên series ở mục C
-(đây là API công khai), việc crate vào gia đình lockstep nhưng `publish = false` cho tới hàng 2,
+(đây là API công khai), việc crate đúng khuôn gia đình lockstep nhưng chỉ vào gia đình release theo tag ở hàng 2,
 và việc exporter mặc định **không** đọc event.
 
 ## Nhật ký giao hàng

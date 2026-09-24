@@ -1,6 +1,10 @@
 # ADR-0170 — The metrics exporter holds an `Observer` and nothing else, allocates nothing per scrape, and is published only after its kill line
 
 - **Status**: Proposed — 2026-09-24
+- Revised in place 2026-09-24 (still Proposed): decision 10 no longer has row 2 publish the crate
+  to crates.io. The owner decided 2026-09-24 that phase 3 closes with the git tag `v0.1.0` and
+  that no crates.io publish is planned (ADR-0161, being written). Row 2 now brings the crate into
+  the tagged release family instead. "Published" in this ADR's title means "released by tag".
 - **Date**: 2026-09-24
 - **Deciders**: written by the architect (Opus) for phase 4 row 1; accepted by the owner, or by
   the manager under the owner's standing mandate.
@@ -140,10 +144,12 @@ measurement of any exporter's effect on a co-located low-latency thread.
     `.crate` strips),
     inherited `rust-version`, docs.rs defaults — ADR-0160's mould, held by
     `scripts/check-release-versions.sh` from the day it merges. It merges with **`publish =
-    false`**. Phase 4 row 2 flips it to published, and adds it to that script's published list,
-    **in the same commit as the scrape-on/scrape-off `w2w` pair that passes ADR-0098's kill line**.
-    If the pair fails, it stays unpublished and is redesigned (ADR-0098), and the next lockstep
-    release leaves it out without anyone having to remember.
+    false`**, outside the release family. Phase 4 row 2 brings it **into the tagged release
+    family** — adds it to that script's list of released crates, with its `publish` field set the
+    way ADR-0161 sets it for the other six — **in the same commit as the scrape-on/scrape-off
+    `w2w` pair that passes ADR-0098's kill line**. **Publishing to crates.io is not planned**
+    (ADR-0161). If the pair fails, the crate stays outside the release family and is redesigned
+    (ADR-0098), and the next tagged release leaves it out without anyone having to remember.
 
 ## Consequences
 
