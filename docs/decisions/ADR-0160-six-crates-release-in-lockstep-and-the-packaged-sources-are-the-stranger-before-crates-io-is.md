@@ -1,5 +1,6 @@
 # ADR-0160 — Six crates release in lockstep, and the packaged sources stand in for crates.io until the first publish
 
+- **Superseded in part — 2026-09-24:** decision 6's second sentence and decision 7's second half (what happens after a crates.io publish) by [ADR-0161](ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md).
 - **Status**: **Accepted — 2026-09-23** (manager, owner's standing mandate, with the packaging plan). Proposed 2026-09-23. Written by the architect (Opus) for phase 3 rows 6–8
   ([plan](../plans/2026-09-23-p3-packaging-and-first-release.md)). Accepted by the manager under
   the owner's standing mandate, or by the owner. It decides nothing ADR-0097 or ADR-0104 already

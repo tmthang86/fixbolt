@@ -296,6 +296,125 @@ Manager duyệt theo uỷ quyền thường trực, trong lúc làm 6a.
    - **Sửa một comment** trong `[dev-dependencies]` của `crates/engine/Cargo.toml`, vì nó vẫn
      ghi phiên bản khai báo là 1.85. Chỉ sửa comment, không đổi dependency nào.
 
+## Sửa 2 — 2026-09-24: không publish, gắn tag `v0.1.0`
+
+**Vì sao.** Ngày 2026-09-24 anh quyết định **"Không publish"**: anh chỉ dùng fixbolt cho dự án
+của mình, nên `0.1.0` **không** lên crates.io. Bản phát hành là tag git `v0.1.0`; người dùng lấy
+fixbolt qua git: `fixbolt = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }`.
+Quyết định được ghi ở
+[ADR-0161](../decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)
+(*Proposed*, manager chấp nhận theo quyết định của anh). ADR đó thay ADR-0097 Q5 (anh bấm
+`cargo publish`) và tiêu chí thoát 7, 8 (cả hai đọc từ crates.io). **ADR-0160 giữ nguyên**: sáu
+crate vẫn ở dạng publish được, job `package` vẫn chạy, nên sau này muốn publish thì vẫn chỉ là một
+lệnh `cargo publish --workspace` theo `RELEASING.md`.
+
+Phần trên của plan này không sửa lại. Những gì dưới đây **thay** hàng 7b và 8b của bảng *Chia việc*,
+hai dòng 7 và 8 của bảng *Cách kiểm chứng*, và mục *Trình tự phát hành* (phần đó giờ là "nếu có
+ngày publish").
+
+### Đã đo trước khi viết (desk, cargo 1.98.0, cargo-semver-checks 0.50.0, không `vendor/`)
+
+Chi tiết ở ADR-0161 *Context*. Tóm tắt:
+
+1. `cargo add --git https://github.com/tmthang86/fixbolt --rev 094bfc3` **không có tên** → lỗi
+   `multiple packages found` (repo có 15 package). **Có tên** `fixbolt` → `Adding fixbolt (git)`,
+   cargo tự thêm `version = "0.1.0"`. `cargo build` → `Compiling fixbolt v0.1.0
+   (https://github.com/tmthang86/fixbolt?rev=094bfc3#094bfc3e)`, `Finished`. Phần trong ngoặc cho
+   biết lấy từ đâu: dependency path thì in đường dẫn thư mục, crates.io thì không in gì.
+2. `Cargo.lock` ghi đủ 40 ký tự sha: `source = "git+https://github.com/tmthang86/fixbolt?rev=094bfc3#094bfc3e159a294341f6af65e547f47ab3841e0b"`.
+3. Tag không tồn tại → `cargo add` exit 101 (trích ở hàng 8b).
+4. `cargo semver-checks --workspace --baseline-rev HEAD` → đúng sáu crate, mỗi crate
+   `v0.1.0 -> v0.1.0 (no change; assume minor)`, `196 checks: 196 pass, 58 skip`, exit 0.
+5. **Bẫy:** khi phiên bản nhảy kiểu "major" (`0.1` → `0.2`), cargo-semver-checks **bỏ qua mọi
+   kiểm tra mà vẫn exit 0** (`0 checks: 0 pass, 254 skip`, đã thấy ở 0.0.0 → 0.1.0; đọc mã nguồn
+   0.50.0 xác nhận). Nên job chặn phải kiểm là **đã có kiểm tra chạy**, không chỉ đọc exit status.
+
+### Thứ tự mới
+
+**PR của ADR-0161 và Sửa 2 này (chỉ tài liệu) → merge → 7b (gắn tag lên đúng commit merge đó) →
+8b.** Tag phải có trước 8b, vì cả hai gate của 8b đọc tag. Hệ quả chấp nhận được: cây mã tại
+`v0.1.0` còn dòng "chưa lên crates.io, dùng `rev`" và `CHANGELOG.md` chưa có ngày — người lạ đọc
+`main`, và ghi chú phát hành trên GitHub viết từ `CHANGELOG.md` của `main` sau 8b (ADR-0161
+*Consequences*).
+
+### Hàng 7b và 8b mới (thay hàng cũ trong *Chia việc*)
+
+| Bước | Kết quả | Người làm | File được sửa / **không** được sửa | Gate — xong khi | Test đỏ trước / đảo ngược | Phụ thuộc |
+|---|---|---|---|---|---|---|
+| 7b | **Gắn tag `v0.1.0`** lên một commit của `main` mà CI xanh. **Không publish lên crates.io**, không `cargo login`, không token (ADR-0161 quyết định 1) | **manager** | Không file nào trong repo. Commit được gắn tag: commit merge PR của ADR-0161 (mã nguồn giống hệt `094bfc3`) | Trên checkout `main` sạch: `git status --short` rỗng; `git log -1 --format=%H` đúng commit của CI run xanh (ghi run id, đọc từng job); `git tag -a v0.1.0 -m 'fixbolt 0.1.0'`; `git push origin v0.1.0`; `git ls-remote --tags origin 'v0.1.0^{}'` trả về đúng sha đó (trích nguyên văn). Nếu token của phiên có quyền admin: tạo ruleset tag cho `v*` (cấm xoá, cấm cập nhật, cấm force-push) qua `gh api`, rồi đọc lại bằng `gh api repos/tmthang86/fixbolt/rulesets/<id>` và trích `enforcement` cùng danh sách rule; không có quyền thì báo anh | **Đỏ trước:** trong một crate tạm ngoài repo, **trước** khi push tag, `cargo add fixbolt --git https://github.com/tmthang86/fixbolt --tag v0.1.0` → đỏ `failed to find tag 'v0.1.0'`; sau khi push → `Adding fixbolt (git) to dependencies`. **Không đảo ngược ruleset bằng cách thử dời hay xoá tag thật:** nếu ruleset không có hiệu lực, phép thử đó chính là phá bản phát hành; bằng chứng là đọc lại ruleset | PR ADR-0161 đã merge; tiêu chí 1–6 của ADR-0097 xanh (đã có — `STATUS.md` *Start here 2026-09-24*) |
+| 8b | Người lạ lấy fixbolt **từ GitHub theo tag**; semver-checks **chặn**, so với tag; tài liệu nói đúng cách cài | **developer (sonnet)**; manager chạy script trên desk, ghi run id, commit | Sửa: `scripts/stranger-check.sh` — chế độ mới `--from git --tag <tag> [--url <url>]` (url mặc định `https://github.com/tmthang86/fixbolt`): crate tạm ở `target/stranger/` như hai chế độ cũ, `cargo add fixbolt --git <url> --tag <tag> --manifest-path …` (luôn có tên `fixbolt`), không `[patch]`; sau build phải thấy trong log dòng `Compiling fixbolt v<ver> (<url>?tag=<tag>#<sha8>)`, và `Cargo.lock` của crate tạm có `source = "git+<url>?tag=<tag>#<sha40>"` với `<sha40>` bằng `git rev-parse <tag>^{commit}` của checkout (tag không có trong checkout → exit 2); `docs/GETTING-STARTED.md` phải chứa `tag = "<tag>"`; phần *WHAT IT CANNOT SEE* ở đầu file thêm: tag bị dời trên GitHub mà checkout cũng dời theo thì script không thấy. `--from packaged`, `--from registry` giữ nguyên. `scripts/check-semver-against-tag.sh` (mới): chạy `cargo semver-checks --workspace --baseline-rev <tag>`, in lại output, **đỏ** nếu thiếu một trong sáu crate hoặc có crate nào `0 checks`; chỉ cho qua `0 checks` khi phiên bản workspace khác phiên bản của tag (cố ý nhảy `0.2.0`), kèm một dòng `NOTE` nói rõ. `.github/workflows/ci.yml` — job `semver`: bỏ `continue-on-error`, đổi tên thành "… against the v0.1.0 tag (blocking, ADR-0161)", giữ `fetch-depth: 0`, gọi `scripts/check-semver-against-tag.sh v0.1.0`; job mới `stranger-git`: `fetch-depth: 0`, `scripts/stranger-check.sh --from git --tag v0.1.0`, chạy trên cả `pull_request` và `push` vào `main` (theo trigger chung của file, không thêm trigger); thêm hai script vào bước `shellcheck` của job `package`. Tài liệu: xem *Tài liệu phải cập nhật (Sửa 2)* dưới. **Không**: `crates/`, `Cargo.toml`, `Cargo.lock`, mọi job CI khác, mọi ADR, `STATUS.md` (manager) | Trên desk: `shellcheck -S info scripts/stranger-check.sh scripts/check-semver-against-tag.sh` sạch; `scripts/check-scratch-fixtures.sh` xanh; `scripts/stranger-check.sh --from git --tag v0.1.0` exit 0, trích nguyên văn: `Updating git repository`, `Compiling fixbolt v0.1.0 (https://github.com/tmthang86/fixbolt?tag=v0.1.0#…)`, dòng `source = "git+…"` của `Cargo.lock`, `LOGON OK`, `LOGOUT OK`, `stopped:`; `scripts/stranger-check.sh --from packaged` vẫn xanh; `scripts/check-semver-against-tag.sh v0.1.0` exit 0 với sáu dòng `(no change; assume minor)` và sáu dòng `Checked … N checks` (N > 0); `python3 scripts/check-links.py`; `scripts/check-adr-numbers.sh`. Trên PR: job `semver` và `stranger-git` xanh, **không** `continue-on-error`; manager ghi run id của commit đóng, và run id của lần `push` vào `main` sau merge | **Đỏ trước khi viết chế độ mới** (mã hiện tại, dòng 90–92): `scripts/stranger-check.sh --from git --tag v0.1.0` → exit 2, `stranger-check: FAIL — usage: stranger-check.sh --from packaged \| --from registry --version X`. **Đỏ của tag sai, câu viết trước:** `scripts/stranger-check.sh --from git --tag v9.9.9` → exit 1; cargo in (đã đo 2026-09-24): `Updating git repository` `` `https://github.com/tmthang86/fixbolt` ``, `error: failed to load source for dependency` `` `fixbolt` ``, `unable to update https://github.com/tmthang86/fixbolt?tag=v9.9.9`, `failed to find tag` `` `v9.9.9` ``; script thêm `stranger-check: FAIL — could not add fixbolt from https://github.com/tmthang86/fixbolt at tag v9.9.9`. `scripts/check-semver-against-tag.sh v9.9.9` → khác 0, cargo-semver-checks in `couldn't parse revision: "v9.9.9^{tree}"` và `The ref partially named "v9.9.9" could not be found` (đã đo). **Đảo ngược**, mỗi cái viết câu FAIL trước, trả lại, xanh: (a) tạm thêm vào manifest crate tạm `[patch."https://github.com/tmthang86/fixbolt"] fixbolt = { path = "<ROOT>/crates/library" }` → đỏ `stranger-check: FAIL — fixbolt was compiled from <path>, not from https://github.com/tmthang86/fixbolt?tag=v0.1.0` (đây đúng là lỗi "xanh mà thật ra lấy từ path"); (b) tạm đổi dòng cài trên trang thành `tag = "v0.0.9"` → đỏ `FAIL — docs/GETTING-STARTED.md names tag v0.0.9, this run checks v0.1.0`; (c) tạm thêm `--release-type major` vào lệnh trong wrapper → đỏ `FAIL semver: fixbolt-codec ran 0 checks against v0.1.0` (bẫy số 5 ở trên); (d) nhánh tạm, không merge, đổi tên `fixbolt_codec::checksum::checksum` → job `semver` trên CI đỏ với `failure function_missing`, và PR bị chặn | 7b (tag đã có trên GitHub) |
+
+**Tầng:** 8b là developer (sonnet): chỉ script bash, `ci.yml` và tài liệu, không đụng `crates/`,
+brief nêu đủ từng câu FAIL. Nếu manager muốn chạy song song, phần tài liệu có thể giao một
+developer (sonnet) thứ hai vì file tách rời hẳn; `docs/CONFORMANCE.md` thì manager điền run id sau
+khi CI xong.
+
+**Lệch so với brief của manager, có lý do:** job `stranger-git` chạy cả trên `pull_request`, không
+chỉ `push` vào `main`. Lý do: `CLAUDE.md` §9 đòi một run id xanh **cho chính commit đóng**, mà commit
+đóng của 8b nằm trên PR; và nó bắt được PR làm trang `GETTING-STARTED` dùng API mà `v0.1.0` chưa có.
+Tag đã có trước 8b nên không bị vòng lặp "cần tag để xanh, cần xanh để gắn tag".
+
+### *Cách kiểm chứng* — dòng 7 và 8 mới
+
+| Tiêu chí ADR-0097 (theo ADR-0161) | Lệnh | Khi nào |
+|---|---|---|
+| 7 — người lạ dùng được | `scripts/stranger-check.sh --from packaged` (mỗi PR, không đổi); `scripts/stranger-check.sh --from git --tag v0.1.0`, có dòng `Compiling fixbolt v0.1.0 (https://github.com/tmthang86/fixbolt?tag=v0.1.0#…)` | job `package`; job `stranger-git` từ 8b |
+| 8 — API được canh | `scripts/check-semver-against-tag.sh v0.1.0`, chặn, và phải có kiểm tra thật sự chạy | job `semver` từ 8b |
+
+### Bẫy mới
+
+| Bẫy | Test canh |
+|---|---|
+| Script "xanh" mà fixbolt lấy từ path chứ không từ GitHub | dòng `Compiling fixbolt … (https://…?tag=v0.1.0#…)` + sha trong `Cargo.lock`; đảo ngược (a) |
+| semver-checks bỏ qua mọi kiểm tra mà vẫn exit 0 khi phiên bản nhảy "major" | wrapper đếm `N checks` > 0 cho từng crate; đảo ngược (c) |
+| Trang `GETTING-STARTED` nói một tag, gate kiểm tag khác | script so `tag = "<tag>"` trên trang; đảo ngược (b) |
+| `cargo add --git` không có tên package → lỗi vì repo có 15 package | script luôn truyền `fixbolt`; tài liệu luôn ghi tên |
+| Tag bị dời hay bị xoá trên GitHub | ruleset tag `v*` (7b); sha trong `Cargo.lock` phải bằng `git rev-parse` — script không thấy nếu checkout cũng dời theo (ghi trong header) |
+| GitHub sập làm job `stranger-git` đỏ dù mã không sai | đọc log: lỗi mạng của `Updating git repository` khác lỗi build; chạy lại job, không sửa mã |
+| Lần tag sau: trang, job `stranger-git` và baseline semver vẫn trỏ `v0.1.0` | `RELEASING.md` (bước tag): PR ngay sau mỗi tag đổi cả ba cùng lúc |
+
+### Tài liệu phải cập nhật (Sửa 2, theo bảng `CLAUDE.md` §4)
+
+- [ ] `docs/decisions/ADR-0097-…md` — **một dòng** trong *Status*: "Q5 and exit criteria 7–8
+      superseded by ADR-0161 (2026-09-24)". Không sửa nội dung (ADR đã Accepted). Manager thêm
+      dòng này trong cùng commit chấp nhận ADR-0161 (PR này).
+- [ ] `RELEASING.md` (8b) — thành "cách phát hành": các bước **tag** lên đầu (commit `main` xanh có
+      run id, `git tag -a`, `git push`, `git ls-remote` đọc lại, ruleset `v*`, PR theo sau đổi tag ở
+      trang + job `stranger-git` + baseline semver, ghi chú phát hành GitHub từ `### Summary`); các
+      bước crates.io hiện có chuyển xuống mục "Publishing to crates.io, if ever", nội dung giữ
+      nguyên, mở đầu bằng "cần một ADR mới thay ADR-0161 quyết định 1"; bước 9 cũ ("báo manager
+      chạy `--from registry`") viết lại cho đúng.
+- [ ] `docs/GETTING-STARTED.md` (8b) — dòng cài: `cargo add fixbolt --git
+      https://github.com/tmthang86/fixbolt --tag v0.1.0` và dòng TOML tương ứng; xoá ghi chú "Not
+      on crates.io yet"; nói một câu: không có trên crates.io theo quyết định, tài liệu API là
+      `cargo doc --open`; đoạn ở dòng ~253 nói `--from git --tag v0.1.0` thay cho `--from registry`.
+- [ ] `README.md` (8b) — mục cài đặt (dòng ~63–77): như trên; bỏ "Not on crates.io yet … until
+      both are true"; một câu về mức hỗ trợ không đổi.
+- [ ] `CHANGELOG.md` (8b) — `## [0.1.0] — <ngày gắn tag>`, một dòng "released as the git tag
+      `v0.1.0`; not published to crates.io (ADR-0161)"; bỏ "date filled in when the owner
+      publishes"; mục điều kiện `1.0` giữ nguyên.
+- [ ] `docs/PRD.md` §2 *Phase 3* (8b) — câu "the owner runs `cargo publish`" và mục *First publish,
+      `0.1.0`* đổi thành tag git; hai dòng tiêu chí 7 và 8 của bảng exit criteria đổi theo ADR-0161.
+- [ ] `docs/CONFORMANCE.md` (8b, manager điền run id) — tiêu chí 7 và 8: lệnh, máy, run id của
+      commit đóng và của lần `push` vào `main`.
+- [ ] `docs/reference/publishing-a-workspace-to-crates-io.md` (8b) — hai bẫy đã đo: `cargo add
+      --git` cần tên package trong repo nhiều crate; cargo-semver-checks bỏ qua mọi kiểm tra khi
+      nhảy "major" mà vẫn exit 0.
+- [ ] `STATUS.md` (manager, khi đóng) — *Start here* mới; *Do not* "chạy `cargo publish`" giữ; dòng
+      *Not proven* về `LicenseRef-QuickFIX-1.0` đổi thành "chỉ khi có ngày publish".
+
+### Ngoài phạm vi (thêm)
+
+- **Publish lên crates.io**, kể cả một bản "giữ chỗ" cho tên `fixbolt`: chính sách của crates.io
+  coi đó là chiếm tên (ADR-0161 *Research*).
+- **Một trang tài liệu API thay docs.rs** (ví dụ GitHub Pages).
+- Thêm trigger `push: tags` cho CI — `CLAUDE.md` §8 giữ nguyên hai trigger.
+
+### Câu hỏi cho anh
+
+1. **Ruleset khoá tag `v*`** (cấm xoá, cấm dời) trên repo GitHub: đồng ý để manager tạo không, nếu
+   token của phiên có quyền admin? Không có ruleset thì "tag không bao giờ dời" chỉ là lời hứa.
+
 ## Nhật ký giao hàng
 
 | Bước | Commit | Bằng chứng |
