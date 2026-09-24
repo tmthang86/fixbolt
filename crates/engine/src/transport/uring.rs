@@ -172,12 +172,16 @@ pub enum HftArm {
     /// engine thread enters the kernel and never waits there.
     #[default]
     Enter,
-    /// A kernel thread polls the submission queue, pinned to `core`, and the
-    /// engine thread only reads the completion queue. **Burns a second core.**
+    /// A kernel thread polls the submission queue, pinned to `pin`'s core,
+    /// and the engine thread only reads the completion queue. **Burns a second
+    /// core.** *(ADR-0190 R1)* A [`crate::affinity::CorePin`], so the one
+    /// waiver the engine's own core has — `allow_unisolated` — goes with it
+    /// and is reported ([`UringReport::unisolated`]).
     #[cfg(feature = "affinity")]
     Sqpoll {
-        /// The CPU the kernel's SQ thread is bound to (`sq_thread_cpu`).
-        core: crate::affinity::CoreId,
+        /// The CPU the kernel's SQ thread is bound to (`sq_thread_cpu`), and
+        /// whether it may be outside `isolcpus`.
+        pin: crate::affinity::CorePin,
     },
 }
 
@@ -218,6 +222,15 @@ pub struct UringReport {
     /// its table or the submission queue was full. Each one wakes the engine
     /// only by the timeout that turn — correct, and late, so it is counted.
     pub unarmed: u64,
+    /// Completions the kernel could not post because the completion queue was
+    /// full: the overflow flag seen at a reap plus the kernel's own dropped
+    /// count. The queue is sized so this stays 0 (ADR-0190 R4), and the tests
+    /// assert it.
+    pub cq_overflow: u64,
+    /// `true` only for [`UringArm::Sqpoll`] whose core was pinned with
+    /// `CorePin::allow_unisolated` — a figure from that arm says so beside it
+    /// (ADR-0190 R1).
+    pub unisolated: bool,
 }
 
 /// Why this process was not given a ring. Each variant says where the
@@ -237,6 +250,16 @@ pub enum UringRefused {
     /// `EINVAL` at setup, a probe without `RECV`/`POLL_ADD`/`ASYNC_CANCEL`, or
     /// a buffer ring the kernel will not register. 6.1 is the floor.
     KernelTooOld,
+    /// *(ADR-0190 R4)* The ring has fewer connection slots than the serving
+    /// loop can hold at once — the engine's capacity plus the pre-session
+    /// limit, because a socket is registered when it is accepted, before its
+    /// `Logon`. A configuration error, not the kernel's.
+    TooSmall {
+        /// `UringConfig::connections()`.
+        have: usize,
+        /// capacity + `presession::Limits::pending()`.
+        need: usize,
+    },
     /// Anything else.
     Other(io::ErrorKind),
 }
@@ -292,6 +315,11 @@ impl fmt::Display for UringRefused {
             Self::KernelTooOld => f.write_str(
                 "this kernel's io_uring lacks what the transport needs \
                  (DEFER_TASKRUN, RECV, POLL_ADD, ASYNC_CANCEL, buffer rings): 6.1 is the floor",
+            ),
+            Self::TooSmall { have, need } => write!(
+                f,
+                "the io_uring ring has {have} connection slots and this acceptor can hold \
+                 {need} sockets at once (capacity + pending): raise UringConfig's connections"
             ),
             Self::Other(kind) => write!(f, "io_uring could not be set up: {kind}"),
         }
@@ -518,6 +546,8 @@ enum Setup {
 /// allocated once.
 struct FdTable {
     keys: Box<[std::os::fd::RawFd]>,
+    /// The slot each key's connection is in.
+    slots: Box<[u32]>,
     mask: usize,
 }
 
@@ -526,6 +556,7 @@ impl FdTable {
         let cap = (2 * connections).next_power_of_two().max(2);
         Self {
             keys: vec![NO_FD; cap].into_boxed_slice(),
+            slots: vec![0; cap].into_boxed_slice(),
             mask: cap - 1,
         }
     }
@@ -546,12 +577,13 @@ impl FdTable {
         None
     }
 
-    fn insert(&mut self, fd: std::os::fd::RawFd) {
+    fn insert(&mut self, fd: std::os::fd::RawFd, slot: u32) {
         let mut i = self.home(fd);
         for _ in 0..self.keys.len() {
-            match self.keys.get_mut(i) {
-                Some(k) if *k == NO_FD || *k == fd => {
+            match (self.keys.get_mut(i), self.slots.get_mut(i)) {
+                (Some(k), Some(v)) if *k == NO_FD || *k == fd => {
                     *k = fd;
+                    *v = slot;
                     return;
                 }
                 _ => i = (i + 1) & self.mask,
@@ -583,8 +615,10 @@ impl FdTable {
                 hole < home || home <= j
             };
             if !stays {
-                if let Some(h) = self.keys.get_mut(hole) {
+                let v = self.slots.get(j).copied().unwrap_or(0);
+                if let (Some(h), Some(hv)) = (self.keys.get_mut(hole), self.slots.get_mut(hole)) {
                     *h = k;
+                    *hv = v;
                 }
                 hole = j;
             }
@@ -594,9 +628,10 @@ impl FdTable {
         }
     }
 
+    /// The slot of the registered connection on `fd`, if there is one.
     #[cfg(feature = "standard")]
-    fn contains(&self, fd: std::os::fd::RawFd) -> bool {
-        self.find(fd).is_some()
+    fn slot(&self, fd: std::os::fd::RawFd) -> Option<u32> {
+        self.slots.get(self.find(fd)?).copied()
     }
 }
 
@@ -693,14 +728,15 @@ struct State {
     kernel_owned: u32,
     /// How many slots have `rearm` set.
     rearm_pending: u32,
-    /// How many live slots have bytes staged and not yet read. A `standard`
-    /// wait must not sleep while any does: those bytes are invisible to the
-    /// kernel, so nothing would wake it for them.
-    staged_slots: u32,
     fds: FdTable,
     #[cfg(feature = "standard")]
     polls: Polls,
     unarmed: u64,
+    /// Reaps that found the kernel's CQ-overflow flag raised.
+    cq_overflow_seen: u64,
+    /// The kernel's own count of completions it dropped.
+    kernel_overflow: u32,
+    unisolated: bool,
     arm: UringArm,
     cqes: u64,
     bytes: u64,
@@ -731,11 +767,13 @@ impl State {
             free_len: connections,
             kernel_owned: 0,
             rearm_pending: 0,
-            staged_slots: 0,
             fds: FdTable::new(connections),
             #[cfg(feature = "standard")]
             polls: Polls::new(2 * (u32::from(config.connections) + EXTRA_SOURCES)),
             unarmed: 0,
+            cq_overflow_seen: 0,
+            kernel_overflow: 0,
+            unisolated: false,
             arm,
             cqes: 0,
             bytes: 0,
@@ -756,6 +794,8 @@ impl State {
             stale: self.stale,
             enter_errors: self.enter_errors,
             unarmed: self.unarmed,
+            cq_overflow: self.cq_overflow_seen + self.kernel_overflow as u64,
+            unisolated: self.unisolated,
         }
     }
 
@@ -852,7 +892,6 @@ impl State {
         s.tail = bid;
         if last == NIL {
             s.head = bid;
-            self.staged_slots += 1;
         } else if let Some(n) = self.next.get_mut(usize::from(last)) {
             *n = bid;
         }
@@ -953,9 +992,6 @@ impl State {
                 self.provide(done);
             }
         }
-        if s.head != NIL && head == NIL {
-            self.staged_slots = self.staged_slots.saturating_sub(1);
-        }
         if let Some(s) = self.slots.get_mut(slot) {
             s.head = head;
             s.tail = tail;
@@ -979,7 +1015,7 @@ impl State {
             ..Slot::FREE
         };
         let generation = s.generation;
-        self.fds.insert(fd);
+        self.fds.insert(fd, slot);
         Some((slot, generation))
     }
 
@@ -998,9 +1034,6 @@ impl State {
         }
         if s.rearm {
             self.rearm_pending = self.rearm_pending.saturating_sub(1);
-        }
-        if s.head != NIL {
-            self.staged_slots = self.staged_slots.saturating_sub(1);
         }
         if s.live {
             self.fds.remove(s.fd);
@@ -1277,8 +1310,13 @@ impl Inner {
 
     /// Move every posted completion to where it belongs.
     fn drain(&mut self) {
+        if self.ring.submission().cq_overflow() {
+            self.state.cq_overflow_seen += 1;
+        }
         let Self { ring, state } = self;
-        for cqe in ring.completion() {
+        let cq = ring.completion();
+        state.kernel_overflow = cq.overflow();
+        for cqe in cq {
             state.complete(cqe.user_data(), cqe.result(), cqe.flags());
         }
     }
@@ -1297,9 +1335,23 @@ impl Inner {
     fn reap_standard(&mut self, interests: &[Interest], timeout_ms: u32) {
         self.rearm();
         self.state.polls.armed_len = 0;
+        // *(ADR-0190 R3)* Bytes already staged for a connection **in this
+        // turn's list** are ready, and the kernel cannot see them: the wait is
+        // skipped. A connection that is not listed — parked by
+        // `Recovery::ready`, say — is not being read, and its bytes must not
+        // turn this wait into a spin.
+        let mut listed_ready = false;
         for i in interests {
             let fd = i.source.as_raw_fd();
-            let events = match (self.state.fds.contains(fd), i.writable) {
+            let connection = self.state.fds.slot(fd);
+            if let Some(slot) = connection {
+                listed_ready |= self
+                    .state
+                    .slots
+                    .get(slot as usize)
+                    .is_some_and(|s| s.head != NIL);
+            }
+            let events = match (connection.is_some(), i.writable) {
                 (true, false) => continue,
                 (true, true) => libc::POLLOUT,
                 (false, false) => libc::POLLIN,
@@ -1307,7 +1359,7 @@ impl Inner {
             };
             self.arm_poll(fd, events as u32);
         }
-        let min_complete = u32::from(self.state.staged_slots == 0);
+        let min_complete = u32::from(!listed_ready);
         let n = self.ring.submission().len() as u32;
         self.enter_waiting(n, min_complete, timeout_ms);
         self.drain();
@@ -1389,12 +1441,21 @@ impl Uring {
         let setup = match arm {
             HftArm::Enter => Setup::Enter,
             #[cfg(feature = "affinity")]
-            HftArm::Sqpoll { core } => Setup::Sqpoll(
-                u32::try_from(core.0)
+            HftArm::Sqpoll { pin } => Setup::Sqpoll(
+                u32::try_from(pin.core().0)
                     .map_err(|_| UringRefused::Other(io::ErrorKind::InvalidInput))?,
             ),
         };
-        let inner = Rc::new(RefCell::new(Inner::new(config, setup)?));
+        #[cfg_attr(
+            not(feature = "affinity"),
+            expect(unused_mut, reason = "set only for SQPOLL")
+        )]
+        let mut inner = Inner::new(config, setup)?;
+        #[cfg(feature = "affinity")]
+        if let HftArm::Sqpoll { pin } = arm {
+            inner.state.unisolated = pin.is_unisolated_allowed();
+        }
+        let inner = Rc::new(RefCell::new(inner));
         Ok((
             Self {
                 inner: Rc::clone(&inner),
@@ -1476,6 +1537,8 @@ impl Uring {
                 stale: 0,
                 enter_errors: 0,
                 unarmed: 0,
+                cq_overflow: 0,
+                unisolated: false,
             },
             |i| i.state.report(),
         )
@@ -1561,6 +1624,10 @@ pub struct UringTransport {
 impl Transport for UringTransport {
     const POLLABLE: bool = true;
     const NEEDS_REAPER: bool = true;
+
+    fn carrier(&self) -> crate::transport::Carrier {
+        crate::transport::Carrier::Uring
+    }
 
     fn recv(&mut self, buf: &mut [u8]) -> Io {
         if buf.is_empty() {

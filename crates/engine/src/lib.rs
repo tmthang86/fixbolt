@@ -843,6 +843,22 @@ where
             .map(|c| c.transport.tls_mode())
     }
 
+    /// What carries connection `id`'s received bytes, **as its transport
+    /// reports it**, or `None` if this engine holds no connection by that id.
+    ///
+    /// `[2026-09-24]` phase 4 row 5 (ADR-0190), the shape of
+    /// [`Self::tls_mode`]: `tools/w2w` prints it as its `transport:` line, so
+    /// an arm labelled `uring` is one whose engine said so after the logon —
+    /// never one whose flag said so. A linear search, for a caller that asks
+    /// once per connection.
+    #[must_use]
+    pub fn carrier(&self, id: ConnId) -> Option<crate::transport::Carrier> {
+        self.conns
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.transport.carrier())
+    }
+
     /// Tell this engine how many sockets the pre-session stage in front of it
     /// let go because their first message could not be framed.
     ///
@@ -3179,8 +3195,11 @@ pub fn serve_hft_pinned<A: Application, L: MessageLog>(
 /// # The order, and why it is this one
 ///
 /// 1. The registry is checked ([`ServeError::NoCounterparties`]).
-/// 2. Under `HftArm::Sqpoll` (with the `affinity` feature), the SQ thread's
-///    core goes through `affinity::CorePin::validate` — every rule
+/// 2. The ring must hold `capacity + limits.pending()` connections, or this
+///    is `ServeError::Uring(TooSmall)` (ADR-0190 R4). Under `HftArm::Sqpoll`
+///    (with the `affinity` feature), the SQ thread's `CorePin` goes through
+///    `affinity::CorePin::validate` — its `allow_unisolated` waiver included,
+///    every rule
 ///    `affinity::Topology` has, the check `serve_hft_pinned` makes for the
 ///    engine's own core (`ServeError::Affinity`).
 /// 3. **The ring is made here, on the calling thread** — it is
@@ -3195,8 +3214,8 @@ pub fn serve_hft_pinned<A: Application, L: MessageLog>(
 ///
 /// Sockets are registered **when they are accepted**, before their `Logon`,
 /// so `ring.connections()` must cover `capacity` **plus**
-/// `limits.pending()`. A socket that finds no free slot is dropped — the
-/// answer the loop already gives a connection it has no room for.
+/// `limits.pending()` — **checked here, before anything is bound**, as
+/// `UringRefused::TooSmall { have, need }` (ADR-0190 R4).
 ///
 /// # Errors
 ///
@@ -3222,11 +3241,10 @@ pub fn serve_hft_uring<A: Application, L: MessageLog>(
 ) -> Result<Shutdown, ServeError> {
     use crate::transport::uring::{Uring, UringSpin, UringTransport};
     let cfg = default_config(&table)?;
+    ring_holds(&ring, capacity, &limits)?;
     #[cfg(feature = "affinity")]
-    if let crate::transport::uring::HftArm::Sqpoll { core } = arm {
-        affinity::CorePin::to(core)
-            .validate()
-            .map_err(ServeError::Affinity)?;
+    if let crate::transport::uring::HftArm::Sqpoll { pin } = arm {
+        pin.validate().map_err(ServeError::Affinity)?;
     }
     let (uring, spin) = Uring::hft(ring, arm).map_err(ServeError::Uring)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
@@ -3248,6 +3266,26 @@ pub fn serve_hft_uring<A: Application, L: MessageLog>(
     )
 }
 
+/// *(ADR-0190 R4)* The ring must hold every socket the serving loop can hold
+/// at once: they are registered when accepted, before their `Logon`, so the
+/// pre-session limit counts as well as the engine's capacity. Checked before
+/// the ring is made and before anything is bound.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+fn ring_holds(
+    ring: &crate::transport::uring::UringConfig,
+    capacity: usize,
+    limits: &presession::Limits,
+) -> Result<(), ServeError> {
+    let have = usize::from(ring.connections());
+    let need = capacity.saturating_add(limits.pending());
+    if have < need {
+        return Err(ServeError::Uring(
+            crate::transport::uring::UringRefused::TooSmall { have, need },
+        ));
+    }
+    Ok(())
+}
+
 /// As [`serve`], **receiving through `io_uring`** — `standard` mode, phase 4
 /// row 5, [ADR-0190] decision 5. Linux, behind `io-uring` and `standard`.
 ///
@@ -3257,9 +3295,10 @@ pub fn serve_hft_uring<A: Application, L: MessageLog>(
 /// `POLL_ADD` on the listener or the dispatch waker. It gives the core back
 /// exactly as [`serve`] does. **There is no SQPOLL here, by type.**
 ///
-/// Same order as [`serve_hft_uring`]: registry, ring on this thread
-/// ([`ServeError::Uring`], before any socket, no fallback), then bind. Same
-/// sizing rule: `ring.connections()` covers `capacity + limits.pending()`.
+/// Same order as [`serve_hft_uring`]: registry, ring size
+/// (`TooSmall` unless `ring.connections()` covers `capacity + limits.pending()`),
+/// ring on this thread ([`ServeError::Uring`], before any socket, no
+/// fallback), then bind.
 ///
 /// # Errors
 ///
@@ -3281,6 +3320,7 @@ pub fn serve_uring<A: Application, L: MessageLog>(
 ) -> Result<Shutdown, ServeError> {
     use crate::transport::uring::{Uring, UringBlock, UringTransport};
     let cfg = default_config(&table)?;
+    ring_holds(&ring, capacity, &limits)?;
     let (uring, block) = Uring::standard(ring).map_err(ServeError::Uring)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
     let mut engine: AcceptorEngineOver<UringTransport, A, UringBlock> = Engine::new(

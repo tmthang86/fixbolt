@@ -172,6 +172,27 @@ impl TlsMode {
     }
 }
 
+/// What carries a connection's received bytes to its `recv` — the kernel's
+/// `read(2)`, or completions reaped from an `io_uring`.
+///
+/// `[2026-09-24]` phase 4 row 5, ADR-0190. **Reported, not inferred**, for the
+/// reason [`TlsMode`] is: a figure measured over one receive path and labelled
+/// with the other is about a different code path. `tools/w2w` prints it as its
+/// `transport:` line, read from [`crate::Engine::carrier`] after the logon,
+/// never from its own flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Carrier {
+    /// `recv` is a non-blocking `read(2)` on a kernel TCP socket —
+    /// [`TcpTransport`], and the TLS transport over it.
+    Kernel,
+    /// `recv` copies completions an idle strategy reaped from an `io_uring` —
+    /// `uring::UringTransport`, behind the `io-uring` feature.
+    Uring,
+    /// Anything else — [`Loopback`], or a transport outside this crate that
+    /// says nothing. The default.
+    Other,
+}
+
 /// One connection's bytes.
 pub trait Transport {
     /// Whether this transport can be waited on at all.
@@ -245,6 +266,16 @@ pub trait Transport {
         false
     }
 
+    /// What carries this connection's received bytes — [`Carrier`].
+    ///
+    /// Defaulted to [`Carrier::Other`], [ADR-0060] decision 3's shape: every
+    /// transport that says nothing keeps compiling and claims nothing.
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    fn carrier(&self) -> Carrier {
+        Carrier::Other
+    }
+
     /// The handle to wait on. `Some` whenever [`Self::POLLABLE`].
     ///
     /// Has a default body so that a transport somebody else wrote keeps
@@ -289,6 +320,10 @@ impl TcpTransport {
 
 impl Transport for TcpTransport {
     const POLLABLE: bool = cfg!(unix);
+
+    fn carrier(&self) -> Carrier {
+        Carrier::Kernel
+    }
 
     fn source(&self) -> Option<Source> {
         #[cfg(unix)]

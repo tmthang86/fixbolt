@@ -37,6 +37,14 @@ use fixbolt_engine::transport::uring::{
 use fixbolt_engine::transport::{Io, TcpTransport, Transport};
 use fixbolt_engine::wait::Waiting;
 
+/// Every ring ends a test with nothing it could not arm and nothing the kernel
+/// could not post (ADR-0190 R3, R4): both are sized never to happen.
+fn clean(uring: &Uring) {
+    let r = uring.report();
+    assert_eq!(r.unarmed, 0, "a source went unarmed: {r:?}");
+    assert_eq!(r.cq_overflow, 0, "the completion queue overflowed: {r:?}");
+}
+
 /// See the module comment: shared by every test, exclusive for the two that
 /// read process-wide facts.
 static EXCLUSIVE: RwLock<()> = RwLock::new(());
@@ -154,6 +162,7 @@ fn a_message_arrives_through_the_ring() {
     );
     assert!(r.bytes >= msg.len() as u64, "{r:?}");
     assert_eq!(r.arm, UringArm::Enter, "HftArm::Enter was asked for");
+    clean(&uring);
 }
 
 /// Two buffers against a 1 MiB burst: the multishot `recv` runs dry, ends on
@@ -193,6 +202,7 @@ fn a_ring_that_runs_out_of_buffers_rearms_and_loses_nothing() {
         "the buffers never ran out, so re-arming was not exercised: {r:?}"
     );
     assert!(r.rearms > 0, "ENOBUFS was seen and nothing re-armed: {r:?}");
+    clean(&uring);
 }
 
 /// Sixty-four connections, random chunk sizes, random interleaving, sixteen
@@ -278,6 +288,7 @@ fn sixty_four_connections_interleaved_are_byte_exact() {
         );
     }
     assert!(uring.report().cqes > 0);
+    clean(&uring);
 }
 
 /// A completion that arrives for a connection already dropped reaches nobody —
@@ -319,6 +330,7 @@ fn a_late_completion_for_a_dropped_connection_reaches_nobody() {
          completion to misdeliver: {r:?}"
     );
     drop(ca);
+    clean(&uring);
 }
 
 /// Both directions of a close: a peer that hangs up is `Io::Closed`, and a
@@ -354,6 +366,7 @@ fn a_closed_connection_is_seen_as_closed_and_its_peer_sees_fin() {
         Ok(0) => {}
         other => panic!("the peer must read end-of-stream within 1 s, got {other:?}"),
     }
+    clean(&uring);
 }
 
 /// `VmRSS` of this process.
@@ -380,7 +393,7 @@ fn buffers_are_resident_before_the_first_message() {
     let _g = exclusive();
     let cfg = config(1024, 64 * 1024, 1);
     let before = rss_bytes();
-    let (_uring, _spin) = hft(cfg);
+    let (uring, _spin) = hft(cfg);
     let after = rss_bytes();
     let grew = after.saturating_sub(before);
     assert!(
@@ -389,6 +402,7 @@ fn buffers_are_resident_before_the_first_message() {
          buffers: they are not all resident, and the first message would fault",
         cfg.buffer_bytes()
     );
+    clean(&uring);
 }
 
 /// After the ring is dropped the kernel writes nothing into what was its
@@ -419,6 +433,7 @@ fn unregistered_buffers_are_not_written_after_the_ring_is_dropped() {
         len as u64 >= cfg.buffer_bytes(),
         "the region must cover every buffer"
     );
+    clean(&uring);
     drop(t);
     drop(spin);
     drop(uring);
@@ -589,6 +604,7 @@ fn standard_is_woken_by_the_data_not_the_timeout() {
         "answered after {took:?} against a 10 s timeout: the wait ended on the clock, \
          not on the data"
     );
+    clean(&uring);
 }
 
 /// A connection arriving at the listener ends the wait — **twice, each time on
@@ -599,7 +615,7 @@ fn standard_is_woken_by_the_data_not_the_timeout() {
 #[test]
 fn standard_is_woken_by_a_connect() {
     let _g = shared();
-    let (_uring, mut block) = standard(config(8, 4096, 2), 10_000);
+    let (uring, mut block) = standard(config(8, 4096, 2), 10_000);
     for round in 0..2 {
         let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
         let addr = acceptor.local_addr().expect("bound");
@@ -621,6 +637,7 @@ fn standard_is_woken_by_a_connect() {
             "round {round}: the connection that woke it"
         );
     }
+    clean(&uring);
 }
 
 /// The dispatch waker ends the wait: what an application thread does after it
@@ -629,7 +646,7 @@ fn standard_is_woken_by_a_connect() {
 #[test]
 fn standard_is_woken_by_the_waker() {
     let _g = shared();
-    let (_uring, block) = standard(config(8, 4096, 2), 2_000);
+    let (uring, block) = standard(config(8, 4096, 2), 2_000);
     let (waker, handle) = fixbolt_engine::waker::Waker::new().expect("a pipe");
     let mut e = engine::blocking(block).with_waker(waker);
 
@@ -646,6 +663,7 @@ fn standard_is_woken_by_the_waker() {
         "a wake after 50 ms ended a 2 s wait only after {took:?}: the engine slept \
          through it and woke on the clock"
     );
+    clean(&uring);
 }
 
 /// Nothing to wake it: the wait ends on its own timeout, which is what
@@ -654,7 +672,7 @@ fn standard_is_woken_by_the_waker() {
 #[test]
 fn standard_wakes_on_its_own_timeout_to_tick() {
     let _g = shared();
-    let (_uring, mut block) = standard(config(8, 4096, 1), 50);
+    let (uring, mut block) = standard(config(8, 4096, 1), 50);
     let before = Instant::now();
     block.idle(&[]);
     let took = before.elapsed();
@@ -666,6 +684,7 @@ fn standard_wakes_on_its_own_timeout_to_tick() {
         took <= Duration::from_millis(500),
         "returned after {took:?} against a 50 ms timeout: the tick is late"
     );
+    clean(&uring);
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +858,118 @@ fn serve_hft_uring_under_seccomp_binds_no_socket() {
             "expected Uring(Blocked) before any bind, got {other:?}: a door that binds \
              first answers Io, and one that falls back to read(2) serves"
         ),
+    }
+    drop(held);
+}
+
+/// *(ADR-0190 R3)* Bytes staged for a connection that is **not in this turn's
+/// list** — one parked by `Recovery::ready`, say — do not stop `standard` from
+/// waiting. With a ring-wide count they would, and the engine would spin at
+/// `min_complete = 0` until the park ended. Reversal R11 (the ring-wide count)
+/// turns it red.
+#[cfg(feature = "standard")]
+#[test]
+fn standard_does_not_spin_on_bytes_nobody_asked_for() {
+    let _g = shared();
+    let (uring, mut block) = standard(config(8, 4096, 2), 50);
+    let (mut client, server) = pair();
+    let t = uring.register(server).expect("a free slot");
+    let listed = [Interest::readable(t.source().expect("a descriptor"))];
+    client.write_all(b"staged, never read").expect("write");
+    std::thread::sleep(Duration::from_millis(20));
+    // Listed: the bytes are reaped into its staging list, and not read.
+    let start = Instant::now();
+    while uring.report().bytes == 0 && start.elapsed() < Duration::from_secs(1) {
+        block.idle(&listed);
+    }
+    assert!(uring.report().bytes > 0, "the bytes were never staged");
+
+    // Not listed: nothing anybody asked for is ready, so it must wait.
+    let before = Instant::now();
+    block.idle(&[]);
+    let took = before.elapsed();
+    assert!(
+        took >= Duration::from_millis(40),
+        "returned after {took:?} against a 50 ms timeout: bytes staged for a \
+         connection nobody listed kept `standard` from waiting — a spin"
+    );
+    clean(&uring);
+    drop(t);
+}
+
+/// *(ADR-0190 R2)* A listener closed and replaced **between two turns** by one
+/// the kernel gives the same descriptor number still wakes `standard` on a
+/// connect. A poll kept armed across turns, keyed by the number, would hold
+/// the old file and leave the new listener to the timeout. Reversal R12 turns
+/// it red. Exclusive, so no other test takes the freed number first.
+#[cfg(feature = "standard")]
+#[test]
+fn a_listener_replaced_between_turns_still_wakes_standard() {
+    use std::os::fd::AsRawFd;
+    let _g = exclusive();
+    let (uring, mut block) = standard(config(8, 4096, 2), 50);
+
+    let old = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    old.set_nonblocking(true).expect("non-blocking");
+    let old_fd = old.as_raw_fd();
+    // Turn one: nothing arrives, the wait runs out its 50 ms.
+    block.idle(&[Interest::readable(
+        fixbolt_engine::transport::Source::from_raw_fd(old_fd),
+    )]);
+    drop(old);
+
+    let new = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    new.set_nonblocking(true).expect("non-blocking");
+    assert_eq!(
+        new.as_raw_fd(),
+        old_fd,
+        "the new listener must reuse the old number, or this run proves nothing"
+    );
+    let addr = new.local_addr().expect("bound");
+    let mut block = block.with_timeout_ms(10_000);
+    let dialer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        TcpStream::connect(addr).expect("connect")
+    });
+    let before = Instant::now();
+    block.idle(&[Interest::readable(
+        fixbolt_engine::transport::Source::from_raw_fd(new.as_raw_fd()),
+    )]);
+    let took = before.elapsed();
+    let _client = dialer.join().expect("the dialer finished");
+    assert!(
+        took < Duration::from_secs(1),
+        "a connect after 100 ms to a listener that reused a closed one's number \
+         woke a 10 s wait only after {took:?}"
+    );
+    clean(&uring);
+}
+
+/// *(ADR-0190 R4)* `serve_uring` refuses a ring with fewer slots than
+/// capacity + pending **before binding** — the port given is one this test
+/// already holds, so a door that did not check would answer `Io`. Reversal
+/// R13 (no check) turns it red.
+#[cfg(feature = "standard")]
+#[test]
+fn serve_uring_refuses_a_ring_smaller_than_capacity_plus_pending() {
+    use fixbolt_engine::presession::{Limits, Table};
+    use fixbolt_engine::{Config, ServeError};
+    let _g = shared();
+    let held = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = held.local_addr().expect("bound").to_string();
+    let got = fixbolt_engine::serve_uring(
+        &addr,
+        Table::with_capacity(1).serving(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+        engine::Silent,
+        4,
+        Limits::new(8, 30_000).expect("both above zero"),
+        fixbolt_engine::msglog::NoLog,
+        fixbolt_engine::observe::Handles::new(),
+        config(8, 4096, 8),
+    );
+    match got {
+        Err(ServeError::Uring(UringRefused::TooSmall { have: 8, need: 12 })) => {}
+        other => panic!("expected TooSmall {{ have: 8, need: 12 }} before any bind, got {other:?}"),
     }
     drop(held);
 }

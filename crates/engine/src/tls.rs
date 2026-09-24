@@ -1514,6 +1514,13 @@ mod transport_impl {
             self.mode()
         }
 
+        /// Received bytes come from `read(2)` on the kernel TCP socket
+        /// underneath, whichever [`TlsMode`] decrypts them — so a TLS arm of
+        /// `tools/w2w` reads `transport: kernel` (ADR-0190, row 5).
+        fn carrier(&self) -> crate::transport::Carrier {
+            crate::transport::Carrier::Kernel
+        }
+
         /// [ADR-0151] decision 3: `true` once the handshake ended in
         /// [`Step::Refused`], and never for a peer that left or a socket that
         /// failed — decision 5.

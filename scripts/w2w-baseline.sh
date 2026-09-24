@@ -212,7 +212,7 @@ dispersion() { # dispersion <label> <v...>
 # Pure, so `scripts/check-w2w-baseline-summary.sh` calls it directly.
 extra_flag_refusal() { # extra_flag_refusal <one W2W_EXTRA token>
   case "$1" in
-    --journal=*|--log=*)
+    --journal=*|--log=*|--transport=*|--uring-arm=*|--sqpoll-core=*)
       printf "W2W_EXTRA token '%s': tools/w2w reads %s only as a word of its own and would ignore this spelling, and the identity check would never run — write it as two words, '%s %s'" \
         "$1" "${1%%=*}" "${1%%=*}" "${1#*=}"
       ;;
@@ -459,6 +459,22 @@ extra_val() { # extra_val <flag> <extra args...>
 }
 JOURNAL_WANT=$(extra_val --journal "${EXTRA_ARGS[@]}")
 LOG_WANT=$(extra_val --log "${EXTRA_ARGS[@]}")
+# Phase 4 row 5 (ADR-0190): the receive path, read back like `journal:`.
+# Absent is the kernel arm, and the kernel arm must SAY so — a run with no
+# `transport:` line at all is a binary that predates the check, not a pass.
+TRANSPORT_WANT=$(extra_val --transport "${EXTRA_ARGS[@]}")
+
+# Whether one run's output carries the `transport:` line W2W_EXTRA asked for.
+# `uring` must also show the ring reaped something (`cqes=` above zero): a
+# ring that carried nothing is the kernel arm with a label on it. Pure, so
+# `scripts/check-w2w-baseline-summary.sh` can call it directly.
+transport_seen() { # transport_seen <want: kernel|uring> <w2w output>
+  if [ "$1" = uring ]; then
+    printf '%s\n' "$2" | grep -qE '^transport: uring .*cqes=[1-9][0-9]*( |$)'
+  else
+    printf '%s\n' "$2" | grep -qx 'transport: kernel'
+  fi
+}
 
 # The machine block travels with the figures, read off the box rather than
 # asserted — CLAUDE.md §2 non-negotiable 10. Its verdict is captured because
@@ -857,6 +873,11 @@ for arm in $ARMS; do
           exit 1
         }
       fi
+      transport_seen "${TRANSPORT_WANT:-kernel}" "$lout" || {
+        echo "$lout"
+        echo "FAIL: $mode:$path:$tls:$interval — asked for --transport ${TRANSPORT_WANT:-kernel} (W2W_EXTRA) but the engine half printed no matching 'transport:' line (uring also needs cqes above 0)"
+        exit 1
+      }
       echo "$lout" | grep -qE '^ *allocs +0 ' || { echo "$lout"; echo "allocs != 0 (engine half)"; exit 1; }
       echo "$cout" | grep -qE '^ *allocs +0 ' || { echo "$cout"; echo "allocs != 0 (generator half)"; exit 1; }
       if [ "$rc" -ne 0 ] || [ "$lrc" -ne 0 ]; then
@@ -1020,6 +1041,11 @@ for arm in $ARMS; do
         exit 1
       }
     fi
+    transport_seen "${TRANSPORT_WANT:-kernel}" "$out" || {
+      echo "$out"
+      echo "FAIL: $mode:$path:$tls — asked for --transport ${TRANSPORT_WANT:-kernel} (W2W_EXTRA) but the run printed no matching 'transport:' line (uring also needs cqes above 0)"
+      exit 1
+    }
     # The status, after every identity check and before the figures: a run
     # that ended any other way than by printing them is not a measurement, and
     # the checks above get to name the cause first when they can.
