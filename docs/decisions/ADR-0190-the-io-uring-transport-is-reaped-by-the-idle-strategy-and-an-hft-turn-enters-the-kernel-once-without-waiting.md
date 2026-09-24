@@ -3,7 +3,11 @@
 - **Status**: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18;
   **revised in place 2026-09-24** (Revision 1, R1–R4, and Revision 2, R5, at the end of this
   ADR — decisions 4, 5 and 7 changed while it was still Proposed, after steps 1–4 and 6 were
-  built). Written by the architect (Opus) for phase 4 row 5
+  built). **Decision 2's shared buffer pool is superseded by
+  [ADR-0192](ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)**
+  (one provided-buffer ring per connection; Revision 3 below). Decision 10's arm table is
+  re-spelled to the row 6–7 boot procedure without changing the kill line (Revision 3, R6).
+  Written by the architect (Opus) for phase 4 row 5
   ([plan](../plans/2026-09-24-p4-io-uring-transport.md)).
 - **Date**: 2026-09-24
 - **Deciders**: proposed by the architect; accepted by the owner or the manager.
@@ -259,10 +263,11 @@ procedure, two procedures ≥ 30 min apart with the arm order reversed in the se
 
 | Arm | Command | Judged |
 |---|---|---|
-| **K** | `scripts/w2w-baseline.sh`, `ARMS="hft:admin"`, `W2W_EXTRA="--wire-timestamps --nic enp9s0 --observer-core <c>"`, Mac mini generator, interval 0, 20 000 requests × 10 runs | control |
-| **U** | the same with `--transport uring` added to `W2W_EXTRA` | **yes** |
-| **S** | the same with `--transport uring --uring-arm sqpoll --sqpoll-core <isolated core>` | reported beside, **cannot keep the item** |
-| **idle** | `cargo bench -p fixbolt-engine --features io-uring --bench turn` pinned to the engine core, cases *idle loop, 16 idle sessions, kernel* and *…, uring* (N = 1, 16, 64 printed) | **yes**, at N = 16 |
+| **K** | `scripts/w2w-baseline.sh`, `ARMS="hft:admin"`, *(R6)* wire stamps turned on **only** by `WIRE_NIC=enp9s0 OBSERVER_CORE=7` (not `W2W_EXTRA` flags), Mac mini generator, interval 0, 20 000 requests × 10 runs | control |
+| **U** | the same, *(R6)* the same binary, with `W2W_EXTRA="--transport uring"` | **yes** |
+| *(R6)* **U′** | U with `OBSERVER_CORE=5` | control for S only |
+| **S** | U′ with `--uring-arm sqpoll --sqpoll-core 7` added to `W2W_EXTRA` *(R6: core 7 is the only isolated core left free — 6 is the engine's, 14/15 are its SMT siblings and are offline in the boot)* | reported beside U′, **cannot keep the item** |
+| **idle** | `cargo bench -p fixbolt-engine --features io-uring --bench turn` pinned to the engine core, cases *idle loop, 16 idle sessions, kernel* and *…, uring* (N = 1, 16, 64 printed), *(R6)* both cases in **one** binary and the bench run **in each procedure** | **yes**, at N = 16 |
 | **std** | engine `--listen --mode standard [--transport uring]`, generator table *as the counterparty sees it* from the Mac | decides the `standard` half only |
 | **density** | `cargo bench -p fixbolt-engine --features io-uring --bench density` | recorded, not judged |
 
@@ -376,3 +381,23 @@ edited in place and marked *(R1)*–*(R4)*.
   syscall per `standard` idle turn that had an unfired poll** — which is most idle turns, since the
   listener and the waker usually do not fire. `hft` is untouched (it arms no polls). Written up at
   [an-io-uring-cancel-completion-satisfies-the-next-wait](../reference/an-io-uring-cancel-completion-satisfies-the-next-wait.md).
+
+## Revision 3 — 2026-09-24 (after acceptance: one supersession, one re-spelling)
+
+- **L3 — the shared buffer pool.** The senior review of PR #110 found that one unread connection
+  can hold every buffer of the shared provided-buffer pool and starve the others (*"B got 0 of 10
+  bytes in 1 s … enobufs: 2, rearms: 0"*). Changing decision 2 from one pool per `Uring` to one
+  ring per connection **is a change of substance to an accepted decision**, so it is not edited
+  here: [ADR-0192](ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)
+  supersedes that bullet, and decision 2's text above stands as the record of what was first
+  decided. Everything else in decision 2 (multishot, no registered buffers, send stays `write(2)`,
+  generations) is unchanged.
+- **R6 — decision 10's arm table re-spelled, kill line unchanged.** The row 6–7 boot plan
+  (`docs/plans/2026-09-24-p4-bypass-and-s9-boot.md`, *Sửa 3*) turns on NIC stamps only through
+  `w2w-baseline.sh`'s `WIRE_NIC`/`OBSERVER_CORE` (the only path that gives the listen half
+  `--warmup`, fails on `hw-rx-missing`, disqualifies on `hw-tx-missing` > 0.1 % and prints the
+  `wire p50/p99/p99.9` lines `compare-w2w-procedures.sh` reads); K and U come from one binary;
+  the SQ thread runs on core 7 with the observer moved to core 5, so a U′ arm (U with the observer
+  on 5) is added and S is compared with U′, one variable apart. The *Kept* / *S cannot keep* /
+  *standard half* / *Killed* rules are word for word as before; this is how they are measured, not
+  what they say.

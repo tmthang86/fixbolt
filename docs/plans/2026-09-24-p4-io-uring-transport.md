@@ -342,10 +342,11 @@ arm đảo ngược ở procedure hai** (ADR-0068):
 
 | Arm | Lệnh | Vai trò |
 |---|---|---|
-| **K** | `scripts/w2w-baseline.sh`, `ARMS="hft:admin"`, `W2W_EXTRA="--wire-timestamps --nic enp9s0 --observer-core <c>"`, bên phát là Mac mini, interval 0, 20 000 request × 10 lần | đối chứng |
-| **U** | như K, thêm `--transport uring` vào `W2W_EXTRA` | **được xét** |
-| **S** | như U, thêm `--uring-arm sqpoll --sqpoll-core <lõi cô lập>` | ghi cạnh, **một mình không giữ được hạng mục** |
-| **idle** | `cargo bench -p fixbolt-engine --features io-uring --bench turn`, ghim vào lõi engine; *idle loop, 16 idle sessions, kernel* với *…, uring* (in cả N = 1, 64) | **được xét** ở N = 16 |
+| **K** | `scripts/w2w-baseline.sh`, `ARMS="hft:admin"`, dấu NIC bật **chỉ** bằng `WIRE_NIC=enp9s0 OBSERVER_CORE=7` (không bằng cờ trong `W2W_EXTRA`), bên phát là Mac mini, interval 0, 20 000 request × 10 lần | đối chứng |
+| **U** | như K, **cùng binary** (build `io-uring`), `W2W_EXTRA="--transport uring"` | **được xét** |
+| **U′** | U với `OBSERVER_CORE=5` | đối chứng riêng cho S |
+| **S** | U′ thêm `--uring-arm sqpoll --sqpoll-core 7` vào `W2W_EXTRA` (lõi 7 là lõi cô lập duy nhất còn trống: 6 là lõi engine, 14/15 là anh em SMT của 6/7 và offline trong boot) | ghi cạnh U′, **một mình không giữ được hạng mục** |
+| **idle** | `cargo bench -p fixbolt-engine --features io-uring --bench turn`, ghim vào lõi engine; *idle loop, 16 idle sessions, kernel* với *…, uring* (in cả N = 1, 64), hai ca trong **một** binary, bench chạy **trong mỗi procedure** | **được xét** ở N = 16 |
 | **std** | engine `--listen --mode standard [--transport uring]`, bảng *as the counterparty sees it* đo từ Mac | chỉ quyết nửa `standard` |
 | **density** | `cargo bench -p fixbolt-engine --features io-uring --bench density` | ghi lại, không xét |
 
@@ -474,6 +475,42 @@ R1–R4). Tóm tắt:
   thêm khẳng định `unarmed=0` vào `check-standard-gives-the-core-back.sh`; test mới và R11–R13 ở
   *Cách kiểm chứng* mục 3 và 6. Sửa R3 và R4 đụng code đã commit ở bước 3–4
   (`src/transport/uring.rs`, `src/lib.rs`, `tests/uring.rs`) — làm ở đầu bước 5, test đỏ trước.
+
+## Sửa 2 — 2026-09-24
+
+Hai việc, sau khi ADR-0190 đã *Accepted*.
+
+**1. Phát hiện L3 (senior review PR #110): một kết nối không ai đọc giữ hết vùng đệm chung.**
+Probe của reviewer (4 vùng; A gửi 64 KiB không được đọc; B gửi 10 byte): *"B got 0 of 10 bytes in
+1 s (ended Idle); report … bytes: 16384, enobufs: 2, rearms: 0"*. Hôm nay chưa chạm tới được (hai
+điểm vào dùng `NoRecovery`, mỗi vòng đọc mọi kết nối), nhưng sẽ chạm tới ngay khi uring đi cùng
+`Recovery` (kết nối bị park không được đọc), và dưới tải dồn thì đã là ràng buộc độ trễ giữa các
+kết nối ngay hôm nay.
+
+**Quyết định: mỗi kết nối một buffer ring riêng**, đăng ký hết lúc tạo `Uring` —
+[ADR-0192](../decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md).
+Đây là đổi **nội dung** quyết định 2 của một ADR đã duyệt, nên là ADR mới thay đúng gạch đầu dòng
+đó; ADR-0190 chỉ ghi con trỏ (Revision 3). Loại: giới hạn số vùng mỗi kết nối trong vùng chung
+(giới hạn mềm, thêm SQE huỷ/nộp lại trên hot path); từ chối uring + `Recovery` rồi chỉ ghi giới hạn
+(để nợ lại cho tính năng sau). Mặc định: **không có giá trị ẩn**; `w2w` và ví dụ rustdoc dùng
+**8 × 4 096 byte mỗi kết nối** (gấp đôi `RX` mặc định), ghi ở `CONFIGURATION.md`. Giá: bộ nhớ theo
+số kết nối (32 KiB mỗi khe, 8 MiB ở 256 khe), in ra ở `UringReport::buffer_bytes`.
+
+**Senior developer phải dựng, trong PR này, trước khi merge** (ADR-0192 mục *What the senior
+developer builds*):
+
+| Việc | File | Gate |
+|---|---|---|
+| Test đỏ trước `a_connection_nobody_reads_cannot_starve_another` (4 vùng mỗi kết nối; A 64 KiB không đọc; B 10 byte phải tới đủ trong 1 s; chỉ khe của A có trong `enobufs_slots`) — câu FAIL mong đợi *"B got 0 of 10 bytes in 1 s"* | `crates/engine/tests/uring.rs` | `cargo test -p fixbolt-engine --features io-uring --test uring a_connection_nobody_reads` **đỏ**, trích nguyên văn |
+| Mỗi khe một buffer ring, `bgid` = chỉ số khe, đăng ký lúc tạo; `UringConfig::buffers` → `buffers_per_connection` (luỹ thừa 2, ≥ 2); nộp lại theo khe; sổ sở hữu và kiểm biên theo khe; `UringReport::{buffer_bytes, enobufs_slots}` | `crates/engine/src/transport/uring.rs`, `tools/w2w/src/main.rs` (8 × 4 096), chỗ dựng `UringConfig` trong test/bench | `cargo test -p fixbolt-engine --features io-uring` (mọi test uring, `wire` 59 / 59 cả hai mode); `cargo bench -p fixbolt-engine --features io-uring --bench alloc` (`uring-exchange 0`); clippy `-D warnings` với feature; ba script mode |
+| Đảo ngược: mọi khe dùng chung group 0 → test mới đỏ với đúng câu trên; khôi phục, xanh | như trên | trích đỏ rồi xanh |
+| Docs cùng commit: `CONFIGURATION.md` (trường mới, 8 × 4 096, bộ nhớ theo số kết nối), `GUIDE.md` (dòng về bộ nhớ), `docs/internals/engine.md`, `CHANGELOG.md`; ADR-0192 → `Accepted` | docs | `python3 scripts/check-links.py` |
+
+**2. Căn mục *Hàng 7 sẽ đo gì* theo plan hàng 6–7 (Sửa 3 của plan đó):** dấu NIC chỉ bật bằng
+`WIRE_NIC`/`OBSERVER_CORE`, không bằng cờ trong `W2W_EXTRA`; K và U cùng một binary; S chạy luồng
+SQ trên lõi 7 với observer chuyển sang lõi 5, thêm arm U′ (U với observer lõi 5) để S chỉ khác U′
+một biến; bench `turn` chạy trong mỗi procedure. **Vạch giữ/bỏ không đổi một chữ**; ADR-0190 ghi
+việc này là Revision 3, R6.
 
 ## Nhật ký giao hàng
 
