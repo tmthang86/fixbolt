@@ -1,8 +1,8 @@
 # ADR-0190 — The `io_uring` transport is reaped by the idle strategy, and an `hft` turn enters the kernel once without waiting
 
-- **Status**: Proposed — 2026-09-24; **revised in place 2026-09-24** (Revision 1, R1–R4, at the
-  end of this ADR — decisions 4, 5 and 7 changed while it was still Proposed, after steps 1–4 were
-  built). Written by the architect (Opus) for phase 4 row 5
+- **Status**: Proposed — 2026-09-24; **revised in place 2026-09-24** (Revision 1, R1–R4, and
+  Revision 2, R5, at the end of this ADR — decisions 4, 5 and 7 changed while it was still
+  Proposed, after steps 1–4 and 6 were built). Written by the architect (Opus) for phase 4 row 5
   ([plan](../plans/2026-09-24-p4-io-uring-transport.md)). Accepted with that plan, by the owner or
   by the manager under the owner's standing mandate.
 - **Date**: 2026-09-24
@@ -181,7 +181,9 @@ from a waiting one.
   ring does not already cover (the listener, the dispatch waker's pipe) and for every `writable`
   interest, each `user_data` carrying the wait's generation; right after the wait it queues an
   `ASYNC_CANCEL` by `user_data` for every one that did not fire, and a completion from an older
-  generation is discarded. Sources that are registered connections are covered by their multishot
+  generation is discarded. *(R5)* **The cancels are submitted and their completions reaped in the
+  same turn**, by one more `io_uring_enter(n, 0, GETEVENTS)` that does not wait; left in the CQ,
+  they satisfy the next wait's `min_complete = 1` at once and `standard` spins. Sources that are registered connections are covered by their multishot
   `recv` and skipped.
 - *(R3)* **It does not wait while the engine has bytes to read that the kernel can no longer
   see.** If a source **in this turn's readable interest list** has reaped bytes staged and unread,
@@ -332,8 +334,9 @@ edited in place and marked *(R1)*–*(R4)*.
   leaves the list, so the old poll — holding the old file — would stand in for the new one and the
   new listener would be woken only by the timeout. Arming per wait binds each poll to the file of
   that turn. No wake is lost at the boundary: a poll armed on an already-readable source completes
-  at once. Cost: two SQEs per extra source per idle turn (normally two sources), carried by the
-  same `io_uring_enter`, no extra syscall. Accepted.
+  at once. Cost: two SQEs per extra source per idle turn (normally two sources), ~~carried by the
+  same `io_uring_enter`, no extra syscall~~ **— corrected by R5: plus one non-waiting
+  `io_uring_enter` on every idle turn that had an unfired poll.** Accepted.
 - **R3 — `standard` does not wait while listed sources have staged bytes**, and unarmed sources are
   counted. Accepted, **narrowed**: the built version keys the decision on a ring-wide
   `staged_slots` count; it must key it on the staged bytes of sources in this turn's readable
@@ -353,3 +356,23 @@ edited in place and marked *(R1)*–*(R4)*.
   per writable interest; the CQ holds every buffer the ring can fill plus one SQ's worth of
   completions. Both are derived from `UringConfig` at construction, not tuned by hand; a CQ
   overflow is counted in `UringReport` and asserted 0 in `tests/uring.rs`.
+
+## Revision 2 — 2026-09-24 (while Proposed, found by step 6's gate)
+
+- **R5 — R2's cost line was wrong, and the shape R2 accepted spun as first built.** `[measured
+  2026-09-24]` `scripts/check-no-kernel-sleep.sh`'s `standard` + uring red half counted **7 385
+  `io_uring_enter_wait`** against **~345 `poll`** for the kernel arm over the same `tools/w2w` run.
+  Mechanism: the `ASYNC_CANCEL`s of turn *k*'s unfired polls were submitted by turn *k+1*'s waiting
+  enter, whose own completions (the cancel's result and the poll's `-ECANCELED`) were then in the
+  CQ and satisfied its `min_complete = 1` at once; turn *k+1* re-armed and cancelled in turn, so
+  every turn woke the next. Red first:
+  `standard_with_a_quiet_listener_waits_out_its_timeout_every_turn` — *"turn 1 returned after
+  6.051µs against a 50 ms timeout"*. **Decision**: R2's shape stays; the cancels are submitted and
+  their completions reaped **in the turn that queued them**, by one extra `io_uring_enter(n, 0,
+  GETEVENTS)` that does not wait (`Inner::reap_standard`, `crates/engine/src/transport/uring.rs`).
+  After the fix the same gate read **356 `_wait` against 345 `poll`**. A cancel completion that
+  still lands late wakes one wait once and cannot feed itself, because each turn cancels only its
+  own polls. **Cost, corrected**: two SQEs per extra source per idle turn **and one non-waiting
+  syscall per `standard` idle turn that had an unfired poll** — which is most idle turns, since the
+  listener and the waker usually do not fire. `hft` is untouched (it arms no polls). Written up at
+  [an-io-uring-cancel-completion-satisfies-the-next-wait](../reference/an-io-uring-cancel-completion-satisfies-the-next-wait.md).

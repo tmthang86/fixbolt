@@ -323,6 +323,18 @@ fn a_late_completion_for_a_dropped_connection_reaches_nobody() {
         String::from_utf8_lossy(&got[..got.len().min(64)])
     );
     assert_eq!(got.len(), 1000, "B's own bytes (ended on {how:?})");
+    // `[measured 2026-09-24]`, reversal R5: what reaches B without the
+    // generation is A's **end of stream**, not A's bytes — the kernel posts
+    // no data for a socket already shut down. So the harm is this: B, alive
+    // and quiet, told it is closed.
+    spin.idle(&[]);
+    let mut probe = [0u8; 64];
+    let after = b.recv(&mut probe);
+    assert_eq!(
+        after,
+        Io::Idle,
+        "B, alive and quiet, read {after:?}: A's late completion was delivered to it"
+    );
     let r = uring.report();
     assert!(
         r.stale > 0,
@@ -417,6 +429,12 @@ fn buffers_are_resident_before_the_first_message() {
 /// closing the ring inside `Drop`, before this test can re-occupy the range.
 /// Field order and the explicit `Drop` are what hold that; this catches a ring
 /// that outlives its buffers by more than that instant.
+///
+/// `[measured 2026-09-24]` **Under AddressSanitizer run it with
+/// `ASAN_OPTIONS=quarantine_size_mb=0:thread_local_quarantine_size_kb=0`.**
+/// ASan's allocator keeps a freed chunk in quarantine instead of unmapping it,
+/// so the range is still mapped and this test fails its own precondition
+/// (`could not re-occupy … File exists`) — red, never a false green.
 #[test]
 fn unregistered_buffers_are_not_written_after_the_ring_is_dropped() {
     let _g = exclusive();
@@ -972,4 +990,33 @@ fn serve_uring_refuses_a_ring_smaller_than_capacity_plus_pending() {
         other => panic!("expected TooSmall {{ have: 8, need: 12 }} before any bind, got {other:?}"),
     }
     drop(held);
+}
+
+/// A `standard` wait with a **quiet listener** in its list runs out its timeout
+/// on every turn, not only the first.
+///
+/// `[measured 2026-09-24]` step 6's `check-no-kernel-sleep.sh` run found
+/// `standard` over the ring making 7385 `io_uring_enter_wait` calls where a
+/// handful were due: each turn's un-fired `POLL_ADD` was cancelled after its
+/// wait, and the cancellation's completions arrived in the **next** wait and
+/// satisfied its `min_complete = 1` at once — a spin, with every wake test
+/// still green, because none of them waits twice with a quiet source listed.
+#[cfg(feature = "standard")]
+#[test]
+fn standard_with_a_quiet_listener_waits_out_its_timeout_every_turn() {
+    let _g = shared();
+    let (uring, mut block) = standard(config(8, 4096, 2), 50);
+    let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
+    let listener = [Interest::readable(acceptor.source().expect("a descriptor"))];
+    for turn in 0..4 {
+        let before = Instant::now();
+        block.idle(&listener);
+        let took = before.elapsed();
+        assert!(
+            took >= Duration::from_millis(40),
+            "turn {turn} returned after {took:?} against a 50 ms timeout with nothing to \
+             wake it: `standard` is spinning"
+        );
+    }
+    clean(&uring);
 }

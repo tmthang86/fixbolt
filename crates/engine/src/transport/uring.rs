@@ -643,8 +643,11 @@ impl FdTable {
 /// descriptor *number* and kept armed across turns cannot tell a listener that
 /// was closed — its `POLL_ADD` still holding the old file — from a new one the
 /// kernel handed the same number (plan *Bẫy*: the reused descriptor). Arming
-/// per turn costs two submission entries per extra source per idle turn, and
-/// no system call: they ride on the one `io_uring_enter` the turn makes.
+/// per turn costs two submission entries per extra source per idle turn —
+/// **and, on a turn whose polls did not fire, one more `io_uring_enter` that
+/// does not wait**, to reap the cancellations in the same turn; left for the
+/// next turn's wait, they wake it at once and `standard` spins (see
+/// `Inner::reap_standard`).
 #[cfg(feature = "standard")]
 struct Polls {
     generation: Box<[u32]>,
@@ -1363,6 +1366,7 @@ impl Inner {
         let n = self.ring.submission().len() as u32;
         self.enter_waiting(n, min_complete, timeout_ms);
         self.drain();
+        let mut cancelled = false;
         for k in 0..self.state.polls.armed_len {
             let Some(ix) = self.state.polls.armed.get(k).copied() else {
                 break;
@@ -1371,10 +1375,25 @@ impl Inner {
                 let cancel = opcode::AsyncCancel::new(user_data(KIND_POLL, ix, generation))
                     .build()
                     .user_data(user_data(KIND_CANCEL, ix, generation));
-                // Queued for the next turn's enter. If it cannot be queued the
-                // poll stays armed until it fires, which frees its entry then.
-                let _ = self.push(&cancel);
+                // If it cannot be queued the poll stays armed until it fires,
+                // which frees its entry then.
+                cancelled |= self.push(&cancel);
             }
+        }
+        // **The cancels are submitted and their completions reaped in this
+        // turn**, by one more enter that does not wait (`min_complete = 0`).
+        // `[measured 2026-09-24]` left for the next turn's enter, the cancel's
+        // own completion and the poll's `-ECANCELED` were already there when
+        // that enter began, satisfied its `min_complete = 1` at once, and the
+        // turn after cancelled again: `standard` spun, 7385 waits where a
+        // handful were due (`standard_with_a_quiet_listener_waits_out_its_
+        // timeout_every_turn`). A completion that still lands late wakes one
+        // wait once — it cannot feed itself, because each turn cancels only
+        // its own polls.
+        if cancelled {
+            let n = self.ring.submission().len() as u32;
+            self.enter(n, 0, io_uring::EnterFlags::GETEVENTS.bits());
+            self.drain();
         }
     }
 

@@ -78,6 +78,28 @@
 # the window is two lines in a tool, so a w2w change that moved either marker
 # moves what is judged. It is not cut at the last socket call: a window defined
 # by what it judges would miss a sleep after the last message.
+#
+# `[2026-09-24]` ADR-0191, phase 4 row 5: **`io_uring_enter` is judged by its
+# third argument, `min_complete`.** The `hft` arm over `io_uring` enters the
+# kernel once per idle turn with `min_complete = 0`, which returns without
+# waiting; a `min_complete` of 1 or more (with `GETEVENTS`) is a wait.
+# `engine_syscalls` names each call `io_uring_enter_nowait`, `_wait`, or
+# `_unparsed` — on the line that carries the arguments, a whole call or its
+# `<unfinished ...>` half, never on a `<... resumed>` half — and `SLEEPERS`
+# lists `_wait` and `_unparsed`: an argument this script cannot read FAILS the
+# run (the gate fails closed). Every kernel and TLS run is unchanged, because
+# none of them makes an `io_uring_enter`. Two runs are added: `--mode hft
+# --transport uring` must pass **and** show `io_uring_enter_nowait` above zero
+# and a `transport: uring ... cqes=` line above zero (the ring path ran);
+# `--mode standard --transport uring` must trip it with `io_uring_enter_wait`.
+# The SQPOLL arm runs only where `FIXBOLT_SQPOLL_CORE` names the SQ thread's
+# core (`FIXBOLT_SQPOLL_ALLOW_UNISOLATED=1` adds `--allow-unisolated`, and says
+# so); otherwise it prints SKIPPED, NOT PASSED. A binary built without
+# `--features io-uring` refuses `--transport uring`, and this script then exits
+# 2, SKIPPED, NOT PASSED — never green. **What it cannot see:** a wait inside
+# the SQPOLL kernel thread, which is not the engine thread; and a `strace`
+# whose argument format changes — that reads `_unparsed` and fails, it does
+# not pass.
 set -uo pipefail
 
 # `W2W_EXTRA` with `--wire-timestamps` runs this whole script again inside a user
@@ -113,7 +135,30 @@ command -v strace >/dev/null || {
 
 # Syscalls that mean the thread left user space to wait. `accept4`, `recvfrom`
 # and `sendto` are the socket path and are non-blocking; they are not here.
-SLEEPERS='epoll_wait|epoll_pwait|epoll_pwait2|poll|ppoll|select|pselect6|futex|nanosleep|clock_nanosleep|sched_yield|io_uring_enter'
+#
+# ADR-0191: `io_uring_enter` by name is no longer here. `NAME_OF` below splits
+# it by `min_complete`, and the two names that can mean a wait are listed.
+SLEEPERS='epoll_wait|epoll_pwait|epoll_pwait2|poll|ppoll|select|pselect6|futex|nanosleep|clock_nanosleep|sched_yield|io_uring_enter_wait|io_uring_enter_unparsed'
+
+# An awk function: the syscall's name for one trace line, with ADR-0191's
+# split of `io_uring_enter` by its third argument. Every other line gives `$2`,
+# from which the callers cut the name exactly as before — a `<... resumed>`
+# half starts with `<` and is cut to nothing, so a split call is counted once,
+# on the line that carries its arguments.
+# shellcheck disable=SC2016 # awk's own `$0`/`$2`, not the shell's.
+NAME_OF='
+function name_of(   line, args, n, part, mc) {
+  line = $0
+  sub(/^[0-9]+ +/, "", line)
+  if (line !~ /^io_uring_enter\(/) return $2
+  args = line
+  sub(/^io_uring_enter\(/, "", args)
+  n = split(args, part, ",")
+  mc = (n >= 3) ? part[3] : ""
+  gsub(/^ +| +$/, "", mc)
+  if (mc ~ /^[0-9]+$/) return (mc + 0 == 0) ? "io_uring_enter_nowait" : "io_uring_enter_wait"
+  return "io_uring_enter_unparsed"
+}'
 
 # `[2026-09-14]` **The wire arm is read back, not assumed from `W2W_EXTRA`** — the
 # `ran_mode` lesson again. A w2w that stopped acting on `--wire-timestamps`
@@ -197,12 +242,12 @@ engine_syscalls() {
   read -r open close <<<"$(serving_window "${tr}" "${tid}")"
   [[ -n "${close:-}" ]] || return 1
   # ADR-0152 decision 3: printed, never hidden, never judged.
-  outside="$(awk -v t="${tid}" -v a="${open}" -v b="${close}" '$1==t && (NR<a || NR>b) {print $2}' "${tr}" \
+  outside="$(awk -v t="${tid}" -v a="${open}" -v b="${close}" "${NAME_OF}"'$1==t && (NR<a || NR>b) {print name_of()}' "${tr}" \
     | grep -oE '^[a-z_0-9]+' | grep -xE "${SLEEPERS}" | sort | uniq -c | sort -rn | tr -s ' ' | paste -sd',' - || true)"
   if [[ -n "${outside}" ]]; then
     echo "outside the serving window, not judged:${outside} (${2:-})" >&2
   fi
-  awk -v t="${tid}" -v a="${open}" -v b="${close}" '$1==t && NR>a && NR<b {print $2}' "${tr}" \
+  awk -v t="${tid}" -v a="${open}" -v b="${close}" "${NAME_OF}"'$1==t && NR>a && NR<b {print name_of()}' "${tr}" \
     | grep -oE '^[a-z_0-9]+' | sort | uniq -c | sort -rn
 }
 
@@ -246,6 +291,91 @@ if [[ "${park_found}" -eq 0 ]]; then
   rc=1
 else
   echo "RED   ok — --mode standard trips it: $(echo "${park}" | grep -E " (${SLEEPERS})$" | tr -s ' ' | paste -sd' ' -)"
+fi
+
+echo
+echo "== io_uring arm (ADR-0191): hft over the ring must pass, entering without waiting =="
+# Whether this run's output carries `transport: uring ... cqes=<n>`, n > 0 —
+# the ring path ran, read back from the engine and never assumed from the flag.
+uring_ran() {
+  grep -qE '^transport: uring .*cqes=[1-9][0-9]*( |$)' "$1"
+}
+# Written before anything runs: the refusal a build without the feature prints.
+uring_refused() {
+  # shellcheck disable=SC2016 # the literal backticks main.rs prints.
+  grep -q 'needs `--features io-uring`' "$1" 2>/dev/null
+}
+ur="$(engine_syscalls hft "--mode hft --transport uring")"
+ur_status=$?
+if [[ "${ur_status}" -ne 0 ]]; then
+  if uring_refused "${TMP}/out.hft"; then
+    echo "io_uring arm SKIPPED, NOT PASSED: this build has no io_uring transport (needs \`--features io-uring\`)." >&2
+    echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
+    exit 2
+  fi
+  echo "FAIL: --mode hft --transport uring could not be run at all (see above)" >&2
+  tail -5 "${TMP}/out.hft" >&2
+  rc=1
+else
+  echo "${ur}" | head -8
+  ur_found="$(echo "${ur}" | grep -cE " (${SLEEPERS})$" || true)"
+  ur_nowait="$(echo "${ur}" | awk '$2 == "io_uring_enter_nowait" { print $1 }')"
+  ur_ran="$(echo "${ur}" | grep -cE ' (recvfrom|sendto)$' || true)"
+  if ! uring_ran "${TMP}/out.hft"; then
+    echo "FAIL: --transport uring printed no 'transport: uring ... cqes=' line above zero — the ring path did not run" >&2
+    grep -E '^transport:' "${TMP}/out.hft" >&2
+    rc=1
+  elif [[ "${ur_ran}" -eq 0 ]]; then
+    echo "FAIL: the engine thread made no socket calls under --transport uring, so it proved nothing" >&2
+    rc=1
+  elif [[ "${ur_found}" -ne 0 ]]; then
+    echo "FAIL: the engine thread slept in the kernel:" >&2
+    echo "${ur}" | grep -E " (${SLEEPERS})$" >&2
+    rc=1
+  elif [[ -z "${ur_nowait}" || "${ur_nowait}" -eq 0 ]]; then
+    echo "FAIL: --transport uring made no io_uring_enter_nowait inside the serving window — the reaping turn did not run" >&2
+    rc=1
+  else
+    echo "GREEN ok — hft over io_uring: no blocking call, io_uring_enter_nowait ${ur_nowait}, $(grep -E '^transport:' "${TMP}/out.hft")"
+  fi
+
+  echo
+  echo "== io_uring arm (ADR-0191): standard over the ring must trip it, with io_uring_enter_wait =="
+  urs="$(engine_syscalls standard "--mode standard --transport uring")" || exit 1
+  echo "${urs}" | head -8
+  if ! uring_ran "${TMP}/out.standard"; then
+    echo "FAIL: --mode standard --transport uring printed no 'transport: uring ... cqes=' line above zero" >&2
+    rc=1
+  elif ! echo "${urs}" | grep -qE ' io_uring_enter_wait$'; then
+    echo "FAIL: --mode standard --transport uring did NOT trip the check with io_uring_enter_wait, so the ring's wait is invisible to it" >&2
+    rc=1
+  else
+    echo "RED   ok — standard over io_uring trips it: $(echo "${urs}" | grep -E " (${SLEEPERS})$" | tr -s ' ' | paste -sd' ' -)"
+  fi
+
+  echo
+  echo "== io_uring arm: SQPOLL (hft), only where FIXBOLT_SQPOLL_CORE names the SQ thread's core =="
+  if [[ -z "${FIXBOLT_SQPOLL_CORE:-}" ]]; then
+    echo "SQPOLL arm SKIPPED, NOT PASSED: FIXBOLT_SQPOLL_CORE is not set, so it was not run."
+  else
+    sq_flags="--mode hft --transport uring --uring-arm sqpoll --sqpoll-core ${FIXBOLT_SQPOLL_CORE}"
+    if [[ "${FIXBOLT_SQPOLL_ALLOW_UNISOLATED:-}" == 1 ]]; then
+      sq_flags="${sq_flags} --allow-unisolated"
+      echo "(FIXBOLT_SQPOLL_ALLOW_UNISOLATED=1: the SQ core is not held to isolcpus — not a DESIGN.md §9 run)"
+    fi
+    sq="$(engine_syscalls hft "${sq_flags}")" || { echo "FAIL: the SQPOLL arm could not be run (see above)" >&2; exit 1; }
+    echo "${sq}" | head -8
+    if ! grep -qE '^transport: uring arm=sqpoll .*cqes=[1-9]' "${TMP}/out.hft"; then
+      echo "FAIL: the SQPOLL arm printed no 'transport: uring arm=sqpoll ... cqes=' line above zero" >&2
+      rc=1
+    elif echo "${sq}" | grep -qE " (${SLEEPERS})$"; then
+      echo "FAIL: the engine thread slept in the kernel under SQPOLL:" >&2
+      echo "${sq}" | grep -E " (${SLEEPERS})$" >&2
+      rc=1
+    else
+      echo "GREEN ok — SQPOLL arm: no blocking call on the engine thread, $(grep -E '^transport:' "${TMP}/out.hft")"
+    fi
+  fi
 fi
 
 echo
