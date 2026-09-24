@@ -124,13 +124,13 @@ pub const DEFAULT_CAPACITY: usize = 1 << 22;
 /// Each is a `spin_loop` hint and no syscall, so a burst that arrives within a
 /// few microseconds of the last is caught at once. `[derived, not measured]`:
 /// ADR-0150 decision 4.
-pub(crate) const IDLE_SPINS: u32 = 1024;
+pub const IDLE_SPINS: u32 = 1024;
 
 /// How long a writer thread sleeps per empty poll once [`IDLE_SPINS`] have
 /// passed. `[derived, not measured]` against the rings it drains: the
 /// journal's 1 MiB ring fills in 1 ms only above ~1 GB/s of records. ADR-0150
 /// decision 4.
-pub(crate) const IDLE_SLEEP: std::time::Duration = std::time::Duration::from_millis(1);
+pub const IDLE_SLEEP: std::time::Duration = std::time::Duration::from_millis(1);
 
 /// **How a writer thread waits on an empty ring**, the one rule both writers
 /// (`journal.rs` and `msglog.rs` `write_loop`) share.
@@ -144,22 +144,31 @@ pub(crate) const IDLE_SLEEP: std::time::Duration = std::time::Duration::from_mil
 /// no futex on the push side), so the producer's path is unchanged; a record
 /// pushed while the writer sleeps waits at most one `IDLE_SLEEP`.
 /// `crates/engine/tests/writer_idle.rs` is the gate.
-pub(crate) struct Idle {
+///
+/// **Public so a journal outside this crate waits by the same rule** rather
+/// than a copy of its constants (ADR-0181 decision 3). Writer threads only:
+/// `wait` sleeps, which the engine thread in `hft` mode may never do.
+/// `crates/engine/tests/writer_hooks.rs::idle_is_reachable_from_outside_the_crate`
+/// holds the spins-then-sleep shape from outside the crate.
+#[derive(Debug, Default)]
+pub struct Idle {
     empty: u32,
 }
 
 impl Idle {
-    pub(crate) const fn new() -> Self {
+    /// Fresh: the next [`Idle::wait`] spins.
+    #[must_use]
+    pub const fn new() -> Self {
         Self { empty: 0 }
     }
 
     /// A record arrived: the next empty poll starts spinning again.
-    pub(crate) const fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.empty = 0;
     }
 
     /// The ring was empty: spin, or sleep once the spins are spent.
-    pub(crate) fn wait(&mut self) {
+    pub fn wait(&mut self) {
         if self.empty < IDLE_SPINS {
             self.empty += 1;
             std::hint::spin_loop();
@@ -206,6 +215,15 @@ impl Producer {
         self.shared.buf.len()
     }
 
+    /// Whether a record of `len` bytes would be accepted by the next
+    /// [`Producer::push`].
+    ///
+    /// `push`'s own check. Crate-private: no retire protocol depends on it
+    /// (ADR-0181 *Revision 1*, decision 5).
+    pub(crate) fn fits(&self, len: usize) -> bool {
+        HEADER.saturating_add(len) <= self.free()
+    }
+
     /// One record, made of `parts` laid end to end.
     ///
     /// `false` means it did not fit and **nothing was written** — a record is
@@ -217,7 +235,7 @@ impl Producer {
         let Ok(len32) = u32::try_from(len) else {
             return false;
         };
-        if HEADER + len > self.free() {
+        if !self.fits(len) {
             return false;
         }
         let mut at = self.shared.tail.load(Ordering::Relaxed);

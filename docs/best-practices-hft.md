@@ -156,6 +156,19 @@ are shards.
 
 ---
 
+## 7a. The SQLite store's writer thread has no pinned door yet
+
+`[2026-09-24]` `fixbolt-store-sqlite`'s `SqliteJournal::open` has no `open_pinned` counterpart —
+unlike `FileJournal` and `FileLog`, its writer thread (named `fixbolt-sqlite`, for `top -H`)
+cannot be pinned by the crate itself. It sleeps when idle on the same
+`fixbolt_engine::ring::Idle` rule as every other writer ([GUIDE.md §6](GUIDE.md)), so it costs
+the engine thread nothing while it waits — but a wake on the core you isolated for the engine
+is still a preemption, exactly as an unpinned `FileLog` writer is (§7 above). Until this crate
+grows its own pinned door, pin it from outside — `taskset` at process start, or a cgroup that
+excludes the isolated core — rather than assuming it landed off the engine's core by luck.
+
+---
+
 ## 8. Stopping it, in `hft` mode
 
 `[2026-09-05]` **The same `Handles`, and one difference that matters here.**

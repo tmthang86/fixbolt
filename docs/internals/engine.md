@@ -17,8 +17,8 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `presession.rs` | `Identity`, `PendingSet`, `Registry`, `Table` — who owns a socket before a session exists |
 | `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes; its `Drop` retires the journal (ADR-0153, `tests/retire.rs`) |
 | `backpressure.rs` | The queue a connection uses when the counterparty stops reading (D10) |
-| `dispatch.rs`, `ring.rs` | `InlineDispatch`, `RingDispatch` over an `AtomicU8` SPSC ring (D4). `[2026-09-24]` `Dispatch::ring_to_app(&self) -> Option<Occupancy>`, a provided method defaulting to `None`; `RingDispatch` answers it from the new `Producer::capacity()` and the existing `Producer::free()`, in bytes |
-| `journal.rs` | `MemJournal`, `FileJournal`, `Reader`, `Store` — the resend store |
+| `dispatch.rs`, `ring.rs` | `InlineDispatch`, `RingDispatch` over an `AtomicU8` SPSC ring (D4). `[2026-09-24]` `Dispatch::ring_to_app(&self) -> Option<Occupancy>`, a provided method defaulting to `None`; `RingDispatch` answers it from the new `Producer::capacity()` and the existing `Producer::free()`, in bytes; `ring.rs` also keeps the idle rule every writer thread shares — `Idle`, `IDLE_SPINS`, `IDLE_SLEEP`, public since [ADR-0181](../decisions/ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md) so a journal outside this crate can wait the same way |
+| `journal.rs` | `MemJournal`, `FileJournal`, `Reader`, `Store` — the resend store; also the two other handles a journal outside this crate joins the engine's shutdown bookkeeping through (ADR-0181): `WriterTicket`/`TicketState` (the retired-writer count `wait_for_retired_writers` waits on, and the separate `writers_retired()` count of retire acts) and `Releaser`/`Released::pair` (the release flag a `Recovery` answers `ready` from). `FileJournal` itself runs on all three, replacing what used to be private |
 | `recovery.rs` | `Recovery`, `Resumed`, `NoRecovery`, `FromFn` — asked once the counterparty is known |
 | `msglog.rs` | `MessageLog`, `FileLog` — every message seen or sent, both directions, one line each |
 | `redact.rs` | `MASKED`, `mask`, `carries_secret` — what never reaches disk in clear, and the SOH-splitting scan that finds it, called from `msglog.rs` and `journal.rs`. `[2026-09-23]` |
@@ -64,6 +64,22 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 - `tests/redact.rs`, `tests/secrets_stay_off_disk.rs` — `redact.rs`, and the two write paths that
   call it (`msglog.rs`, `journal.rs` under both `Durability`); `benches/alloc.rs` cases
   `redact-mask`/`redact-scan` hold non-negotiable 1 for it. `[2026-09-23]`, ADR-0110
+- `tests/writer_hooks.rs` — the three public handles a journal outside this crate joins to the
+  engine's bookkeeping ([ADR-0181](../decisions/ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md)),
+  one test (or set of tests) per handle:
+  - `journal::WriterTicket` / `TicketState` — `a_ticket_retired_twice_is_counted_once`,
+    `finish_without_retire_changes_no_count`, `a_retire_after_the_writer_finished_counts_nothing`,
+    `the_first_retire_is_counted_even_after_the_writer_finished` (the two counters, *Revision 2*'s
+    fix — see [the trap page](../reference/push-then-retire-can-race-a-writers-finish-unless-finish-on-a-running-ticket-is-recorded.md)),
+    `wait_for_retired_writers_waits_for_a_ticket_finished_on_another_thread`
+  - `journal::Releaser` / `Released::pair` — `released_turns_true_only_when_its_releaser_releases`
+  - `ring::Idle` / `IDLE_SPINS` / `IDLE_SLEEP` — `idle_is_reachable_from_outside_the_crate`
+
+  `FileJournal` itself now runs on the same three handles, so the eight pre-existing engine test
+  binaries this plan's step 1 left unmodified (`one_appender`, `after_serving`, `retire`,
+  `writer_idle`, `journal`, `on_disk`, `engine_recovery`, `secrets_stay_off_disk`) are the proof
+  the move changed nothing observable; `crates/store-sqlite`'s `writer.rs` is the worked example
+  of a journal outside this crate using all three.
 - `tests/observe.rs`, `tests/events.rs`, `tests/admin.rs`, `tests/originate.rs`,
   `tests/settings.rs`, `tests/settings_roles.rs`, `tests/reconnect.rs`,
   `tests/reconnect_wire.rs`, `tests/shutdown.rs` — operator and config seams

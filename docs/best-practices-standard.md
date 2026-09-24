@@ -51,11 +51,22 @@ connection capacity for the number of sessions you expect.
 | no journal (`NoJournal`) | nothing; a restart cannot resume | fastest |
 | `Durability::Async` | a process crash, not a power loss | one `write` per message, flushed by a background thread |
 | `Durability::Fsync` | a power loss | a disk sync per message, on the engine thread, in **both** directions since [ADR-0017](decisions/ADR-0017-the-inbound-count-is-persisted-after-delivery.md) |
+| `fixbolt-store-sqlite`'s `SqliteJournal` | a process crash (`Synchronous::Normal`, default), or a power loss (`Synchronous::Full`) — never *"on disk before sent"*, whichever setting | same engine-thread cost as `Durability::Async`; a background thread commits to SQLite in batches instead of appending to a file |
 
 `Fsync` puts a disk on the message path. In `standard` that is usually acceptable; choose it
 when a counterparty will replay against your sequence numbers after a crash.
 [GUIDE.md §6](GUIDE.md) explains how recovery reads the journal back. None of the three costs
 has been benchmarked here; measure `Fsync` against your storage before committing to it.
+
+`[2026-09-24]` **`fixbolt-store-sqlite` adds nothing to what the engine thread does or waits
+for** — it is `Durability::Async`'s cost with a different writer — so the choice between it and
+`FileJournal` is an operational one, not a latency one: pick it when you want the journal to be
+queryable as SQL (`SELECT` a session's messages, check `highest_out` without a tool), and keep
+plain `FileJournal` when you do not need that. It is a separate crate you add explicitly and
+still outside the tagged release family until its own kill line is measured
+([GUIDE.md §6d](GUIDE.md)); `standard` mode's blocking idle wait applies to the engine thread
+only; the store's own writer thread idles the same way in every mode
+(`fixbolt_engine::ring::Idle`).
 
 ---
 

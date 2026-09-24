@@ -489,3 +489,30 @@ customised FIX 4.4 dialect, or a fix for one of the QuickFIX dictionary quirks
 `crates/dict/spec/` ships as-is (see [ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
 *Consequences*). A path missing at build time fails the build loudly, by design — the
 generator never falls back to an empty table.
+
+## 6. `fixbolt-store-sqlite`'s settings
+
+`[2026-09-24]` A separate crate ([ADR-0180](decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md),
+[ADR-0182](decisions/ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md)),
+not part of `fixbolt-engine` or the `fixbolt` facade; add it to your `Cargo.toml` beside them.
+Usage is [GUIDE.md §6d](GUIDE.md).
+
+**Cargo feature**, on `fixbolt-store-sqlite`:
+
+| Feature | What it enables | Default |
+|---|---|---|
+| `sqlite` | The crate's three modules (`journal`, `schema`, `writer`) and the `rusqlite` dependency (`bundled`: SQLite compiled from source with `cc`). **Without it the crate is empty and compiles no C** — a surprise to a user who turns defaults off by habit (ADR-0182 *Consequences*) | **on** |
+
+`SqliteOptions` (`fixbolt_store_sqlite::SqliteOptions`, passed to `SqliteJournal::open`):
+
+| Field | Meaning | Default | Raise/lower it when |
+|---|---|---|---|
+| `synchronous` | `Synchronous::Normal` (`PRAGMA synchronous = NORMAL`) or `Synchronous::Full`. **There is no third, blocking mode** — `put` never waits for a commit either way (ADR-0180 decision 4) | `Synchronous::Normal` | `Full` when a committed batch must survive a power loss, not only a process crash; it only slows the writer thread |
+| `ring_bytes` | Bytes in the ring between the engine thread and the writer, rounded up to a power of two. A record that does not fit is kept in memory only and counted in `unwritten` | `fixbolt_engine::ring::DEFAULT_CAPACITY` (4 MiB — larger than `FileJournal`'s 1 MiB, because a commit and a WAL checkpoint stall the writer longer than a file `write` does) | raise it if `unwritten` rises under your write rate; the soak harness (`examples/soak.rs`) prints `behind_max_ms` to size it |
+| `batch_max` | Records per transaction, at most. A batch otherwise ends when the ring runs dry, so it is one record when idle and up to this many under a burst | `4096` | lower it to bound how much one slow commit can hold back; raise it to reduce commits per second under sustained load |
+| `max_db_pages` | A ceiling on the database file (`PRAGMA max_page_count`), in pages. A batch that would grow the file past it fails, is rolled back and is counted in `unwritten` | `None` (no ceiling) | set it to bound disk use on a host with a fixed quota; the store never prunes, so an unbounded file grows for as long as the session does |
+
+`w2w`'s `--journal sqlite-async` (feature `sqlite`, not in `default`) opens a `SqliteStore` where
+`--journal file-async` opens a `FileStore`; see `docs/plans/2026-09-24-p4-sqlite-store.md` row 6
+for the alloc-counting caveat it carries (the engine and client threads are counted, SQLite's
+own C heap is not).

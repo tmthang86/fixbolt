@@ -305,10 +305,10 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     /// The writer thread, joined on drop so a test can read the file after —
     /// unless the journal was retired, which lets it go instead.
     writer: Option<std::thread::JoinHandle<()>>,
-    /// What the engine has told the writer: [`RUNNING`], [`RETIRED`] or
-    /// [`RETIRED_STOP_WHEN_DRY`]. `Async` only; allocated at open, so
-    /// [`Journal::retire`] allocates nothing. ADR-0153 decision 3.
-    told: Option<Arc<AtomicU8>>,
+    /// What the engine has told the writer. `Async` only; allocated at open,
+    /// so [`Journal::retire`] allocates nothing. ADR-0153 decision 3, through
+    /// the public handle of ADR-0181 decision 1.
+    ticket: Option<WriterTicket>,
     /// Where that thread was observed running, if it was pinned.
     #[cfg(all(feature = "affinity", target_os = "linux"))]
     writer_core: Option<crate::affinity::CoreId>,
@@ -325,7 +325,10 @@ pub struct FileJournal<const N: usize, const LEN: usize> {
     unwritten: u64,
     /// Set once the file is closed — by the writer under `Async`, by `Drop`
     /// under `Fsync`. Allocated at open. See [`Released`]; ADR-0155.
-    released: Arc<AtomicBool>,
+    released: Released,
+    /// What sets [`Self::released`]: kept here under `Fsync`, whose `Drop`
+    /// closes the file; moved to the writer thread under `Async`.
+    releaser: Option<Releaser>,
     /// Records whose CRC did not match what was stored beside them.
     ///
     /// **Zero on a version-0 file, always**, because that format carries no
@@ -744,6 +747,7 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
             file.write_all(HEADER_V1)?;
             file.flush()?;
         }
+        let (releaser, released) = Released::pair();
         let (mem, mut this) = (
             mem_recovered,
             Self {
@@ -752,7 +756,7 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 file: None,
                 to_writer: None,
                 writer: None,
-                told: None,
+                ticket: None,
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 writer_core: None,
                 torn,
@@ -760,7 +764,8 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 corrupt,
                 last_active,
                 unwritten: 0,
-                released: Arc::new(AtomicBool::new(false)),
+                released,
+                releaser: Some(releaser),
             },
         );
         this.mem = mem;
@@ -780,29 +785,29 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
                 // Waiting here makes every writer allocation happen before
                 // `open` returns: startup, not the engine's path.
                 let (ready, started) = std::sync::mpsc::sync_channel::<()>(1);
-                let told = Arc::new(AtomicU8::new(RUNNING));
-                this.told = Some(Arc::clone(&told));
-                let released = Arc::clone(&this.released);
+                let ticket = WriterTicket::new();
+                this.ticket = Some(ticket.clone());
+                let releaser = this.releaser.take();
                 let run = move || {
                     let buf = vec![0u8; writer_buf(LEN)];
                     let _ = ready.send(());
                     drop(ready);
-                    write_until_told(file, from_engine, format, buf, &told);
+                    write_until_told(file, from_engine, format, buf, ticket.told());
                     // `write_until_told` took the file by value and has
                     // dropped it: **the lock went with it**, so the next
                     // `open` of this path can read a whole file (ADR-0154).
                     // Said now, after the close and before the count below,
                     // so a recovery asking `Released` never hears "released"
                     // while this thread still holds the file (ADR-0155).
-                    released.store(true, Ordering::Release);
+                    if let Some(releaser) = releaser {
+                        releaser.release();
+                    }
                     //
                     // **The last act, after the file and the ring are gone.**
                     // A writer the engine retired is one somebody will wait
                     // for after serving; that wait ends when this reaches zero.
-                    // ADR-0153 decision 3.
-                    if told.load(Ordering::Acquire) != RUNNING {
-                        RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
-                    }
+                    // An unretired ticket lowers nothing. ADR-0153 decision 3.
+                    ticket.finish();
                 };
                 #[cfg(all(feature = "affinity", target_os = "linux"))]
                 if let Some(core) = core {
@@ -872,7 +877,7 @@ impl<const N: usize, const LEN: usize> FileJournal<N, LEN> {
     /// path; see [`Released`]. An `Arc` clone: nothing is allocated.
     #[must_use]
     pub fn released(&self) -> Released {
-        Released(Arc::clone(&self.released))
+        self.released.clone()
     }
 
     pub fn close(&mut self) {
@@ -902,7 +907,9 @@ impl<const N: usize, const LEN: usize> Drop for FileJournal<N, LEN> {
             release_the_file(&file);
             drop(file);
             // `Fsync`: the file is closed now (ADR-0155 decision 2).
-            self.released.store(true, Ordering::Release);
+            if let Some(releaser) = self.releaser.take() {
+                releaser.release();
+            }
         }
     }
 }
@@ -915,19 +922,198 @@ const RETIRED: u8 = 1;
 /// Retired while its ring was full, so no `STOP` could be pushed. It stops the
 /// first time the ring runs dry after reading this, and uncounts itself.
 const RETIRED_STOP_WHEN_DRY: u8 = 2;
+/// A retired writer that has lowered the count — or a writer that finished
+/// unretired and was retired after. Nothing leaves this state.
+const FINISHED: u8 = 3;
+/// A writer that finished before anyone retired it: it lowered nothing. The
+/// first `retire` to meet it moves it to [`FINISHED`] and is counted in
+/// [`writers_retired`], not in what [`wait_for_retired_writers`] waits for.
+/// **Internal**: [`WriterTicket::state`] reports it as
+/// [`TicketState::Finished`]. ADR-0181 *Revision 2*.
+const FINISHED_UNRETIRED: u8 = 4;
 
-/// Writers a [`FileJournal`] retired that have not yet finished — **one count
-/// for the whole process**, shared by every engine in it (ADR-0153
-/// *Consequences*). Raised by [`Journal::retire`], lowered by the writer as the
-/// last thing it does.
+/// What a [`WriterTicket`] has been told, as its writer reads it with
+/// [`WriterTicket::state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TicketState {
+    /// Not retired. The writer stops at its own stop record, if its journal
+    /// is closed, and nobody waits for it after serving.
+    Running,
+    /// Retired, and the journal's stop record is in the writer's queue: stop
+    /// there, then [`WriterTicket::finish`].
+    Retired,
+    /// Retired while the writer's queue had no room for a stop record: stop
+    /// the first time the queue is found empty **after reading this**, then
+    /// [`WriterTicket::finish`]. Every record was queued before it was said.
+    RetiredStopWhenDry,
+    /// The writer has finished — retired first, or stopped before anyone
+    /// retired it. Nothing leaves this state, and a later
+    /// [`WriterTicket::retire`] counts nothing.
+    Finished,
+}
+
+/// **A journal writer's place in the process-wide count of retired writers**
+/// that every `serve*` waits for after serving
+/// ([`wait_for_retired_writers`]). ADR-0181 decision 1, over ADR-0153
+/// decisions 3 and 4.
+///
+/// Make one where the journal is opened — **never on the engine thread**: it
+/// is one `Arc` — and give a clone to the writer thread. Then:
+///
+/// - the journal's [`Journal::retire`], on the engine thread, pushes its
+///   one-byte stop record **once**, then calls [`WriterTicket::retire`] with
+///   whether that push succeeded, then detaches the writer, and pushes
+///   nothing after;
+/// - the writer stops at a popped stop record. When a pop finds its queue
+///   empty it reads [`WriterTicket::state`]; told
+///   [`TicketState::RetiredStopWhenDry`], it pops **once more** and stops
+///   only if that pop is empty too — state first, then the empty queue;
+/// - stopping, the writer makes its data durable, closes its storage, calls
+///   [`Releaser::release`] and then [`WriterTicket::finish`], its **last
+///   act**.
+///
+/// **No order of that push and that retire strands a count.** Two counts,
+/// two questions:
+///
+/// - what [`wait_for_retired_writers`] waits for — **writers still to
+///   finish** — is raised only by a `retire` that moves *running* to retired,
+///   and lowered only by that writer's `finish`;
+/// - [`writers_retired`] — **retire acts** — rises by exactly one on a
+///   ticket's first `retire`, whether its writer had finished or not.
+///
+/// A writer that pops the stop record and finishes before the engine's
+/// `retire` moves its ticket to an internal *finished, never retired* state
+/// (reported as [`TicketState::Finished`]), lowering nothing; the `retire`
+/// that follows counts one retire act, leaves nothing to wait for, and
+/// returns `false`. Each transition happens at most once, by
+/// compare-and-swap. ADR-0181 decision 1, *Revisions 1 and 2*.
+/// `crates/engine/tests/writer_hooks.rs` holds each half; [`FileJournal`]
+/// uses nothing else, so its eight test binaries hold it too.
+#[derive(Debug, Clone)]
+pub struct WriterTicket(Arc<AtomicU8>);
+
+impl Default for WriterTicket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WriterTicket {
+    /// A ticket for a writer that has not been retired. Allocates one `Arc`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(RUNNING)))
+    }
+
+    /// Retire the writer this ticket belongs to: **engine thread**.
+    ///
+    /// - From *running*: counts the writer among those
+    ///   [`wait_for_retired_writers`] waits for, raises [`writers_retired`]
+    ///   by one, and returns `true`.
+    /// - The first call after the writer finished unretired (it popped the
+    ///   stop record and finished before this call): raises
+    ///   [`writers_retired`] by one, leaves nothing to wait for, returns
+    ///   `false`.
+    /// - Any later call: changes nothing, returns `false`.
+    ///
+    /// **`true` means only "this call left a writer to wait for"** — never
+    /// use it as evidence that a retire happened; [`writers_retired`] is that
+    /// evidence.
+    ///
+    /// `stop_pushed` is the result of the journal's one push of its stop
+    /// record, made just before this call. `false` tells the writer to stop
+    /// the first time its queue runs dry.
+    ///
+    /// Atomics only: no system call, no allocation, no loop. The count is
+    /// raised **before** the state is published, so the writer's `finish`
+    /// can never lower it first (ADR-0153 decision 3).
+    pub fn retire(&self, stop_pushed: bool) -> bool {
+        let to = if stop_pushed {
+            RETIRED
+        } else {
+            RETIRED_STOP_WHEN_DRY
+        };
+        RETIRED_WRITERS.fetch_add(1, Ordering::AcqRel);
+        if self
+            .0
+            .compare_exchange(RUNNING, to, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // Not running: take back the raise above, which nobody could have
+            // paid off, since `finish` lowers only for the state this call
+            // failed to publish.
+            RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
+            // The writer finished before this, the first retire: a retire act
+            // all the same, and nothing to wait for. Once, by CAS.
+            if self
+                .0
+                .compare_exchange(
+                    FINISHED_UNRETIRED,
+                    FINISHED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                WRITERS_RETIRED.fetch_add(1, Ordering::Relaxed);
+            }
+            return false;
+        }
+        WRITERS_RETIRED.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// What this ticket has been told: **writer thread**. One `Acquire` load.
+    #[must_use]
+    pub fn state(&self) -> TicketState {
+        match self.0.load(Ordering::Acquire) {
+            RUNNING => TicketState::Running,
+            RETIRED => TicketState::Retired,
+            RETIRED_STOP_WHEN_DRY => TicketState::RetiredStopWhenDry,
+            _ => TicketState::Finished,
+        }
+    }
+
+    /// The writer's **last act**: the ticket becomes
+    /// [`TicketState::Finished`], once, by compare-and-swap. From a retired
+    /// state it lowers what [`wait_for_retired_writers`] waits for; from
+    /// *running* it lowers nothing — the writer stopped before anyone retired
+    /// it — and the ticket is *finished, never retired* inside, so the first
+    /// later [`WriterTicket::retire`] still counts one retire act and leaves
+    /// nothing to wait for. On a finished ticket it does nothing.
+    pub fn finish(&self) {
+        let moved = self
+            .0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| match s {
+                RUNNING => Some(FINISHED_UNRETIRED),
+                RETIRED | RETIRED_STOP_WHEN_DRY => Some(FINISHED),
+                _ => None,
+            });
+        if matches!(moved, Ok(RETIRED | RETIRED_STOP_WHEN_DRY)) {
+            RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    /// The flag the writer loop reads. Private: the loop takes a bare
+    /// `AtomicU8` so the unit test at the end of this file can drive it.
+    fn told(&self) -> &AtomicU8 {
+        &self.0
+    }
+}
+
+/// Writers retired through any journal's [`WriterTicket`] that have not yet
+/// finished — **one count for the whole process**, shared by every engine in
+/// it (ADR-0153 *Consequences*). Raised by [`WriterTicket::retire`], lowered by
+/// [`WriterTicket::finish`], the writer's last act (ADR-0181 decision 1).
 static RETIRED_WRITERS: AtomicUsize = AtomicUsize::new(0);
 
-/// Every writer [`Journal::retire`] has let go in this process, finished or
-/// not. Only ever rises. See [`writers_retired`].
+/// Every first [`WriterTicket::retire`] in this process, whether its writer had
+/// finished or not. Only ever rises. See [`writers_retired`].
 static WRITERS_RETIRED: AtomicUsize = AtomicUsize::new(0);
 
-/// How many `Async` writers a [`FileJournal`] has retired in this process,
-/// ever — finished or not.
+/// How many writers have been retired through any journal's [`WriterTicket`]
+/// in this process, ever — finished or not: `FileJournal` under `Async`, and
+/// any journal outside this crate that follows ADR-0181's rule.
 ///
 /// **Only ever rises**, so a caller can tell that a retire actually happened
 /// without racing the writer, which lowers the count
@@ -938,9 +1124,9 @@ pub fn writers_retired() -> usize {
     WRITERS_RETIRED.load(Ordering::Relaxed)
 }
 
-/// Wait until every writer a retired [`FileJournal`] let go has written its
-/// last byte and closed its file, or until `timeout` passes. `true` if they
-/// all finished.
+/// Wait until every writer retired through any journal's [`WriterTicket`] has
+/// written its last byte, closed its storage and finished its ticket, or until
+/// `timeout` passes. `true` if they all finished.
 ///
 /// **Teardown only: this sleeps**, 1 ms between looks at the count, which is
 /// exactly what the engine thread may not do while it serves. Every `serve*`
@@ -1005,11 +1191,40 @@ fn take_the_file(file: &File, path: &Path) -> std::io::Result<()> {
 pub struct Released(Arc<AtomicBool>);
 
 impl Released {
+    /// A flag nobody has set, and the one [`Releaser`] that can set it.
+    ///
+    /// For a journal outside this crate whose writer lets go of its storage
+    /// the way [`FileJournal`]'s does: make the pair at open (one `Arc`, off
+    /// the engine thread), move the [`Releaser`] to the writer, hand out
+    /// clones of the [`Released`]. ADR-0181 decision 2.
+    #[must_use]
+    pub fn pair() -> (Releaser, Self) {
+        let flag = Arc::new(AtomicBool::new(false));
+        (Releaser(Arc::clone(&flag)), Self(flag))
+    }
+
     /// `true` once the journal this came from has closed its file. One
     /// `Acquire` load.
     #[must_use]
     pub fn is_released(&self) -> bool {
         self.0.load(Ordering::Acquire)
+    }
+}
+
+/// The one handle that can turn a [`Released`] `true`, made with it by
+/// [`Released::pair`].
+///
+/// Not `Clone`, and [`Releaser::release`] consumes it, so only its owner —
+/// the writer — can say it let go, and only once. The writer calls it **after
+/// its storage is closed** (so after any lock that storage held is gone) and
+/// **before** [`WriterTicket::finish`]: ADR-0155 decision 2's order.
+#[derive(Debug)]
+pub struct Releaser(Arc<AtomicBool>);
+
+impl Releaser {
+    /// Say the storage has been let go. One `Release` store.
+    pub fn release(self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -1269,22 +1484,18 @@ impl<const N: usize, const LEN: usize> Journal for FileJournal<N, LEN> {
     /// serving. A second call, `Fsync`, or a journal already closed does
     /// nothing. ADR-0153 decision 3.
     fn retire(&mut self) {
-        let (Some(told), Some(writer)) = (self.told.as_ref(), self.writer.take()) else {
+        let (Some(ticket), Some(writer)) = (self.ticket.as_ref(), self.writer.take()) else {
             return;
         };
-        // Counted **before** the writer can learn it was retired, so its
-        // uncounting can never come first.
-        RETIRED_WRITERS.fetch_add(1, Ordering::AcqRel);
-        WRITERS_RETIRED.fetch_add(1, Ordering::Relaxed);
-        // Told before `STOP` is pushed: a writer that pops `STOP` must already
-        // read `RETIRED`, or it would stop without uncounting itself.
-        told.store(RETIRED, Ordering::Release);
+        // *The rule for a journal*, ADR-0181 decision 1: push `STOP` once,
+        // then retire with the push's result. A writer that pops `STOP` and
+        // finishes before the `retire` below finishes a *running* ticket,
+        // which lowers nothing, and the `retire` then counts nothing. Told
+        // `RetiredStopWhenDry` instead — after every record this journal
+        // pushed — the writer that then finds the ring empty has written them
+        // all.
         let pushed = self.to_writer.as_mut().is_some_and(|p| p.push(&[&[STOP]]));
-        if !pushed {
-            // After every record this journal pushed, so the writer that reads
-            // it and then finds the ring empty has written them all.
-            told.store(RETIRED_STOP_WHEN_DRY, Ordering::Release);
-        }
+        let _ = ticket.retire(pushed);
         // Detached: nobody joins it; `wait_for_retired_writers` waits for it.
         drop(writer);
         self.to_writer = None;

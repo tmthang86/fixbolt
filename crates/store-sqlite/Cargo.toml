@@ -1,0 +1,59 @@
+[package]
+name = "fixbolt-store-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A SQLite message store for the fixbolt FIX engine: the Async journal with a database for a file, one database per session"
+readme = "README.md"
+keywords = ["fix", "sqlite", "journal", "trading", "fix-protocol"]
+categories = ["database", "finance"]
+# ADR-0160 decision 4: an allowlist. Tests and benches are not shipped.
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+# ADR-0182 decision 2: born release-shaped, outside the tagged release family
+# until row 4's kill line passes (decision 3 removes this line then).
+publish = false
+
+# ADR-0182 decision 1: one default feature gates the `mod` declarations in
+# lib.rs and the one dependency that compiles C. With `--no-default-features`
+# the crate is an empty library and no C is compiled; the tests and benches
+# carry `#![cfg(feature = "sqlite")]`. `scripts/check-no-optional-deps.sh`
+# asks for `rusqlite` and `libsqlite3-sys` by name.
+[features]
+default = ["sqlite"]
+sqlite = ["dep:rusqlite"]
+
+[dependencies]
+# ADR-0180 decision 1: the engine without its default features — the store
+# needs `journal`, `ring` and `redact`, none of which is gated.
+fixbolt-engine = { version = "=0.1.0", path = "../engine", default-features = false }
+fixbolt-session = { version = "=0.1.0", path = "../session" }
+# `bundled`: SQLite's amalgamation is compiled in, so no system library is
+# needed and one known SQLite version is in the process (ADR-0180
+# *Consequences*). No `cache`: the writer holds its one statement itself.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"], optional = true }
+
+[dev-dependencies]
+fixbolt-codec = { path = "../codec" }
+fixbolt-conformance = { path = "../conformance" }
+# `standard` for `serve_with_recovery` in tests/serve.rs.
+fixbolt-engine = { path = "../engine" }
+
+[lints]
+workspace = true
+
+# ADR-0160 decision 8: docs.rs builds a named feature list.
+[package.metadata.docs.rs]
+features = ["sqlite"]
+
+# Plan row 4: the engine thread's half allocates nothing, counted per thread.
+[[bench]]
+name = "alloc"
+harness = false
+required-features = ["sqlite"]
+
+# Plan row 5: the soak that row 4a's kill line is read with.
+[[example]]
+name = "soak"
+required-features = ["sqlite"]

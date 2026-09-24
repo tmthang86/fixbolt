@@ -163,6 +163,9 @@ jobs:
       # their own siblings. It tests ab_median / ab_complete_rounds /
       # ab_summary / ab_extract, the pure parts of scripts/ab-rotation.sh.
       - run: scripts/check-ab-rotation.sh
+      # The ctxt gate reads a w2w that failed to run as a failure, not as
+      # `voluntary 0` (senior review of PR #109, L1): three fake w2w, no cargo.
+      - run: scripts/check-ctxt-gate-refuses-a-failed-run.sh
       # `[measured 2026-09-10]` This runner CAN offload TLS, and that answer is
       # what made the `tls` job below buildable as written: kernel
       # `6.17.0-1022-azure`, `CONFIG_TLS=m`, module loaded, `/proc/net/tls_stat`
@@ -687,6 +690,16 @@ jobs:
           scripts/scrape-loop.sh 127.0.0.1:19465 10 2; rc=$?
           kill "${srv}"
           exit "${rc}"
+
+      # Plan docs/plans/2026-09-24-p4-sqlite-store.md row 5: the SQLite store
+      # soak for 2 s. **A COUNT, NOT A MEASUREMENT**: it exits non-zero when a
+      # record is unwritten, a row is missing or differs from the generator, or
+      # the stand-in engine thread missed its pace on more than 1 % of
+      # messages — and asserts nothing about speed. `target/soak` is on the
+      # runner's disk; the soak refuses a tmpfs directory itself. Row 4a's
+      # 60 s kill line is run on the desk, never here.
+      - name: The SQLite store soak, 2 s, a count
+        run: cargo run --release -p fixbolt-store-sqlite --example soak -- --rate 50000 --seconds 2 --dir target/soak
 
   # STATUS.md open item 19. `rust-toolchain.toml` pins the toolchain so that a
   # clippy release cannot turn this repository red with no commit behind it —

@@ -1213,6 +1213,58 @@ for two files is a configuration that cannot be honoured.
 In `hft`, give the writer thread a core that is not the engine's: `FileLog::open_pinned`. An
 unpinned writer can land on the very core the engine was isolated onto.
 
+### 6d. The SQLite store, and writing a journal outside the engine
+
+`[2026-09-24]` `fixbolt-store-sqlite` (`SqliteJournal`/`SqliteStore`) is a `Journal` whose
+durable copy is a SQLite database, one file per session, at the engine thread's same cost as
+`FileJournal` under `Async` — a `MemJournal` answers every read and one record is pushed onto a
+ring; a writer thread of its own commits in batches
+([ADR-0180](decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md)).
+It is not a dependency of `fixbolt-engine` or of the `fixbolt` facade: add it beside them. Its
+file map is [docs/internals/store-sqlite.md](internals/store-sqlite.md); its settings are
+[CONFIGURATION.md §6](CONFIGURATION.md).
+
+**There is no synchronous mode.** As with `FileJournal` `Async`, `put` never waits for a commit
+— not even under `Synchronous::Full`. `Full` only syncs the WAL at every commit, so it buys
+*power-loss* durability for a batch already committed; it never buys *"on disk before sent"*,
+because the store is always at least one batch behind the wire. A deployment that must have the
+message on disk before it goes out keeps `FileJournal` with `Durability::Fsync`.
+
+**Never open the database file yourself while the store runs — not even to read it, not even
+with `std::fs`.** POSIX drops *every* advisory lock a process holds on a file the moment
+**any** file descriptor on it is `close()`d in that process, whichever call opened it — a
+`std::fs::File::open` you make and drop is exactly such a close. That silently removes the
+`EXCLUSIVE` lock the store's `SqliteJournal::open` is relying on to be the file's only writer,
+and a second writer sharing the file corrupts it (`sqlite.org/howtocorrupt.html` §2.2;
+[the trap, guard status below](reference/closing-any-file-descriptor-on-a-database-file-drops-every-posix-lock-on-it-in-the-process.md)).
+Back the database up through SQLite's own backup API, or only ever after `close()` has
+returned. The same rule applies to `sqlite3 the.db` opened by hand in a shell on the same host
+while the engine holds the file, and to a second copy of SQLite linked into your own binary:
+`links = "sqlite3"` stops Cargo linking a second `libsqlite3-sys`, but a C library that brings
+its own SQLite is invisible to Cargo and is the same hazard (`howtocorrupt.html` §2.3, ADR-0180
+*Consequences*).
+
+**Writing a journal of your own that shares the engine's writer bookkeeping.** If your own
+`Journal` runs a writer thread and you want `serve*`'s `wait_for_retired_writers` to wait for
+it — so a clean shutdown does not return before your writer has let go — hold a
+`fixbolt_engine::journal::WriterTicket` and a `Releaser`/`Released` pair, made with
+`Released::pair()`, and follow **the rule for a journal** exactly as `SqliteJournal`'s
+`src/writer.rs` does and as `FileJournal` itself now does
+([ADR-0181](decisions/ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md)):
+
+1. **Engine thread, inside your `Journal::retire`**: push your one-byte stop record **once**
+   (never in a loop), then call `ticket.retire(pushed)` with that push's own result, then detach
+   the writer. Push nothing after.
+2. **Writer thread, stopping**: finish flushing or committing, close whatever needs closing,
+   call `releaser.release()`, and only then call `ticket.finish()` — in that order.
+3. **Idle**, wait on `fixbolt_engine::ring::Idle` (`IDLE_SPINS`, `IDLE_SLEEP`) rather than your
+   own spin-then-sleep numbers, so every writer in the process shares one rule.
+
+Whatever order your engine-thread push and your writer's finish land in, this is safe: a
+`retire` that finds the writer already finished counts nothing toward
+`wait_for_retired_writers`, but still raises `writers_retired()` exactly once — the counter a
+correctness check may read, never `retire`'s return value (ADR-0181 *Revision 2*).
+
 ---
 
 ## 7. The machine is part of your latency
