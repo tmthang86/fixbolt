@@ -277,6 +277,26 @@
 //!   and says so: its label names every thread counted ([`counted_threads`]).
 //!   Any tap drop or buffer overflow withholds the wire column: a request the
 //!   tap never recorded would put its reply against its neighbour.
+//!
+//! # `--metrics <addr>`
+//!
+//! `[2026-09-24]` phase 4 row 1 step 5, ADR-0170. Starts a `fixbolt-metrics`
+//! exporter on `addr` watching the engine, and prints `metrics: <addr>`. For the
+//! combined run and `--listen`; `--connect` has no engine and refuses it. It is
+//! the instrument of row 2's scrape-on/scrape-off pair, so three things about
+//! it are deliberate:
+//!
+//! * **Spawned on the main thread before any thread is pinned.** A thread
+//!   inherits its spawner's affinity; spawned after `--engine-core` or
+//!   `--client-core` took effect it would share a measured core.
+//! * **Adopted by the engine before the serving window opens** — the same
+//!   one relaxed load per turn a deployment with an exporter pays.
+//! * **Counted.** `allocs` counts every thread, the exporter's included, and
+//!   its label says `exporter` when one ran. A scrape that allocated would
+//!   fail the combined run's `allocs 0` assertion.
+//!
+//! The scraper is `scripts/scrape-loop.sh`, another process, so its own
+//! allocations are not in the count.
 #![allow(unsafe_code)]
 // Two kinds of `unsafe` live here, each with its own SAFETY note naming what
 // proves it: the counting allocator below, and — Linux only, `mod wire` and
@@ -311,6 +331,14 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 /// (ADR-0072 decision 1). `0` means "not yet known". `AtomicI32` because a
 /// linux tid is a `pid_t`.
 static ENGINE_TID: AtomicI32 = AtomicI32::new(0);
+
+/// `--metrics`: the cell the exporter watches, made on the main thread before
+/// any engine exists and adopted by [`pump`]'s engine before its serving window
+/// opens. A `static` rather than one more argument through the four functions
+/// between `main` and `pump`, the shape [`ENGINE_TID`] and [`ARMED`] already
+/// have. Unset, `pump` adopts nothing and the engine carries no cell — every
+/// run without the flag is the run it was before.
+static METRICS: std::sync::OnceLock<fixbolt_engine::observe::Handles> = std::sync::OnceLock::new();
 
 struct Counting;
 
@@ -802,6 +830,11 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "a split run already picks one transport per process, with --tls; there is no \
          second half in this process to give a different one to",
     ),
+    (
+        "--metrics",
+        "the exporter watches the engine, and this process has none; pass it to the \
+         --listen process",
+    ),
 ];
 
 /// `--mode standard --wire-timestamps` on a NIC that is not loopback: refused.
@@ -1065,6 +1098,12 @@ fn value_of<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<
             .map_err(|_| format!("{name} {v}: not a valid value")),
         _ => Err(format!("{name} needs a value")),
     }
+}
+
+/// `--metrics <addr>`: where the exporter listens, or `None` without the flag.
+/// A value that is not a socket address is refused, not defaulted.
+fn metrics_of(args: &[String]) -> Result<Option<std::net::SocketAddr>, String> {
+    value_of(args, "--metrics")
 }
 
 /// `--interval`: spin until one interval after the previous send.
@@ -1364,6 +1403,33 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    // `--metrics <addr>`: the exporter, spawned HERE — on the main thread,
+    // before `spawn_engine` pins the engine thread and before `pin_client` pins
+    // this one — because a thread inherits the affinity of the thread that
+    // spawns it (ADR-0170 decision 5). Spawned any later, it would share a
+    // measured core. `--connect` has refused the flag in `half_of`. Its
+    // buffers are reserved here, outside every timed window; the exporter
+    // allocates nothing after this, and `allocs` counts its thread too.
+    let exporter = match metrics_of(&args) {
+        Ok(None) => None,
+        Ok(Some(addr)) => {
+            let handles = fixbolt_engine::observe::Handles::new();
+            let exporter = fixbolt_metrics::Exporter::builder(addr)
+                .engine("w2w", handles.observer())
+                .spawn()
+                .map_err(std::io::Error::other)?;
+            if METRICS.set(handles).is_err() {
+                return Err(std::io::Error::other("w2w: --metrics set twice"));
+            }
+            println!("metrics: {}", exporter.local_addr());
+            Some(exporter)
+        }
+        Err(why) => {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+    };
+
     let run = Run {
         path,
         warmup,
@@ -1403,6 +1469,11 @@ fn main() -> std::io::Result<()> {
         // `generator_half` never receives a choice it has no engine to act on.
         Half::Connect(addr) => generator_half(&addr, run, client_core, dump.as_deref()),
     };
+    // After the run, whatever it returned: the engine thread has been joined,
+    // so there is nothing left for the exporter to watch.
+    if let Some(e) = exporter {
+        e.stop();
+    }
     // Only `--wire-timestamps` installs a handler (`signal`). By here every
     // thread that run started has been joined or has returned, and every
     // `Drop` has run — the observer's, and `HwConfig`'s, whose `restored`
@@ -1890,6 +1961,12 @@ fn counted_threads(client: bool, observer: bool, journal: JournalKind, log: LogK
     }
     if log == LogKind::File {
         names.push("log writer");
+    }
+    // `--metrics`: the exporter is a thread of this process, so `ALLOCS`
+    // counted it. Read from the static rather than passed, so every call site
+    // written before the flag reads as it did.
+    if METRICS.get().is_some() {
+        names.push("exporter");
     }
     match names.as_slice() {
         ["engine", "client"] => "both threads".to_string(),
@@ -2946,6 +3023,11 @@ fn pump<
         8,
     )
     .with_log(log);
+    // `--metrics`: adopt the cell the exporter watches. Before the serving
+    // window, and one `Arc` clone — nothing here allocates.
+    if let Some(handles) = METRICS.get() {
+        let _ = engine.adopt(handles);
+    }
     let listener = acceptor.source().map(Interest::readable);
     let extra: &[Interest] = listener.as_slice();
     let mut first: Option<ConnId> = None;
@@ -5034,6 +5116,32 @@ mod tests {
                 "{e}"
             );
         }
+    }
+
+    /// `--metrics` belongs to a process with an engine: the combined run and
+    /// `--listen`. `--connect` refuses it rather than start an exporter with
+    /// nothing to watch.
+    #[test]
+    fn metrics_is_refused_on_connect_and_parsed_elsewhere() {
+        let e = half_of(&argv("--connect 127.0.0.1:1 --metrics 127.0.0.1:9464")).unwrap_err();
+        assert!(
+            e.starts_with("--metrics does not apply to --connect"),
+            "{e}"
+        );
+        assert!(half_of(&argv("--listen 127.0.0.1:1 --metrics 127.0.0.1:9464")).is_ok());
+        assert_eq!(
+            metrics_of(&argv("--metrics 127.0.0.1:9464")),
+            Ok(Some("127.0.0.1:9464".parse().unwrap()))
+        );
+        assert_eq!(metrics_of(&argv("--messages 5")), Ok(None));
+        assert_eq!(
+            metrics_of(&argv("--metrics 9464")),
+            Err("--metrics 9464: not a valid value".into())
+        );
+        assert_eq!(
+            metrics_of(&argv("--metrics")),
+            Err("--metrics needs a value".into())
+        );
     }
 
     #[test]
