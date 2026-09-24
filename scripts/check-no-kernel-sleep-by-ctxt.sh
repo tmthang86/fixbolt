@@ -38,6 +38,15 @@
 # in whatever mode it is given — it is the opt-in, the mode is not — so the
 # red half exercises the very assertion the green half relies on, rather than
 # a second code path that only looks like it.
+#
+# `[2026-09-24]` phase 4 row 5 (ADR-0190, ADR-0191): the same two halves over
+# `--transport uring`. `hft` over the ring enters the kernel once per idle turn
+# with `min_complete = 0` and must still make **zero** voluntary switches;
+# `standard` over the ring waits in `io_uring_enter(min_complete = 1)` and must
+# go red on the same assertion. Each uring run must also print `transport:
+# uring ... cqes=` above zero, or it is the kernel arm with a label. A binary
+# built without `--features io-uring` refuses the flag, and this script then
+# exits 2, SKIPPED, NOT PASSED.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -60,10 +69,10 @@ trap 'rm -rf "${TMP}"' EXIT
 # unaffected), and giving it to `standard` too is what makes the red half below
 # a reversal of the same assertion rather than of a look-alike.
 run_and_read() {
-  local mode="$1" out="${TMP}/out.$1" ran voluntary
-  # shellcheck disable=SC2086 # W2W_EXTRA: zero or more flags, split on spaces.
+  local mode="$1" out="${TMP}/out.$1${2:+.uring}" ran voluntary
+  # shellcheck disable=SC2086 # W2W_EXTRA and $2: zero or more flags, split on spaces.
   "${BIN}" --messages 300 --warmup 50 --hold-ms 400 --mode "${mode}" \
-    --assert-no-voluntary-switches ${W2W_EXTRA:-} \
+    --assert-no-voluntary-switches ${2:-} ${W2W_EXTRA:-} \
     > "${out}" 2>&1
   local status=$?
   ran="$(grep -oE '^mode: [a-z]+' "${out}" | head -1 | cut -d' ' -f2)"
@@ -88,15 +97,27 @@ run_and_read() {
 # gate printed GREEN for a run that never happened (senior review of PR #109,
 # L1; docs/reference/a-shell-read-heredoc-swallows-a-failed-functions-exit-status.md).
 # `scripts/check-ctxt-gate-refuses-a-failed-run.sh` is the guard.
+#
+# `[2026-09-24]` phase 4 row 5: the io_uring halves go through here too, with
+# their flags as `$2`. A build without `--features io-uring` refuses
+# `--transport uring` before printing `mode:`, which reads as "produced no
+# result"; that one refusal is told apart and exits 2, SKIPPED, NOT PASSED —
+# callers write `|| exit $?` so the 2 survives the command substitution.
 read_half() {
-  local mode="$1" got voluntary status
-  if ! got="$(run_and_read "${mode}")"; then
-    echo "FAIL: --mode ${mode} produced no result — w2w did not run as asked (the line above says why); nothing was measured" >&2
+  local mode="$1" extra="${2:-}" got voluntary status
+  if ! got="$(run_and_read "${mode}" "${extra}")"; then
+    # shellcheck disable=SC2016 # the literal backticks main.rs prints.
+    if grep -q 'needs `--features io-uring`' "${TMP}/out.${mode}${extra:+.uring}" 2>/dev/null; then
+      echo "io_uring arm SKIPPED, NOT PASSED: this build has no io_uring transport (needs \`--features io-uring\`)." >&2
+      echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
+      exit 2
+    fi
+    echo "FAIL: --mode ${mode}${extra:+ ${extra}} produced no result — w2w did not run as asked (the line above says why); nothing was measured" >&2
     exit 1
   fi
   read -r voluntary status <<<"${got}"
   if ! [[ "${voluntary}" =~ ^[0-9]+$ && "${status}" =~ ^[0-9]+$ ]]; then
-    echo "FAIL: --mode ${mode} produced no result — read voluntary '${voluntary}' and exit '${status}', not two numbers" >&2
+    echo "FAIL: --mode ${mode}${extra:+ ${extra}} produced no result — read voluntary '${voluntary}' and exit '${status}', not two numbers" >&2
     exit 1
   fi
   echo "${voluntary} ${status}"
@@ -141,6 +162,70 @@ elif [[ -z "${red_line}" ]]; then
   rc=1
 else
   echo "RED   ok — ${red_line}"
+fi
+
+echo
+echo "== io_uring arm: hft over the ring, w2w itself asserts voluntary == 0 =="
+uring_out="${TMP}/out.hft.uring"
+uh_half="$(read_half hft "--transport uring")" || exit $?
+read -r uh_voluntary uh_status <<<"${uh_half}"
+echo "hft+uring voluntary ${uh_voluntary}"
+# The switch count first: w2w's own assertion ends the run before it prints
+# the `transport:` line, and a red must name its cause, not a missing line.
+if [[ "${uh_status}" -ne 0 || "${uh_voluntary}" -ne 0 ]]; then
+  echo "FAIL: --mode hft --transport uring made ${uh_voluntary} voluntary switches (exit ${uh_status}), expected 0" >&2
+  tail -5 "${uring_out}" >&2
+  rc=1
+elif ! grep -qE '^transport: uring .*cqes=[1-9]' "${uring_out}"; then
+  echo "FAIL: --transport uring printed no 'transport: uring ... cqes=' line above zero — the ring path did not run" >&2
+  rc=1
+else
+  echo "GREEN ok — hft over io_uring: 0 voluntary context switches, $(grep -E '^transport:' "${uring_out}")"
+fi
+
+echo
+echo "== io_uring arm: standard over the ring, the same assertion must go red =="
+us_half="$(read_half standard "--transport uring")" || exit $?
+read -r us_voluntary us_status <<<"${us_half}"
+echo "standard+uring voluntary ${us_voluntary}"
+us_red="$(grep -oE 'standard: engine thread made [0-9]+ voluntary context switches, expected 0' \
+  "${TMP}/out.standard.uring" | head -1)"
+if [[ "${us_status}" -eq 0 || "${us_voluntary}" -eq 0 ]]; then
+  echo "FAIL: --mode standard --transport uring did not go red (exit ${us_status}, voluntary ${us_voluntary}) — it did not block in the ring's wait" >&2
+  rc=1
+elif [[ -z "${us_red}" ]]; then
+  echo "FAIL: --mode standard --transport uring exited ${us_status} but printed no assertion message" >&2
+  tail -5 "${TMP}/out.standard.uring" >&2
+  rc=1
+else
+  echo "RED   ok — standard over io_uring: ${us_red}"
+fi
+
+sqpoll_flags() {
+  local f="--transport uring --uring-arm sqpoll --sqpoll-core ${FIXBOLT_SQPOLL_CORE}"
+  [[ "${FIXBOLT_SQPOLL_ALLOW_UNISOLATED:-}" == 1 ]] && f="${f} --allow-unisolated"
+  echo "${f}"
+}
+echo
+echo "== io_uring arm: SQPOLL (hft), only where FIXBOLT_SQPOLL_CORE names the SQ thread's core =="
+if [[ -z "${FIXBOLT_SQPOLL_CORE:-}" ]]; then
+  echo "SQPOLL arm SKIPPED, NOT PASSED: FIXBOLT_SQPOLL_CORE is not set, so it was not run."
+else
+  [[ "${FIXBOLT_SQPOLL_ALLOW_UNISOLATED:-}" == 1 ]] && \
+    echo "(FIXBOLT_SQPOLL_ALLOW_UNISOLATED=1: the SQ core is not held to isolcpus — not a DESIGN.md §9 run)"
+  sq_half="$(read_half hft "$(sqpoll_flags)")" || exit $?
+  read -r sq_voluntary sq_status <<<"${sq_half}"
+  echo "hft+sqpoll voluntary ${sq_voluntary}"
+  if [[ "${sq_status}" -ne 0 || "${sq_voluntary}" -ne 0 ]]; then
+    echo "FAIL: the SQPOLL arm made ${sq_voluntary} voluntary switches (exit ${sq_status}), expected 0" >&2
+    tail -5 "${TMP}/out.hft.uring" >&2
+    rc=1
+  elif ! grep -qE '^transport: uring arm=sqpoll .*cqes=[1-9]' "${TMP}/out.hft.uring"; then
+    echo "FAIL: the SQPOLL arm printed no 'transport: uring arm=sqpoll ... cqes=' line above zero" >&2
+    rc=1
+  else
+    echo "GREEN ok — SQPOLL arm: 0 voluntary context switches, $(grep -E '^transport:' "${TMP}/out.hft.uring")"
+  fi
 fi
 
 echo

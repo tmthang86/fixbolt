@@ -67,6 +67,18 @@
 //!   `ExecutionReport` body. Its cost is constant in N and is not part of a
 //!   `Connection`.
 //!
+//! # The busy loop over real sockets — a syscall on purpose (phase 4 row 5)
+//!
+//! **Unlike every `Feed` case above, this section measures system calls, by
+//! design.** Behind the `io-uring` feature: N real loopback TCP sessions, and
+//! each iteration the client side writes one `NewOrderSingle` per session and
+//! the engine runs `turn()` + `idle()` until N `ExecutionReport`s have been
+//! counted back at the clients. `busy loop, {N} busy sessions, kernel` is
+//! `TcpTransport` + `Spin`; `…, uring` is `UringTransport` + `UringSpin`;
+//! N = 1, 16, 64, paired by name. The client's writes and reads are inside
+//! the iteration on both arms alike. Recorded by row 7, not judged here
+//! (ADR-0190 decision 10); no figure from it is published by this row.
+//!
 //! # The administrative twin, item 49
 //!
 //! `engine turn, 1 busy, admin` answers a `TestRequest` with a `Heartbeat`
@@ -570,6 +582,224 @@ fn engine_with_admin<const SLOTS: usize>(n: usize) -> DenseAdmin<SLOTS> {
     engine
 }
 
+/// The busy-loop pair, `io-uring` builds only. See the module note.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+mod busy_loop {
+    use super::{Desk, Feed, harness, peer};
+    use fixbolt_engine::Engine;
+    use fixbolt_engine::clock::ManualClock;
+    use fixbolt_engine::dispatch::InlineDispatch;
+    use fixbolt_engine::journal::MemJournal;
+    use fixbolt_engine::transport::uring::{HftArm, Uring, UringConfig};
+    use fixbolt_engine::transport::{TcpTransport, Transport};
+    use fixbolt_engine::wait::{Spin, Waiting};
+    use fixbolt_session::Config;
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    type BusyEngine<T, W> = Engine<
+        T,
+        fixbolt_session::Acceptor,
+        InlineDispatch<Desk>,
+        ManualClock,
+        W,
+        MemJournal<8, 512>,
+        64,
+        4096,
+        8192,
+    >;
+
+    /// Counts `\x0135=8\x01` in a byte stream that arrives in pieces: a
+    /// report split across two reads is still one report.
+    struct Reports {
+        matched: usize,
+        count: usize,
+    }
+
+    impl Reports {
+        const PAT: &'static [u8] = b"\x0135=8\x01";
+
+        fn feed(&mut self, bytes: &[u8]) {
+            for &b in bytes {
+                // The pattern's only self-overlap is its leading `\x01`.
+                if Self::PAT.get(self.matched) == Some(&b) {
+                    self.matched += 1;
+                    if self.matched == Self::PAT.len() {
+                        self.count += 1;
+                        self.matched = 1;
+                    }
+                } else {
+                    self.matched = usize::from(b == 1);
+                }
+            }
+        }
+    }
+
+    /// One session's client end: its socket, its patched order, its count.
+    struct Client {
+        sock: TcpStream,
+        feed: Feed,
+        reports: Reports,
+    }
+
+    impl Client {
+        fn drain(&mut self, buf: &mut [u8]) {
+            loop {
+                match self.sock.read(buf) {
+                    Ok(0) => panic!("the engine closed a session mid-sweep"),
+                    Ok(n) => self.reports.feed(&buf[..n]),
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+                    Err(e) => panic!("client read: {e}"),
+                }
+            }
+        }
+    }
+
+    fn setup<T: Transport, W: Waiting>(
+        n: usize,
+        wait: W,
+        mut wrap: impl FnMut(TcpTransport) -> Option<T>,
+    ) -> (BusyEngine<T, W>, Vec<Client>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let addr = listener.local_addr().expect("bound");
+        let mut engine: BusyEngine<T, W> = Engine::new(
+            Config::acceptor(b"FIX.4.4", b"ISLD", b"W2W"),
+            InlineDispatch::new(Desk::new()),
+            ManualClock::at(fixbolt_conformance::script::FIXED_TIME_MILLIS),
+            wait,
+            n,
+        );
+        let mut clients = Vec::with_capacity(n);
+        for i in 0..n {
+            let sock = TcpStream::connect(addr).expect("connect");
+            sock.set_nodelay(true).expect("nodelay");
+            let (server, _) = listener.accept().expect("accept");
+            let t = wrap(TcpTransport::new(server).expect("non-blocking"))
+                .expect("a transport for every session");
+            engine
+                .add_with_prefix_and_config(
+                    t,
+                    Config::acceptor(b"FIX.4.4", b"ISLD", peer(i).as_bytes()),
+                    &[],
+                )
+                .expect("an empty prefix fits any RX");
+            let mut feed = Feed::new(i);
+            (&sock).write_all(&feed.logon).expect("logon");
+            feed.logged_on = true;
+            sock.set_nonblocking(true).expect("non-blocking");
+            clients.push(Client {
+                sock,
+                feed,
+                reports: Reports {
+                    matched: 0,
+                    count: 0,
+                },
+            });
+        }
+        let mut buf = [0u8; 8192];
+        let mut spins = 0u32;
+        while engine.logons() < n as u64 {
+            engine.turn();
+            engine.idle();
+            clients.iter_mut().for_each(|c| c.drain(&mut buf));
+            spins += 1;
+            assert!(
+                spins < 10_000_000,
+                "only {} of {n} sessions logged on",
+                engine.logons()
+            );
+        }
+        (engine, clients)
+    }
+
+    /// One iteration: an order per session, then turn and idle until every
+    /// session's `ExecutionReport` is back at its client.
+    fn round<T: Transport, W: Waiting>(
+        engine: &mut BusyEngine<T, W>,
+        clients: &mut [Client],
+        buf: &mut [u8],
+    ) {
+        let want: usize = clients.iter().map(|c| c.reports.count + 1).sum();
+        for c in clients.iter_mut() {
+            c.feed.advance();
+            (&c.sock).write_all(&c.feed.order).expect("order");
+        }
+        let mut spins = 0u32;
+        loop {
+            engine.turn();
+            engine.idle();
+            let mut got = 0;
+            for c in clients.iter_mut() {
+                c.drain(buf);
+                got += c.reports.count;
+            }
+            if got >= want {
+                return;
+            }
+            spins += 1;
+            assert!(
+                spins < 10_000_000,
+                "reports stopped arriving: {got} of {want}"
+            );
+        }
+    }
+
+    /// Best-of-7 of `rounds` rounds, per round — `harness::Suite::bench`'s
+    /// statistic, timed here and handed to `Suite::figure` (the ADR-0096
+    /// seam `benches/wakeup.rs` uses). `bench` runs every closure 1.41 million
+    /// times, sized for a case of nanoseconds; a round here is tens of
+    /// microseconds per session, and at N = 64 that count is over an hour per
+    /// case. `[measured 2026-09-24]` the first run of this section was stopped
+    /// in N = 16's case for exactly that.
+    fn time<T: Transport, W: Waiting>(
+        b: &mut harness::Suite,
+        name: &str,
+        engine: &mut BusyEngine<T, W>,
+        clients: &mut [Client],
+        buf: &mut [u8],
+    ) {
+        let rounds = (20_000 / clients.len()).max(50) as u32;
+        for _ in 0..rounds / 10 {
+            round(engine, clients, buf);
+        }
+        let mut best = f64::INFINITY;
+        for _ in 0..7 {
+            let t = std::time::Instant::now();
+            for _ in 0..rounds {
+                round(engine, clients, buf);
+            }
+            best = best.min(t.elapsed().as_nanos() as f64 / f64::from(rounds));
+        }
+        b.figure(name, std::hint::black_box(best));
+    }
+
+    pub fn pairs(b: &mut harness::Suite) {
+        let mut buf = [0u8; 8192];
+        for n in [1usize, 16, 64] {
+            let (mut kernel, mut kc) = setup(n, Spin, Some);
+            round(&mut kernel, &mut kc, &mut buf);
+            let name = format!("busy loop, {n} busy sessions, kernel");
+            time(b, &name, &mut kernel, &mut kc, &mut buf);
+            assert_eq!(kernel.connections(), n, "every session still up");
+            drop((kernel, kc));
+
+            let ring = UringConfig::new(8, 4096, 64).expect("a valid ring size");
+            let (uring, spin) = Uring::hft(ring, HftArm::Enter)
+                .unwrap_or_else(|e| panic!("the uring arm needs a ring: {e}"));
+            let (mut ringed, mut rc) = setup(n, spin, |t| uring.register(t));
+            round(&mut ringed, &mut rc, &mut buf);
+            let name = format!("busy loop, {n} busy sessions, uring");
+            time(b, &name, &mut ringed, &mut rc, &mut buf);
+            let r = uring.report();
+            assert!(
+                r.cqes > 0 && r.enter_errors == 0 && r.cq_overflow == 0,
+                "the ring carried the sweep: {r:?}"
+            );
+            assert_eq!(ringed.connections(), n, "every session still up: {r:?}");
+        }
+    }
+}
+
 fn main() {
     harness::suite(|b| {
         // B-i. The ring is pinned at 8 slots — 4 KiB of heap — so that what the
@@ -617,5 +847,8 @@ fn main() {
                 black_box(e4096.turn());
             });
         }
+
+        #[cfg(all(feature = "io-uring", target_os = "linux"))]
+        busy_loop::pairs(b);
     });
 }

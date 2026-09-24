@@ -13,6 +13,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 |---|---|
 | `lib.rs` | `Engine`, `turn`, `run`, `serve*` entry points — one non-blocking pass, and the loop around it |
 | `transport.rs` | `Transport`, `TcpTransport`, `Loopback`, `Waiting`, the `Io` result type |
+| `transport/uring.rs` | `[2026-09-24]` A second `Transport`, behind `#[cfg(all(feature = "io-uring", target_os = "linux"))]`: `Uring` (the ring, one provided-buffer ring per connection slot — [ADR-0192](../decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md) — the per-connection staging slab, `!Send`), `UringTransport`, `UringSpin`/`UringBlock` (the idle strategy that is also the reaper), `UringConfig`, `HftArm`, `UringRefused`, `UringReport`. The module doc names each `unsafe` block (U1–U7) and the test that proves it |
 | `frame.rs` | `Framer` — cutting a byte stream into messages by `9=`, nothing parsed |
 | `presession.rs` | `Identity`, `PendingSet`, `Registry`, `Table` — who owns a socket before a session exists |
 | `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes; its `Drop` retires the journal (ADR-0153, `tests/retire.rs`) |
@@ -44,6 +45,8 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
    one syscall builds on the next
 7. `affinity.rs` → `shard.rs` — cores, then many engines across them
 8. `tls.rs` — a second transport, read last since it assumes 1–3
+9. `transport/uring.rs` — a third transport, read last for the same reason as `tls.rs`, and
+   after `wait.rs` (`NEEDS_REAPER`/`REAPS`, the const it and `Engine::new` check between them)
 
 ## Tests that guard it
 
@@ -106,6 +109,18 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
   did not move — `tests/shard.rs` is **not** that file and did change, because `Counter`
   implements `Shardable` and gained the required `add_started`
 - `tests/tls*.rs` — `tls.rs`
+- `tests/uring.rs` (`--features io-uring`, Linux) — `transport/uring.rs`: red first (plan
+  `docs/plans/2026-09-24-p4-io-uring-transport.md` step 1), byte-exact stress over real sockets,
+  an ownership ledger checked after every reap (`Uring::buffers_accounted_for`), a residency
+  check on the buffer memory, and a canary written into the buffer range after the ring is
+  dropped (`unregistered_buffers_are_not_written_after_the_ring_is_dropped`; under ASan needs
+  `ASAN_OPTIONS=quarantine_size_mb=0:thread_local_quarantine_size_kb=0` —
+  [the trap](../reference/asans-quarantine-keeps-a-freed-mapping-from-being-re-occupied.md)). A
+  real seccomp filter proves the blocked-startup refusal
+  (`a_blocked_io_uring_refuses_to_start_and_names_seccomp`); `scripts/check-uring-refused-under-sysctl.sh`
+  proves the sysctl half on the desk only. Machine-checked also by
+  `scripts/check-no-kernel-sleep.sh`'s and `scripts/check-standard-gives-the-core-back.sh`'s
+  `io_uring` arms (ADR-0190, ADR-0191)
 - `benches/alloc.rs` — non-negotiable 1; `benches/turn.rs`, `benches/dispatch.rs` — the
   per-turn and dispatch cost
 - `benches/wakeup.rs` — cross-thread wake latency, `epoll_wait` and `poll` arms, 20 000

@@ -316,7 +316,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Allocations since the counter was armed, on **every** thread — which is the
@@ -406,7 +406,7 @@ use fixbolt_codec::{FieldIndex, Template, TemplateBuilder, Validation, parse_int
 use fixbolt_dict::Fix44;
 use fixbolt_engine::dispatch::{ConnId, InlineDispatch};
 use fixbolt_engine::msglog::MessageLog;
-use fixbolt_engine::transport::{Interest, TcpTransport, TlsMode, Transport};
+use fixbolt_engine::transport::{Carrier, Interest, TcpTransport, TlsMode, Transport};
 use fixbolt_engine::wait::{Spin, Waiting, Yield};
 use fixbolt_engine::{Acceptor, Engine};
 use fixbolt_session::{Application, Config};
@@ -472,6 +472,98 @@ impl Tls {
             Self::Userspace => "userspace",
         }
     }
+}
+
+/// Whether this build can run `--transport uring` — the shape of [`CAN_TLS`].
+const CAN_URING: bool = cfg!(all(feature = "io-uring", target_os = "linux"));
+
+/// What carries the received bytes — `--transport`. Phase 4 row 5, ADR-0190.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportKind {
+    /// `read(2)` on the kernel socket: every figure published before the flag.
+    Kernel,
+    /// Completions reaped from an `io_uring` (`fixbolt_engine::transport::uring`).
+    Uring,
+}
+
+impl TransportKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Kernel => "kernel",
+            Self::Uring => "uring",
+        }
+    }
+}
+
+/// What the engine's transport reported as its [`Carrier`] after the first
+/// logon — `0` until then. Stored next to [`TLS_SEEN`], by the same thread, for
+/// the same reason: the `transport:` line is **read back from the engine**,
+/// never echoed from `--transport`.
+static CARRIER_SEEN: AtomicU8 = AtomicU8::new(0);
+
+const fn carrier_code(c: Option<Carrier>) -> u8 {
+    match c {
+        Some(Carrier::Kernel) => 1,
+        Some(Carrier::Uring) => 2,
+        Some(Carrier::Other) => 3,
+        None => 4,
+    }
+}
+
+const fn carrier_name(code: u8) -> &'static str {
+    match code {
+        1 => "kernel",
+        2 => "uring",
+        3 => "other",
+        _ => "unknown",
+    }
+}
+
+/// The ring's own report, published by the engine thread once its loop has
+/// returned (`--transport uring` only): `UringArm` as `1` enter, `2` sqpoll,
+/// `3` block; `0` means no ring ran.
+static URING_ARM: AtomicU8 = AtomicU8::new(0);
+static URING_CQES: AtomicU64 = AtomicU64::new(0);
+static URING_BYTES: AtomicU64 = AtomicU64::new(0);
+static URING_ENOBUFS: AtomicU64 = AtomicU64::new(0);
+static URING_UNARMED: AtomicU64 = AtomicU64::new(0);
+static URING_CQ_OVERFLOW: AtomicU64 = AtomicU64::new(0);
+static URING_ENTER_ERRORS: AtomicU64 = AtomicU64::new(0);
+static URING_UNISOLATED: AtomicBool = AtomicBool::new(false);
+
+/// The `transport:` line: `kernel`/`uring` from [`CARRIER_SEEN`], the arm and
+/// the counts from the ring's report — ADR-0190 R1, R3 add `unisolated=` (the
+/// SQPOLL arm) and `unarmed=`. `scripts/w2w-baseline.sh` reads it back.
+fn transport_line() -> String {
+    let carrier = carrier_name(CARRIER_SEEN.load(Ordering::Relaxed));
+    if carrier != "uring" {
+        return format!("transport: {carrier}");
+    }
+    let arm = URING_ARM.load(Ordering::Relaxed);
+    let unisolated = if arm == 2 {
+        if URING_UNISOLATED.load(Ordering::Relaxed) {
+            " unisolated=yes"
+        } else {
+            " unisolated=no"
+        }
+    } else {
+        ""
+    };
+    format!(
+        "transport: uring arm={} cqes={} bytes={} enobufs={} unarmed={} cq-overflow={} enter-errors={}{unisolated}",
+        match arm {
+            1 => "enter",
+            2 => "sqpoll",
+            3 => "block",
+            _ => "none",
+        },
+        URING_CQES.load(Ordering::Relaxed),
+        URING_BYTES.load(Ordering::Relaxed),
+        URING_ENOBUFS.load(Ordering::Relaxed),
+        URING_UNARMED.load(Ordering::Relaxed),
+        URING_CQ_OVERFLOW.load(Ordering::Relaxed),
+        URING_ENTER_ERRORS.load(Ordering::Relaxed),
+    )
 }
 
 /// What `tls:` says, from what the engine reported — never from [`Tls`].
@@ -875,6 +967,19 @@ const CONNECT_REFUSES: &[(&str, &str)] = &[
         "--metrics",
         "the exporter watches the engine, and this process has none; pass it to the \
          --listen process",
+    ),
+    (
+        "--transport",
+        "the engine's receive path is chosen in the --listen process; this process has \
+         no engine and cannot read back which one ran",
+    ),
+    (
+        "--uring-arm",
+        "the ring's arm is the engine's; pass it to the --listen process",
+    ),
+    (
+        "--sqpoll-core",
+        "the SQ thread belongs to the engine's ring; pass it to the --listen process",
     ),
 ];
 
@@ -1323,6 +1428,142 @@ impl Pacer {
     }
 }
 
+/// `--transport kernel|uring`, `--uring-arm enter|sqpoll`, `--sqpoll-core <cpu>`:
+/// the ring arm this run asked for, or `None` for the kernel arm — or why the
+/// combination is refused.
+///
+/// `--allow-unisolated` waives `isolcpus` for the SQ core exactly as it does
+/// for the engine's (ADR-0190 R1): the waiver travels in the `CorePin`, and the
+/// `transport:` line says `unisolated=yes`.
+fn uring_of(
+    args: &[String],
+    mode: Mode,
+    tls: Tls,
+    client_tls: Tls,
+    taken: [Option<usize>; 3],
+) -> Result<Option<UringChoice>, String> {
+    let transport = match value_of::<String>(args, "--transport")?.as_deref() {
+        None | Some("kernel") => TransportKind::Kernel,
+        Some("uring") => TransportKind::Uring,
+        Some(other) => {
+            return Err(format!(
+                "unknown --transport {other}; expected kernel or uring"
+            ));
+        }
+    };
+    let sqpoll = match value_of::<String>(args, "--uring-arm")?.as_deref() {
+        None => None,
+        Some("enter") => Some(false),
+        Some("sqpoll") => Some(true),
+        Some(other) => {
+            return Err(format!(
+                "unknown --uring-arm {other}; expected enter or sqpoll"
+            ));
+        }
+    };
+    let sqpoll_core: Option<usize> = value_of(args, "--sqpoll-core")?;
+    if transport == TransportKind::Kernel {
+        if sqpoll.is_some() || sqpoll_core.is_some() {
+            return Err("--uring-arm and --sqpoll-core need --transport uring".to_owned());
+        }
+        return Ok(None);
+    }
+    if !CAN_URING {
+        return Err(
+            "--transport uring needs `--features io-uring`, on Linux; this build \
+                    would run the kernel arm under the uring label. Build with: \
+                    cargo build --release -p fixbolt-w2w --features io-uring"
+                .to_owned(),
+        );
+    }
+    if sqpoll_core.is_some() && sqpoll != Some(true) {
+        return Err("--sqpoll-core needs --uring-arm sqpoll".to_owned());
+    }
+    if mode == Mode::Yield {
+        return Err(
+            "--transport uring --mode yield: `yield` reaps no ring, so the engine \
+                    would never receive a byte; use hft or standard"
+                .to_owned(),
+        );
+    }
+    if tls != Tls::Off || client_tls != Tls::Off {
+        return Err(
+            "--transport uring with --tls: TLS over io_uring is not built (ADR-0190)".to_owned(),
+        );
+    }
+    if sqpoll == Some(true) && mode != Mode::Hft {
+        return Err(format!(
+            "--uring-arm sqpoll with --mode {}: SQPOLL is an hft arm only — a spinning \
+             kernel thread under a standard engine is the defect non-negotiable 4 names",
+            mode.name()
+        ));
+    }
+    uring_arm(args, sqpoll == Some(true), sqpoll_core, taken).map(Some)
+}
+
+/// The `HftArm` itself: `Enter`, or `Sqpoll` on a validated `CorePin`.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+fn uring_arm(
+    args: &[String],
+    sqpoll: bool,
+    core: Option<usize>,
+    taken: [Option<usize>; 3],
+) -> Result<UringChoice, String> {
+    use fixbolt_engine::transport::uring::HftArm;
+    if !sqpoll {
+        return Ok(HftArm::Enter);
+    }
+    let Some(core) = core else {
+        return Err(
+            "--uring-arm sqpoll needs --sqpoll-core <cpu>: the SQ thread is \
+                    pinned to a core the caller names, never one the engine picks"
+                .to_owned(),
+        );
+    };
+    if taken.contains(&Some(core)) {
+        return Err(format!(
+            "--sqpoll-core {core} is the engine's, the client's or the observer's core; \
+             the SQ thread spins and would compete with it"
+        ));
+    }
+    sqpoll_arm(args, core)
+}
+
+/// `Sqpoll` on `core`, validated as `serve_hft_pinned` validates the engine's.
+#[cfg(all(feature = "io-uring", feature = "affinity", target_os = "linux"))]
+fn sqpoll_arm(args: &[String], core: usize) -> Result<UringChoice, String> {
+    use fixbolt_engine::affinity::{CoreId, CorePin};
+    let mut pin = CorePin::to(CoreId(core));
+    if present(args, "--allow-unisolated") {
+        pin = pin.allow_unisolated();
+    }
+    pin.validate().map_err(|e| {
+        format!("--sqpoll-core {core}: {e} (pass --allow-unisolated to measure there on purpose)")
+    })?;
+    Ok(fixbolt_engine::transport::uring::HftArm::Sqpoll { pin })
+}
+
+/// Without `affinity` there is no `CorePin`, so no SQPOLL arm.
+#[cfg(all(feature = "io-uring", not(feature = "affinity"), target_os = "linux"))]
+fn sqpoll_arm(_args: &[String], _core: usize) -> Result<UringChoice, String> {
+    Err(
+        "--uring-arm sqpoll needs `--features affinity` too: the SQ thread's core is a \
+         CorePin, validated against isolcpus like the engine's"
+            .to_owned(),
+    )
+}
+
+/// Unreachable: `uring_of` refuses `--transport uring` first on this build.
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+fn uring_arm(
+    _args: &[String],
+    _sqpoll: bool,
+    _core: Option<usize>,
+    _taken: [Option<usize>; 3],
+) -> Result<UringChoice, String> {
+    Err("this build has no io_uring transport".to_owned())
+}
+
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // The two halves' refusals first. With no new flag they return
@@ -1577,6 +1818,23 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    // `--transport`, `--uring-arm`, `--sqpoll-core` — phase 4 row 5,
+    // ADR-0190. Every refusal comes before a thread or a socket exists, and a
+    // flag this build cannot honour is refused rather than ignored (the module
+    // note's `--mode standard` lesson).
+    let taken = [
+        engine_core,
+        client_core,
+        wire.as_ref().map(|w| w.observer_core),
+    ];
+    let uring = match uring_of(&args, mode, tls, client_tls, taken) {
+        Ok(u) => u,
+        Err(why) => {
+            eprintln!("w2w: {why}");
+            return Err(std::io::Error::other(why));
+        }
+    };
+
     // `--metrics <addr>`: the exporter, spawned HERE — on the main thread,
     // before `spawn_engine` pins the engine thread and before `pin_client` pins
     // this one — because a thread inherits the affinity of the thread that
@@ -1611,6 +1869,7 @@ fn main() -> std::io::Result<()> {
         hold_ms,
         tls,
         interval_us,
+        uring,
     };
     let ran = match half {
         Half::Both => both_halves(
@@ -1776,6 +2035,12 @@ fn both_halves(
     };
     #[cfg(not(all(feature = "tls", target_os = "linux")))]
     let side = EngineSide::Plain;
+    // `--transport uring` (refused beside any TLS arm in `main`).
+    #[cfg(all(feature = "io-uring", target_os = "linux"))]
+    let side = match run.uring {
+        Some(arm) => EngineSide::Uring(arm),
+        None => side,
+    };
     let body = move || {
         print_engine_tid();
         // `false`: the client on the other thread stops this engine through
@@ -1890,6 +2155,9 @@ fn both_halves(
     println!("     mode   {:>9}", mode.name());
     println!("     path   {:>9}", path.name());
     print_figures(&mut samples, &run, late);
+    // Read back from the engine (`Engine::carrier`) and, for `uring`, from the
+    // ring's own report — never from `--transport`.
+    println!("{}", transport_line());
     // Which threads `allocs` counted — every one this process ran in the
     // window, the journal's and the log's writers included. With no flag it
     // reads `both threads`, as it always did.
@@ -2017,6 +2285,7 @@ fn engine_half(
     // `engine.join()` below has returned, by which point dropping the engine
     // has already closed the writer threads.
     let (files, _cleanup) = open_files(journal, log)?;
+    let side = run.listen_side();
     let body = move || {
         print_engine_tid();
         // `true`: arm the allocation counter after the first logon, and return
@@ -2027,7 +2296,7 @@ fn engine_half(
                 &stop,
                 mode,
                 ListenNever,
-                EngineSide::Plain,
+                side,
                 files,
                 handoff,
                 listener_every,
@@ -2037,7 +2306,7 @@ fn engine_half(
                 &stop,
                 mode,
                 d,
-                EngineSide::Plain,
+                side,
                 files,
                 handoff,
                 listener_every,
@@ -2067,6 +2336,17 @@ fn engine_half(
             "w2w: --listen requires the engine to report tls '{}', and it reports '{}'",
             tls.wants(),
             seen_name(seen),
+        )));
+    }
+    // And the receive path, read back the same way.
+    println!("{}", transport_line());
+    let carrier = carrier_name(CARRIER_SEEN.load(Ordering::Relaxed));
+    if carrier != run.transport().name() {
+        return Err(std::io::Error::other(format!(
+            "w2w: --listen --transport {} requires the engine to report transport '{}', \
+             and it reports '{carrier}'",
+            run.transport().name(),
+            run.transport().name(),
         )));
     }
 
@@ -2401,6 +2681,37 @@ struct Run {
     tls: Tls,
     /// `--interval`, µs; `0` is back-to-back.
     interval_us: u64,
+    /// `--transport uring`, and the `hft` arm it asked for; `None` is the
+    /// kernel arm. Without the `io-uring` feature it is always `None` — `main`
+    /// refuses the flag before a `Run` exists.
+    uring: Option<UringChoice>,
+}
+
+/// The arm a `--transport uring` run asked for.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+type UringChoice = fixbolt_engine::transport::uring::HftArm;
+/// Nothing: a build without `io-uring` has no ring to choose an arm for.
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+type UringChoice = ();
+
+impl Run {
+    /// Which receive path the run asked for — what the engine must report.
+    const fn transport(&self) -> TransportKind {
+        if self.uring.is_some() {
+            TransportKind::Uring
+        } else {
+            TransportKind::Kernel
+        }
+    }
+
+    /// The engine side for a `--listen` run, which has no TLS arm.
+    fn listen_side(&self) -> EngineSide {
+        #[cfg(all(feature = "io-uring", target_os = "linux"))]
+        if let Some(arm) = self.uring {
+            return EngineSide::Uring(arm);
+        }
+        EngineSide::Plain
+    }
 }
 
 /// Who is on the other end of the client's socket.
@@ -2470,6 +2781,7 @@ fn measure<C: Wire>(
     assert_no_voluntary: Option<Mode>,
     client_tls: Tls,
 ) -> std::io::Result<Measured> {
+    let want_transport = run.transport();
     let Run {
         path,
         warmup,
@@ -2477,6 +2789,7 @@ fn measure<C: Wire>(
         hold_ms,
         tls,
         interval_us,
+        uring: _,
     } = *run;
 
     // Logon first, and read the answer, so the timed loop starts on an
@@ -2542,6 +2855,20 @@ fn measure<C: Wire>(
                 tls.wants(),
                 seen_name(seen),
                 tls.name(),
+            )));
+        }
+        // The same judgement for `--transport`: the engine said which receive
+        // path carried the logon, and an arm labelled `uring` that ran on
+        // `read(2)` measures nothing about `io_uring`.
+        let carrier = carrier_name(CARRIER_SEEN.load(Ordering::Relaxed));
+        if carrier != want_transport.name() {
+            return Err(std::io::Error::other(format!(
+                "w2w: --transport {} requires the engine to report transport '{}', and it \
+                 reports '{carrier}'. Nothing measured below would be about '{}', so \
+                 nothing is measured.",
+                want_transport.name(),
+                want_transport.name(),
+                want_transport.name(),
             )));
         }
     }
@@ -2767,6 +3094,11 @@ enum EngineSide {
     Plain,
     #[cfg(all(feature = "tls", target_os = "linux"))]
     Tls(std::sync::Arc<rustls::ServerConfig>, bool),
+    /// `--transport uring`: the ring is made **on the engine thread**, in
+    /// [`run_uring`] — it is `SINGLE_ISSUER`, so the thread that makes it is
+    /// the only one that may reap it.
+    #[cfg(all(feature = "io-uring", target_os = "linux"))]
+    Uring(fixbolt_engine::transport::uring::HftArm),
 }
 
 /// Where each accepted connection's resend store comes from: `--journal`,
@@ -3127,6 +3459,20 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
                 listener_every,
             );
         }
+        #[cfg(all(feature = "io-uring", target_os = "linux"))]
+        (EngineSide::Uring(arm), stamp) => {
+            run_uring::<_, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                mode,
+                app,
+                arm,
+                stamp,
+                journals,
+                log,
+                listener_every,
+            );
+        }
         #[cfg(all(feature = "tls", target_os = "linux"))]
         (EngineSide::Tls(cfg, offload), stamp) => {
             run::<_, _, _, _, _, UNTIL_CLOSED>(
@@ -3230,6 +3576,119 @@ fn run<
         Mode::Standard => {
             let _ = (wrap, journals, log, listener_every);
             eprintln!("w2w: this build has no standard mode");
+        }
+    }
+}
+
+/// The ring `--transport uring` runs on: **8 buffers of 4 KiB per
+/// connection** (ADR-0192 — each connection its own ring; twice the engine's
+/// default `RX` in flight), and a slot for every connection [`pump`]'s engine
+/// can hold — ADR-0190 R4's rule, since this loop registers a socket when it
+/// accepts it.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+const URING_BUFFERS: u16 = 8;
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+const URING_BUFFER_LEN: u32 = 4096;
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+const URING_CONNECTIONS: u16 = 8;
+
+/// `--transport uring`: make the ring **here, on the engine thread**, pick the
+/// reaping idle strategy the mode names, and run the same [`pump`] every other
+/// arm runs — only `wrap` (register the socket on the ring) and `W`
+/// (`UringSpin` or `UringBlock`) differ. After the loop, the ring's report is
+/// published for the `transport:` line.
+///
+/// A ring the kernel refuses ends this thread with the refusal on stderr and
+/// nothing served: the client's connection fails and the run exits non-zero —
+/// **never a fallback to the kernel arm** (ADR-0190 decision 7).
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+#[allow(clippy::too_many_arguments)]
+fn run_uring<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
+    acceptor: Acceptor,
+    stop: &AtomicBool,
+    mode: Mode,
+    app: A,
+    arm: fixbolt_engine::transport::uring::HftArm,
+    stamp: Option<Arc<wire::Handoff>>,
+    journals: S,
+    log: L,
+    listener_every: std::num::NonZeroU32,
+) {
+    use fixbolt_engine::transport::uring::{Uring, UringConfig, UringReport};
+    fn publish(r: &UringReport) {
+        use fixbolt_engine::transport::uring::UringArm;
+        URING_ARM.store(
+            match r.arm {
+                UringArm::Enter => 1,
+                UringArm::Sqpoll => 2,
+                UringArm::Block => 3,
+            },
+            Ordering::Relaxed,
+        );
+        URING_CQES.store(r.cqes, Ordering::Relaxed);
+        URING_BYTES.store(r.bytes, Ordering::Relaxed);
+        URING_ENOBUFS.store(r.enobufs, Ordering::Relaxed);
+        URING_UNARMED.store(r.unarmed, Ordering::Relaxed);
+        URING_CQ_OVERFLOW.store(r.cq_overflow, Ordering::Relaxed);
+        URING_ENTER_ERRORS.store(r.enter_errors, Ordering::Relaxed);
+        URING_UNISOLATED.store(r.unisolated, Ordering::Relaxed);
+    }
+    let ring = match UringConfig::new(URING_BUFFERS, URING_BUFFER_LEN, URING_CONNECTIONS) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("w2w: {e}");
+            return;
+        }
+    };
+    // Stamped on the TCP socket before the ring owns it, as every other arm.
+    let attach = |t: &TcpTransport| stamp.as_ref().is_none_or(|h| h.attach(t.socket()));
+    match mode {
+        Mode::Hft => {
+            let (uring, spin) = match Uring::hft(ring, arm) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("w2w: --transport uring refused: {e}");
+                    return;
+                }
+            };
+            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                spin,
+                app,
+                |t: TcpTransport| if attach(&t) { uring.register(t) } else { None },
+                journals,
+                log,
+                listener_every,
+            );
+            publish(&uring.report());
+        }
+        #[cfg(all(feature = "standard", unix))]
+        Mode::Standard => {
+            let (uring, block) = match Uring::standard(ring) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("w2w: --transport uring refused: {e}");
+                    return;
+                }
+            };
+            pump::<_, _, _, _, _, _, UNTIL_CLOSED>(
+                acceptor,
+                stop,
+                block,
+                app,
+                |t: TcpTransport| if attach(&t) { uring.register(t) } else { None },
+                journals,
+                log,
+                listener_every,
+            );
+            publish(&uring.report());
+        }
+        // Refused in `main` before any thread started: `Yield` reaps nothing,
+        // so the engine refuses the pairing at compile time.
+        _ => {
+            let _ = (acceptor, stop, app, journals, log, listener_every);
+            eprintln!("w2w: --transport uring has no {} arm", mode.name());
         }
     }
 }
@@ -3376,6 +3835,11 @@ fn pump<
             cadence.woke();
         }
         if engine.logons() > 0 {
+            // Before `TLS_SEEN`, which is what the client waits on.
+            CARRIER_SEEN.store(
+                carrier_code(first.and_then(|id| engine.carrier(id))),
+                Ordering::Relaxed,
+            );
             TLS_SEEN.store(
                 tls_code(first.and_then(|id| engine.tls_mode(id))),
                 Ordering::Relaxed,

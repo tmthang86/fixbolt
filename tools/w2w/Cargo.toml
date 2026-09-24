@@ -47,6 +47,14 @@ tls = ["fixbolt-engine/tls", "dep:rustls", "dep:rcgen"]
 # `fixbolt-w2w:rusqlite` by name.
 sqlite = ["dep:fixbolt-store-sqlite"]
 
+# Phase 4 row 5 (ADR-0190): `--transport uring`, receive through `io_uring`. Not
+# in `default`, for the reason `affinity` and `tls` are not: `cargo test --all`
+# would switch `fixbolt-engine/io-uring` on for every crate in the invocation.
+# The name is the engine's own, so row 7's boot builds both with one word.
+# `src/main.rs` refuses `--transport uring` without it rather than running the
+# kernel arm under the `uring` label.
+io-uring = ["fixbolt-engine/io-uring"]
+
 [dependencies]
 fixbolt-engine = { path = "../../crates/engine" }
 fixbolt-session = { path = "../../crates/session" }

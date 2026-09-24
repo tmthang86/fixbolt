@@ -762,7 +762,14 @@ jobs:
             echo "::error title=This runner cannot offload TLS::scripts/check-ktls-available.sh did not say READY. This is the environment, not the engine."
             exit 1
           fi
-      - run: cargo build -p fixbolt-w2w --release --features tls
+      # `[2026-09-24]` phase 4 row 5: `io-uring` too — the script's io_uring
+      # runs (ADR-0191) need it and otherwise exit 2, SKIPPED, NOT PASSED. A
+      # runner that refuses io_uring turns this job red; it never skips.
+      - name: The runner's kernel and its io_uring sysctl
+        run: |
+          uname -r
+          echo "kernel.io_uring_disabled: $(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 'absent (kernel < 6.6)')"
+      - run: cargo build -p fixbolt-w2w --release --features tls,io-uring
       - run: scripts/check-no-kernel-sleep.sh
 
       # ADR-0072: the tracer-free second machine check for non-negotiable 4's
@@ -811,7 +818,7 @@ jobs:
           if ! unshare -Urn true 2>/dev/null; then
             echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
           fi
-          cargo build -p fixbolt-w2w --release --features tls,affinity
+          cargo build -p fixbolt-w2w --release --features tls,affinity,io-uring
           W2W_EXTRA="--wire-timestamps --nic lo --observer-core $(( $(nproc) - 1 ))" \
             scripts/check-no-kernel-sleep.sh
 
@@ -855,7 +862,13 @@ jobs:
             echo "::error title=This runner cannot offload TLS::scripts/check-ktls-available.sh did not say READY. This is the environment, not the engine."
             exit 1
           fi
-      - run: cargo build -p fixbolt-w2w --release --features tls
+      # `[2026-09-24]` phase 4 row 5: `io-uring` for the script's io_uring
+      # arm, which otherwise exits 2 — see the no-kernel-sleep job.
+      - name: The runner's kernel and its io_uring sysctl
+        run: |
+          uname -r
+          echo "kernel.io_uring_disabled: $(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 'absent (kernel < 6.6)')"
+      - run: cargo build -p fixbolt-w2w --release --features tls,io-uring
       - run: scripts/check-standard-gives-the-core-back.sh
 
       # `[2026-09-14]` Sửa 2 of docs/plans/2026-09-04-the-second-linux-desk.md,
@@ -867,7 +880,7 @@ jobs:
           if ! unshare -Urn true 2>/dev/null; then
             echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
           fi
-          cargo build -p fixbolt-w2w --release --features tls,affinity
+          cargo build -p fixbolt-w2w --release --features tls,affinity,io-uring
           W2W_EXTRA="--wire-timestamps --nic lo --observer-core $(( $(nproc) - 1 ))" \
             scripts/check-standard-gives-the-core-back.sh
 
@@ -957,6 +970,58 @@ jobs:
           echo "tls.rs repetitions failed: ${fails} of 3"
           if [ "$fails" -ne 0 ]; then
             echo "::error title=The TLS tests are not deterministic::${fails} of 3 repetitions of the tls binary failed. A single green says nothing here — see the comment above this step."
+            exit 1
+          fi
+
+  # `[2026-09-24]` phase 4 row 5, ADR-0190: the `io_uring` transport's tests,
+  # its clippy, its featureless-with-io-uring build and its allocation case.
+  # **Its own job, for the reason `tls` has one**: the tests assert what the
+  # runner's kernel does, and a runner that refuses io_uring must read as the
+  # environment, in its own words, before a single test runs — and then go
+  # RED. There is no skip: a test that needs a ring and cannot get one fails,
+  # and `check-feature-gated-tests-ran.sh` fails a run in which a test did not
+  # run. The three mode scripts' io_uring runs are in the no-kernel-sleep and
+  # standard-blocks jobs, whose w2w builds carry `io-uring`.
+  io-uring:
+    name: io_uring, with the kernel it needs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/fetch-quickfix-assets.sh
+      - name: This runner must give this process an io_uring
+        run: |
+          uname -r
+          v="$(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent)"
+          echo "kernel.io_uring_disabled: ${v}"
+          if [ "${v}" != "0" ] && [ "${v}" != "absent" ]; then
+            echo "::error title=This runner refuses io_uring::kernel.io_uring_disabled is ${v}. Every io_uring test below needs a ring. This is the environment, not the engine — ADR-0190, plan Rủi ro row 1."
+            exit 1
+          fi
+      - run: cargo clippy -p fixbolt-engine -p fixbolt-w2w --all-targets --features io-uring -- -D warnings
+      - run: cargo clippy -p fixbolt-engine --all-targets --no-default-features --features io-uring -- -D warnings
+      - name: The io_uring tests, and proof they were the ones that ran
+        run: |
+          set -o pipefail
+          status=0
+          cargo test -p fixbolt-engine --tests --features io-uring --no-fail-fast --locked \
+            2>&1 | tee /tmp/uring-tests.log || status=$?
+          scripts/check-feature-gated-tests-ran.sh fixbolt-engine io-uring /tmp/uring-tests.log
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+      - run: cargo test -p fixbolt-engine --doc --features io-uring --locked
+      - run: cargo test -p fixbolt-engine --no-default-features --features io-uring --locked
+      # Non-negotiable 1 for the ring: `uring-exchange` counts the engine
+      # thread's allocations over a thousand orders and asserts 0. Count-only,
+      # an invariant — no timing figure, no baseline line.
+      - run: cargo bench -p fixbolt-engine --features io-uring --bench alloc --locked
+      # The refusal, not a shrug: a build without the feature must refuse
+      # `--transport uring` rather than run the kernel arm under its label.
+      - name: A build without io-uring refuses --transport uring
+        run: |
+          cargo build -p fixbolt-w2w --release --locked
+          if ./target/release/w2w --transport uring --messages 10 --warmup 2; then
+            echo "::error title=A flag that does nothing::--transport uring was accepted by a build with no io-uring feature"
             exit 1
           fi
 

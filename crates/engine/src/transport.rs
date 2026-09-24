@@ -17,6 +17,14 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::rc::Rc;
 
+// ADR-0190 decision 1, non-negotiable 6: the feature gates the `mod`
+// declaration itself, not only the manifest. `target_os = "linux"` on top,
+// because `io_uring` is a Linux interface and the `io-uring` dependency is
+// Linux-only — elsewhere the module does not exist, so code written against
+// it fails to compile rather than failing at startup.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+pub mod uring;
+
 /// What one read or write did.
 ///
 /// Fieldless but for the byte count and an `ErrorKind`, both `Copy` — nothing
@@ -164,6 +172,27 @@ impl TlsMode {
     }
 }
 
+/// What carries a connection's received bytes to its `recv` — the kernel's
+/// `read(2)`, or completions reaped from an `io_uring`.
+///
+/// `[2026-09-24]` phase 4 row 5, ADR-0190. **Reported, not inferred**, for the
+/// reason [`TlsMode`] is: a figure measured over one receive path and labelled
+/// with the other is about a different code path. `tools/w2w` prints it as its
+/// `transport:` line, read from [`crate::Engine::carrier`] after the logon,
+/// never from its own flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Carrier {
+    /// `recv` is a non-blocking `read(2)` on a kernel TCP socket —
+    /// [`TcpTransport`], and the TLS transport over it.
+    Kernel,
+    /// `recv` copies completions an idle strategy reaped from an `io_uring` —
+    /// `uring::UringTransport`, behind the `io-uring` feature.
+    Uring,
+    /// Anything else — [`Loopback`], or a transport outside this crate that
+    /// says nothing. The default.
+    Other,
+}
+
 /// One connection's bytes.
 pub trait Transport {
     /// Whether this transport can be waited on at all.
@@ -176,6 +205,21 @@ pub trait Transport {
     /// descriptor, and an engine that blocked on an empty source list would
     /// still pass the corpus while waking only on its own timeout.
     const POLLABLE: bool = false;
+
+    /// Whether this transport's bytes arrive only when an idle strategy
+    /// **reaps** them.
+    ///
+    /// `false` for every transport whose `recv` asks the kernel itself.
+    /// `true` for `uring::UringTransport` (behind the `io-uring` feature):
+    /// its `recv` makes no system call and reads what
+    /// [`crate::wait::Waiting::idle`] moved out of the completion queue, so
+    /// under a strategy that does not reap — [`crate::wait::Spin`],
+    /// `block::Block` — it would compile, run, and never receive a byte.
+    /// [`crate::Engine::new`] refuses that pairing when it is compiled:
+    /// `!T::NEEDS_REAPER || W::REAPS` (ADR-0190 decision 1).
+    ///
+    /// Defaulted, so no transport outside this crate changes a line.
+    const NEEDS_REAPER: bool = false;
 
     /// Read what has arrived, if anything.
     fn recv(&mut self, buf: &mut [u8]) -> Io;
@@ -222,6 +266,16 @@ pub trait Transport {
         false
     }
 
+    /// What carries this connection's received bytes — [`Carrier`].
+    ///
+    /// Defaulted to [`Carrier::Other`], [ADR-0060] decision 3's shape: every
+    /// transport that says nothing keeps compiling and claims nothing.
+    ///
+    /// [ADR-0060]: ../../../docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md
+    fn carrier(&self) -> Carrier {
+        Carrier::Other
+    }
+
     /// The handle to wait on. `Some` whenever [`Self::POLLABLE`].
     ///
     /// Has a default body so that a transport somebody else wrote keeps
@@ -266,6 +320,10 @@ impl TcpTransport {
 
 impl Transport for TcpTransport {
     const POLLABLE: bool = cfg!(unix);
+
+    fn carrier(&self) -> Carrier {
+        Carrier::Kernel
+    }
 
     fn source(&self) -> Option<Source> {
         #[cfg(unix)]

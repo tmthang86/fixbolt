@@ -117,14 +117,15 @@ SAMPLES=20
 # engine-thread CPU percent over a wall-clock window, share of samples found
 # sleeping, the p50, and tls-as-run.
 measure() {
-  local mode="$1" tls="${2:-off}"
+  local mode="$1" tls="${2:-off}" transport="${3:-kernel}" extra="${4:-}"
   local out="${TMP}/out.${mode}" pid tid t0 t1 c0 c1 sleeping=0 alive=0
-  local tls_args=()
+  local tls_args=() transport_args=()
   [[ "${tls}" != "off" ]] && tls_args=(--tls "${tls}")
+  [[ "${transport}" != "kernel" ]] && transport_args=(--transport "${transport}")
 
   # shellcheck disable=SC2086 # deliberate: W2W_EXTRA is zero or more flags.
-  "${BIN}" --mode "${mode}" "${tls_args[@]}" --messages 300 --warmup 50 \
-    --hold-ms $((WINDOW_S * 1000 + 2000)) ${W2W_EXTRA:-} \
+  "${BIN}" --mode "${mode}" "${tls_args[@]}" "${transport_args[@]}" --messages 300 --warmup 50 \
+    --hold-ms $((WINDOW_S * 1000 + 2000)) ${extra} ${W2W_EXTRA:-} \
     > "${out}" 2>&1 &
   pid=$!
 
@@ -289,6 +290,77 @@ for red in hft yield; do
     *) echo "FAIL: ${red} could not be measured, so its red is not evidence of anything" >&2; exit 2 ;;
   esac
 done
+
+echo
+echo "== io_uring arm: standard over the ring must block in io_uring_enter and give the core back =="
+# `[2026-09-24]` phase 4 row 5 (ADR-0190 decision 5, R3). The same four
+# assertions, plus the `transport:` line read back from the engine — `uring
+# arm=block`, the ring reaped something (`cqes=` above zero), and nothing went
+# unarmed (`unarmed=0`): an unarmed source wakes the engine only by its
+# timeout, the failure the p50 assertion exists for, seen one layer earlier.
+uring_probe_out="${TMP}/uring-probe.out"
+# shellcheck disable=SC2086 # W2W_EXTRA: zero or more flags.
+if ! "${BIN}" --mode standard --transport uring --messages 10 --warmup 2 --hold-ms 50 ${W2W_EXTRA:-} \
+     >"${uring_probe_out}" 2>&1; then
+  # shellcheck disable=SC2016 # the literal backticks main.rs prints.
+  if grep -q 'needs `--features io-uring`' "${uring_probe_out}"; then
+    echo "io_uring arm SKIPPED, NOT PASSED: this build has no io_uring transport (needs \`--features io-uring\`)." >&2
+    echo "CLAUDE.md §10: a green result that was inferred rather than observed is not a result." >&2
+    exit 2
+  fi
+  echo "FAIL: --mode standard --transport uring could not be run at all:" >&2
+  tail -5 "${uring_probe_out}" >&2
+  rc=1
+else
+  uring_line() { grep -E '^transport:' "$1" | head -1; }
+  read -r ran pct sleeping alive p50 ran_tls <<<"$(measure standard off uring)" || exit 1
+  wire_arm_ran "${TMP}/out.standard" || exit 1
+  line="$(uring_line "${TMP}/out.standard")"
+  printf '  transport       %s\n' "${line:-<none>}"
+  judge standard "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
+  verdict=$?
+  if [[ "${verdict}" -eq 0 ]] && ! grep -qE '^transport: uring arm=block .*cqes=[1-9][0-9]* .*unarmed=0( |$)' "${TMP}/out.standard"; then
+    echo "  -> the transport line is not 'uring arm=block', or reaped nothing, or left a source unarmed"
+    verdict=1
+  fi
+  case "${verdict}" in
+    0) echo "GREEN ok — standard + uring blocks in the ring, stays alive, is woken by the data, unarmed=0" ;;
+    1) echo "FAIL: standard + uring does not satisfy non-negotiable 4's second half" >&2; rc=1 ;;
+    *) echo "FAIL: the io_uring arm could not be measured, so nothing was checked" >&2; exit 2 ;;
+  esac
+
+  echo
+  echo "== io_uring arm, RED half: hft over the ring must trip this check =="
+  read -r ran pct sleeping alive p50 ran_tls <<<"$(measure hft off uring)" || exit 1
+  wire_arm_ran "${TMP}/out.hft" || exit 1
+  printf '  transport       %s\n' "$(uring_line "${TMP}/out.hft")"
+  judge hft "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
+  case $? in
+    0) echo "FAIL: hft + uring PASSED this check, so it cannot tell a spinning ring from a waiting one" >&2; rc=1 ;;
+    1) echo "RED   ok — hft + uring trips it on the policy, as it must" ;;
+    *) echo "FAIL: hft + uring could not be measured, so its red is not evidence of anything" >&2; exit 2 ;;
+  esac
+
+  echo
+  echo "== io_uring arm, RED half: SQPOLL (hft) must trip this check, where FIXBOLT_SQPOLL_CORE is set =="
+  if [[ -z "${FIXBOLT_SQPOLL_CORE:-}" ]]; then
+    echo "SQPOLL arm SKIPPED, NOT PASSED: FIXBOLT_SQPOLL_CORE is not set, so it was not run."
+  else
+    sq_extra="--uring-arm sqpoll --sqpoll-core ${FIXBOLT_SQPOLL_CORE}"
+    if [[ "${FIXBOLT_SQPOLL_ALLOW_UNISOLATED:-}" == 1 ]]; then
+      sq_extra="${sq_extra} --allow-unisolated"
+      echo "(FIXBOLT_SQPOLL_ALLOW_UNISOLATED=1: the SQ core is not held to isolcpus — not a DESIGN.md §9 run)"
+    fi
+    read -r ran pct sleeping alive p50 ran_tls <<<"$(measure hft off uring "${sq_extra}")" || exit 1
+    printf '  transport       %s\n' "$(uring_line "${TMP}/out.hft")"
+    judge hft "${ran}" "${pct}" "${sleeping}" "${alive}" "${p50}"
+    case $? in
+      0) echo "FAIL: hft + SQPOLL PASSED this check, so it cannot tell a spinning ring from a waiting one" >&2; rc=1 ;;
+      1) echo "RED   ok — hft + SQPOLL trips it on the policy, as it must" ;;
+      *) echo "FAIL: hft + SQPOLL could not be measured, so its red is not evidence of anything" >&2; exit 2 ;;
+    esac
+  fi
+fi
 
 echo
 echo "== TLS arm: standard mode with kTLS must also give the core back =="

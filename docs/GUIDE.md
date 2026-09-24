@@ -1947,6 +1947,42 @@ Stated so you do not discover it in production:
 - **It cannot originate an application message.** `Handler::on_message` returns one reply to
   one inbound message, and the session's `send_application` is reachable only by driving the
   session yourself (STATUS item 46).
+- **`[2026-09-24]` A second transport, `io_uring`, exists behind `--features io-uring` and is
+  off by default; it does not fall back.** `serve_hft_uring` and `serve_uring` receive through a
+  multishot `recv` into a provided buffer ring instead of a `read(2)` per socket per turn
+  ([DESIGN.md](DESIGN.md) D5, [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)).
+  **The ring is made on the engine thread itself** — `IORING_SETUP_SINGLE_ISSUER` requires the
+  thread that reaps a ring to be the one that made it, so a caller driving the `Engine` by hand
+  cannot build the `Uring` on a setup thread and hand it across.
+  **When `io_uring` is blocked, startup refuses, named, before any socket is bound — never a
+  silent `read(2)` fallback** — the same rule
+  [ADR-0060](decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)
+  already applies to a deployment that requires kernel TLS. The two shapes that matter in
+  practice:
+  - **A container's default seccomp profile** (Docker ≥ 25.0, containerd `RuntimeDefault`) drops
+    `io_uring_setup`/`io_uring_enter`/`io_uring_register` from its allowlist, which reads as
+    `UringRefused::Blocked` and names seccomp in the message.
+  - **`kernel.io_uring_disabled`** (Linux 6.6+, `1` or `2`) reads as `UringRefused::Disabled {
+    sysctl }`, naming the sysctl and, at `1`, `kernel.io_uring_group` as the way past it.
+    `ENOSYS` (no `CONFIG_IO_URING`) and `EINVAL` (a kernel or a probe missing what this
+    transport needs) are their own variants, `NotInKernel` and `KernelTooOld`.
+
+  **Needs Linux ≥ 6.1** (`IORING_SETUP_DEFER_TASKRUN`, which this design relies on to avoid
+  taking an interrupt per completion). **The ring must be sized to hold every socket the
+  serving loop can hold at once** — `UringConfig::connections` at least the engine's capacity
+  plus the pre-session `Limits::pending()`, because a socket is registered at accept, before its
+  `Logon` — or the entry points refuse with `UringRefused::TooSmall { have, need }` before
+  binding. **`[2026-09-24]` Its memory grows with `connections`**: each connection has its own
+  provided-buffer ring ([ADR-0192](decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)), so
+  `connections × buffers_per_connection × buffer_len` bytes are allocated and pre-faulted at
+  startup — 8 MiB at 256 slots of 8 × 4 096 — and `UringReport::buffer_bytes` says how much.
+  That is the price of a connection nobody reads (one parked, say) never starving the others.
+  **SQPOLL (`HftArm::Sqpoll`) is a measured arm, not a mode**: it needs both a
+  `--features affinity` `CorePin` and `tools/w2w`'s `--sqpoll-core`/`--uring-arm sqpoll` (or the
+  equivalent in your own call), it is `hft`-only by the type system, it burns a second core for
+  the kernel's own polling thread, and it never becomes the default this transport chooses for
+  you. **Not built in this row**: TLS over `io_uring`, the sharded runtime, and the initiator —
+  each is a follow-up only if the plan's row 7 measurement keeps the transport at all.
 
 ## 10. Distributing a binary carries a QuickFIX notice obligation
 

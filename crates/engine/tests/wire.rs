@@ -37,7 +37,7 @@ use fixbolt_engine::clock::ManualClock;
 use fixbolt_engine::dispatch::{ConnId, InlineDispatch};
 use fixbolt_engine::journal::Store;
 use fixbolt_engine::msglog::{Direction, MessageLog, NoLog};
-use fixbolt_engine::transport::TcpTransport;
+use fixbolt_engine::transport::{TcpTransport, Transport};
 use fixbolt_engine::{Acceptor, Engine};
 use fixbolt_session::{Application, Config};
 
@@ -124,8 +124,8 @@ impl MessageLog for CountingLog {
 /// How many times a step gave up on a fact and settled on the clock instead.
 ///
 /// **A lifeline is never a settle and never a pass** (ADR-0087 decision 3).
-/// Shared by both tests in this file, which run in parallel: a hit in either is
-/// a hit, and both assert it at zero.
+/// Shared by every test in this file, which run in parallel: a hit in any is a
+/// hit, and each asserts it at zero.
 static LIFELINE_HITS: AtomicUsize = AtomicUsize::new(0);
 
 /// One client socket, and whatever bytes of a frame have arrived so far.
@@ -142,9 +142,17 @@ struct Client {
 
 /// The counterparty: one client socket per `Conn`, and the engine on the other
 /// side of the loopback interface.
-struct Wire<W: Waiting> {
+///
+/// **Generic over the engine's transport `T` and the `wrap` that makes one
+/// from an accepted socket** — the shape `pump`'s own `wrap` has in
+/// `lib.rs`. The kernel arm wraps with `Some`, which is what this harness did
+/// before it had the parameter; the `io_uring` arm registers the socket on a
+/// ring (phase 4 row 5, ADR-0190).
+struct Wire<T: Transport, W: Waiting, Wr: FnMut(TcpTransport) -> Option<T>> {
     acceptor: Acceptor,
-    engine: Counted<W>,
+    engine: Counted<T, W>,
+    /// Turns an accepted socket into the engine's transport. `None` drops it.
+    wrap: Wr,
     /// The listener, so a blocking engine learns about a new connection when it
     /// arrives rather than when its timeout expires.
     listener: Option<Interest>,
@@ -167,8 +175,8 @@ struct Wire<W: Waiting> {
 ///
 /// Spelled out because `with_log` changes the engine's type: without a name for
 /// the type it starts from, `L` on `Engine::new` has nothing to infer from.
-type Plain<W> = Engine<
-    TcpTransport,
+type Plain<T, W> = Engine<
+    T,
     fixbolt_session::Acceptor,
     InlineDispatch<EchoApp>,
     ManualClock,
@@ -181,8 +189,8 @@ type Plain<W> = Engine<
 >;
 
 /// The same engine, counting.
-type Counted<W> = Engine<
-    TcpTransport,
+type Counted<T, W> = Engine<
+    T,
     fixbolt_session::Acceptor,
     InlineDispatch<EchoApp>,
     ManualClock,
@@ -200,12 +208,21 @@ type Counted<W> = Engine<
 use fixbolt_engine::transport::Interest;
 use fixbolt_engine::wait::{Waiting, Yield};
 
-impl<W: Waiting> Wire<W> {
+/// The kernel arm's `wrap`: the accepted socket is the transport.
+type Kernel = fn(TcpTransport) -> Option<TcpTransport>;
+
+impl<W: Waiting> Wire<TcpTransport, W, Kernel> {
     fn with(wait: W, file: &str) -> Self {
+        Self::over(wait, Some, file)
+    }
+}
+
+impl<T: Transport, W: Waiting, Wr: FnMut(TcpTransport) -> Option<T>> Wire<T, W, Wr> {
+    fn over(wait: W, wrap: Wr, file: &str) -> Self {
         let acceptor = Acceptor::bind("127.0.0.1:0").expect("a free port");
         let listener = acceptor.source().map(Interest::readable);
         let counts = CountingLog::default();
-        let plain: Plain<W> = Engine::new(
+        let plain: Plain<T, W> = Engine::new(
             Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44"),
             InlineDispatch::new(EchoApp::default()),
             ManualClock::at(FIXED_TIME_MILLIS),
@@ -215,6 +232,7 @@ impl<W: Waiting> Wire<W> {
         Self {
             acceptor,
             engine: plain.with_log(counts.clone()),
+            wrap,
             listener,
             clients: Vec::new(),
             counts,
@@ -305,7 +323,9 @@ impl<W: Waiting> Wire<W> {
         loop {
             let mut moved = false;
             while let Some(t) = self.acceptor.accept() {
-                let _ = self.engine.add(t);
+                if let Some(t) = (self.wrap)(t) {
+                    let _ = self.engine.add(t);
+                }
                 moved = true;
             }
             moved |= self.engine.turn();
@@ -381,7 +401,9 @@ fn next_message(bytes: &[u8]) -> Option<usize> {
     Some(stop + 3 + k + 1)
 }
 
-impl<W: Waiting> SessionUnderTest for Wire<W> {
+impl<T: Transport, W: Waiting, Wr: FnMut(TcpTransport) -> Option<T>> SessionUnderTest
+    for Wire<T, W, Wr>
+{
     fn step<F: FnMut(&[u8])>(&mut self, conn: Conn, input: Input<'_>, mut emit: F) -> Link {
         let i = self.at(conn);
         match input {
@@ -479,7 +501,7 @@ impl<W: Waiting> SessionUnderTest for Wire<W> {
     }
 }
 
-impl<W: Waiting> Wire<W> {
+impl<T: Transport, W: Waiting, Wr: FnMut(TcpTransport) -> Option<T>> Wire<T, W, Wr> {
     fn engine_clock(&mut self) -> &mut ManualClock {
         self.engine.clock_mut()
     }
@@ -591,6 +613,74 @@ fn the_fifty_nine_definitions_pass_in_standard_mode_too() {
     assert_eq!(
         report.passed, 59,
         "blocking between steps must not change what the protocol does:\n{report}"
+    );
+    assert_eq!(
+        lifelines, 0,
+        "a step settled on the 5 s lifeline instead of on a counted record"
+    );
+}
+
+/// The ring the two `io_uring` cases run on: 8 buffers of 4 KiB per
+/// connection (ADR-0192, `tools/w2w`'s size), four connections — the corpus
+/// opens at most two at once.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+fn uring_config() -> fixbolt_engine::transport::uring::UringConfig {
+    fixbolt_engine::transport::uring::UringConfig::new(8, 4096, 4).expect("a valid ring size")
+}
+
+/// The same 59, **`hft` over `io_uring`**: every accepted socket is registered
+/// on a ring, and the idle turn is `UringSpin` — the reaper — rather than
+/// `Yield`. Phase 4 row 5, ADR-0190; non-negotiable 3 for the new transport.
+///
+/// One ring per scenario, because the engine is one per scenario: a ring is
+/// `!Send` and belongs to the engine thread that reaps it.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+#[test]
+fn the_fifty_nine_definitions_pass_over_io_uring_in_hft() {
+    use fixbolt_engine::transport::uring::{HftArm, Uring};
+    let report = run(|s| {
+        let (uring, spin) = Uring::hft(uring_config(), HftArm::Enter)
+            .unwrap_or_else(|e| panic!("Uring::hft refused: {e}"));
+        Wire::over(spin, move |t| uring.register(t), &s.file)
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+    let lifelines = LIFELINE_HITS.load(Ordering::Relaxed);
+    println!("lifeline hit: {lifelines}");
+    assert_eq!(
+        report.passed, 59,
+        "hft over io_uring: {} / 59\n{report}",
+        report.passed
+    );
+    assert_eq!(
+        lifelines, 0,
+        "a step settled on the 5 s lifeline instead of on a counted record"
+    );
+}
+
+/// The same 59, **`standard` over `io_uring`**: the engine blocks in
+/// `io_uring_enter` between steps, woken by a completion, by the listener's
+/// one-shot `POLL_ADD`, or by its own 5 ms timeout — the timeout the kernel
+/// arm's `standard` case uses.
+#[cfg(all(feature = "io-uring", feature = "standard", target_os = "linux"))]
+#[test]
+fn the_fifty_nine_definitions_pass_over_io_uring_in_standard_mode() {
+    use fixbolt_engine::transport::uring::Uring;
+    let report = run(|s| {
+        let (uring, block) = Uring::standard(uring_config())
+            .unwrap_or_else(|e| panic!("Uring::standard refused: {e}"));
+        Wire::over(
+            block.with_timeout_ms(5),
+            move |t| uring.register(t),
+            &s.file,
+        )
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+    let lifelines = LIFELINE_HITS.load(Ordering::Relaxed);
+    println!("lifeline hit: {lifelines}");
+    assert_eq!(
+        report.passed, 59,
+        "standard over io_uring: {} / 59\n{report}",
+        report.passed
     );
     assert_eq!(
         lifelines, 0,

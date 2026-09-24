@@ -366,6 +366,34 @@ Two constraints go with it:
   and `puts_refused` (a reply was longer than `SLOT_LEN` and can never be replayed). Both also
   arrive as events.
 
+### The `io_uring` transport (`--features io-uring`)
+
+`[2026-09-24]` [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md).
+Nothing here has a hidden default (`CLAUDE.md` §6): every `UringConfig` field is named by the
+caller and checked at construction.
+
+| Parameter | Meaning | Values | Default | Where set | Source |
+|---|---|---|---|---|---|
+| `UringConfig::new(buffers_per_connection, buffer_len, connections)` | `[2026-09-24]` **Each connection's own provided-buffer ring** ([ADR-0192](decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)) — so a connection nobody reads cannot starve another — and how many connections the ring serves. Memory: `connections × buffers_per_connection × buffer_len` bytes of buffers plus one page of ring per connection, allocated and pre-faulted when the ring is made; `UringReport::buffer_bytes` reads it back | `buffers_per_connection`: power of two, `2..=32768` (`MAX_BUFFERS`); `buffer_len`: bytes, `> 0`; `connections`: `> 0`, and at least the engine's capacity plus `presession::Limits::pending()` (checked by the entry points, `UringRefused::TooSmall` otherwise) | **none** — refused by `UringConfigError` naming the first field out of range. `tools/w2w` uses **8 × 4 096 bytes per connection**: twice the engine's default `RX` (4 096) in flight, so one reply's worth of pipelining never runs a connection dry — 32 KiB a slot, 8 MiB at 256 slots | `UringConfig::new`, passed to `serve_uring` / `serve_hft_uring` | [`transport/uring.rs`](../crates/engine/src/transport/uring.rs) |
+| `HftArm` | Which `hft` arm reaps the ring | `Enter` (every idle turn: one non-waiting `io_uring_enter`) or, with `--features affinity`, `Sqpoll { pin: CorePin }` (a kernel thread pinned to `pin`'s core polls the submission queue; burns that core) | `Enter` | `Uring::hft(config, arm)`, `serve_hft_uring(.., arm)` | [`transport/uring.rs`](../crates/engine/src/transport/uring.rs) |
+| `UringBlock`'s timeout | How long a `standard` idle turn waits in `io_uring_enter` before it wakes anyway | milliseconds; raised to `block::MIN_TIMEOUT_MS` if lower | `block::DEFAULT_TIMEOUT_MS` (**100 ms**) — the same default and the same correctness role `Block` has (§2 above): what delivers `Input::Tick` with no readiness | `UringBlock::with_timeout_ms` | [`transport/uring.rs`](../crates/engine/src/transport/uring.rs) |
+
+**Never a default that becomes SQPOLL by accident** (the owner's Q8, ADR-0190 decision 4):
+`serve_hft_uring` uses `HftArm::Enter` unless the caller names `Sqpoll`, and `Sqpoll`'s
+`CorePin` is validated — absent, offline or outside `isolcpus` is refused unless the caller took
+`CorePin::allow_unisolated()` — before any socket exists, exactly as `serve_hft_pinned` validates
+the engine's own core.
+
+**`tools/w2w`'s flags for this transport** (§1c has the engine-facing settings; these are the
+harness's own CLI, listed here because they are the only place these values are named outside
+the plan): `--transport kernel|uring` (default `kernel`; `uring` needs the `io-uring` feature or
+the run refuses before touching a socket), `--uring-arm enter|sqpoll` (needs `--transport
+uring`; `sqpoll` needs `--features affinity`), `--sqpoll-core <cpu>` (needs `--uring-arm
+sqpoll`; `--allow-unisolated` waives `isolcpus` for it the same way it already does for the
+engine's own core). The `transport:` line `w2w` prints is read back from the engine
+(`Engine::carrier`) after the logon, never echoed from the flag, so a build without the feature
+cannot silently mislabel a `kernel` run as `uring`.
+
 ---
 
 ## 3. Const generics
@@ -450,6 +478,7 @@ decisions 1, 3 and 7).
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
 | `fix50sp2` | `codec`, `dict`, `session`, `engine` | The second dictionary: `dict`'s `build.rs` reads `FIXT11.xml` **and** `FIX50SP2.xml` into one table and emits `Fixt11Fix50Sp2Tables`, and the FIXT tests and bench cases in all four crates compile. Pulls in **no dependency** — it is generated code and build time only, and `codec`'s copy is a dev-dependency pass-through so its benches can name the table. `[measured]` the generated file goes 156 KB to 4.0 MB and a cold `dict` build 0.56 s to 5.25 s: see [a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md) | off |
 | `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `connect_and_serve_tls`/`connect_and_serve_tls_with`, `tls::load_pem`/`tls::load_client_pem`, and the seven `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
+| `io-uring` | `engine`, `library`, `tools/w2w` | `[2026-09-24]` `mod transport::uring`: `Uring`, `UringConfig`, `UringTransport`, `UringSpin`/`UringBlock`, `HftArm`, `UringRefused`, `UringReport`, `serve_hft_uring`/`serve_uring`, `ServeError::Uring` — a second `Transport` reaped by the idle strategy, Linux only, kernel ≥ 6.1 ([DESIGN.md D5](DESIGN.md), [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)). Pulls in `io-uring` (pinned `>= 0.7.15`, pure Rust) and the `libc` the crate already carries under `standard`/`affinity`; `HftArm::Sqpoll` exists only with `affinity` on too | off |
 | `sbe` | `library` (`fixbolt`) | The re-export `fixbolt::sbe` (= `fixbolt-sbe`): SBE 1.0 over generated tables, a codec with no session and no `serve*` of its own ([GUIDE.md §3b](GUIDE.md)) | off |
 | `encoding` | `sbe` (`fixbolt-sbe`) | The module implementing `Sbe<S>: codec::Encoding`, and with it `sbe`'s only dependency, `codec`. Off leaves `sbe` at zero dependencies: header, view, group and `varData` only ([DESIGN.md D16](DESIGN.md)) | **on** |
 

@@ -199,4 +199,48 @@ for crate in "${ZERO_DEP_CRATES[@]}"; do
   fi
 done
 
+
+# `[2026-09-24]` phase 4 row 5, ADR-0190 decision 6: the `io-uring` crate and
+# the two it brings, `bitflags` and `cfg-if`. They must be absent from
+# `fixbolt-engine`'s shipped graph **by default and with no features** — and
+# **present with `--features io-uring`**, because a probe that only ever
+# answers "absent" is not known to be able to answer anything else (the same
+# rule as every reversal here). Asked by name, per crate, for the reason the
+# loop above gives; `tools/w2w` forwards the feature, so it is asked too.
+# No test run here: the crate's featureless build is already the loop's.
+uring_tree() { # uring_tree <crate> <dep> <feature words...>
+  local crate="$1" dep="$2"
+  shift 2
+  cargo tree -p "${crate}" "$@" -e normal -i "${dep}" 2>&1
+}
+for crate in fixbolt-engine fixbolt-w2w; do
+  for dep in io-uring bitflags cfg-if; do
+    for features in "" "--no-default-features"; do
+      echo "== ${crate} ${features:-(default features)} must not pull ${dep} =="
+      # shellcheck disable=SC2086 # $features is zero or one word.
+      out="$(uring_tree "${crate}" "${dep}" ${features})"
+      if grep -qE "^${dep} v" <<<"${out}"; then
+        echo "FAIL: ${dep} is in ${crate}'s normal dependency graph without --features io-uring:" >&2
+        echo "${out}" >&2
+        rc=1
+      elif grep -qE "did not match any packages|nothing to print" <<<"${out}"; then
+        echo "ok — ${dep} is absent from what ships"
+      else
+        echo "FAIL: could not tell. cargo said:" >&2
+        echo "${out}" >&2
+        rc=1
+      fi
+    done
+    echo "== ${crate} --features io-uring must pull ${dep} (the probe can answer yes) =="
+    out="$(uring_tree "${crate}" "${dep}" --features io-uring)"
+    if grep -qE "^${dep} v" <<<"${out}"; then
+      echo "ok — ${dep} is there when asked for"
+    else
+      echo "FAIL: --features io-uring does not pull ${dep}, so the absence above proves nothing:" >&2
+      echo "${out}" >&2
+      rc=1
+    fi
+  done
+done
+
 exit "${rc}"
