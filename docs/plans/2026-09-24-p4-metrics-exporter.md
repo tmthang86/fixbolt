@@ -380,7 +380,15 @@ và việc exporter mặc định **không** đọc event.
 
 ## Nhật ký giao hàng
 
-(trống — điền khi đóng từng bước)
+| Bước | Commit | Bằng chứng |
+|---|---|---|
+| 1–2 | `65a893a` | Đỏ trước: `observe_occupancy.rs` không biên dịch (thiếu `ring_to_app`, `presession_slots`, `latest`). R1–R4 (+R3b) đỏ đúng câu; R4 → `observe-asked-ring 10000`. Engine 388 passed; alloc toàn 0; semver-checks không đổi API |
+| 3–4 | `14b54f5` | Đỏ trước: thiếu `series`, `Exporter`. R5–R11 đỏ đúng câu. `fixbolt-metrics` 24 passed ×3; alloc `metrics-idle 0 metrics-scraped 0` |
+| 5 | `da8c5d9` | Ba script mode với exporter bị scrape 10 Hz: GREEN đúng mode, RED sai mode; `hft` 40 000 tin, 31 scrape: voluntary 0, allocs 0. Máy bàn, dòng grub desktop |
+| 6 | `67fd016` | promtool 3.14.0 (sha256 `f665c6da…478d`) SUCCESS trên 113 dòng mẫu; R12–R14 đỏ đúng câu |
+| 7 | *(không có file repo)* | Prometheus 3.14.0 + Grafana OSS 13.2.2 (sha256 `9662c838…44c8f` khớp bản công bố), provisioning bằng file: target `health: up`; `fixbolt_sessions_logged_on` = 1; dashboard tìm thấy qua `/api/search`; 5 panel ra dữ liệu, 2 panel trống đúng thiết kế (ví dụ dùng `InlineDispatch` nên không có ring; không bật `with_events`). Máy bàn, 2026-09-24 |
+| 8 | `d64c98a`, `f99681a` | Tài liệu theo §4; ADR-0170/0171 Accepted |
+| 9 | `9c55764`, `295a364` | Senior review: F1 (slow-loris — probe 10,25 s → 0,85 s; `stop()` 8,20 s → 0,91 s), F3, F4 (guard cho hai bẫy), F6; F2/F5 theo *Sửa 1* (R15, R16). `fixbolt-metrics` 31 passed ×3; `cargo test --all` 988 passed. CI run id: ghi khi merge |
 
 ## Sửa 1 — 2026-09-24 (senior review PR #108, head `f99681a`, phát hiện F2 và F5)
 
