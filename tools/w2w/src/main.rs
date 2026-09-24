@@ -332,7 +332,10 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 /// and may allocate (ADR-0037 allows a writer to). SQLite's own C heap is not
 /// seen by any Rust allocator either way. Every other `--journal` leaves this
 /// `false` and counts every thread, exactly as before (plan
-/// `docs/plans/2026-09-24-p4-sqlite-store.md` row 6).
+/// `docs/plans/2026-09-24-p4-sqlite-store.md` row 6) — and so does
+/// `--journal sqlite-async` together with `--metrics`, because the exporter
+/// thread (spawned inside `fixbolt-metrics`) cannot register and ADR-0170
+/// needs it counted.
 static ONLY_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
@@ -1474,9 +1477,13 @@ fn main() -> std::io::Result<()> {
         }
     };
     // Before anything is armed: the SQLite writer commits inside the window,
-    // so only the registered threads are counted (see `ONLY_REGISTERED`).
+    // so only the registered threads are counted (see `ONLY_REGISTERED`) —
+    // **unless `--metrics` runs too**: the exporter thread is spawned inside
+    // `fixbolt-metrics`, where nothing can register it, and ADR-0170 needs it
+    // counted (a scrape that allocated must fail `allocs 0`). Then every
+    // thread is counted, the SQLite writer included, and the label says so.
     #[cfg(feature = "sqlite")]
-    if journal == JournalKind::SqliteAsync {
+    if journal == JournalKind::SqliteAsync && !matches!(metrics_of(&args), Ok(Some(_))) {
         ONLY_REGISTERED.store(true, Ordering::Relaxed);
     }
     let log = match arg::<String>(&args, "--log").as_deref() {
@@ -2130,8 +2137,24 @@ fn counted_threads(client: bool, observer: bool, journal: JournalKind, log: LogK
     if journal == JournalKind::FileAsync {
         names.push("journal writer");
     }
-    // Only registered threads are counted under `--journal sqlite-async`,
-    // and the log writer is not one of them.
+    // `--journal sqlite-async` with `--metrics`: every thread was counted
+    // (see where `ONLY_REGISTERED` is set), the SQLite writer included.
+    #[cfg(feature = "sqlite")]
+    if journal == JournalKind::SqliteAsync && METRICS.get().is_some() {
+        names.push("SQLite writer");
+        if log == LogKind::File {
+            names.push("log writer");
+        }
+        names.push("exporter");
+        let every = format!(
+            "{} and {} threads",
+            names[..names.len() - 1].join(", "),
+            names[names.len() - 1]
+        );
+        return format!("{every}; SQLite's C heap is not counted");
+    }
+    // Without `--metrics`, only registered threads are counted under
+    // `--journal sqlite-async`, and the log writer is not one of them.
     #[cfg(feature = "sqlite")]
     if journal == JournalKind::SqliteAsync {
         let registered = match names.as_slice() {

@@ -58,8 +58,6 @@ decision 1), so the changes below wait for the next version rather than shipping
   duplicated in `tests/series_names.rs` so a rename or removal is red in `cargo test` before it
   is anyone's broken Grafana panel — a change no `cargo-semver-checks` run can see on its own.
 
-### Added
-
 - **`fixbolt-engine`: the writer bookkeeping a journal outside the engine joins**
   ([ADR-0181](docs/decisions/ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md)).
   Additive only; no existing item changes signature, and `FileJournal` now runs on these same

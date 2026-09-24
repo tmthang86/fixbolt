@@ -25,7 +25,8 @@
 #
 # The same rules 2 (inheritance only), 3 and 5 hold every crate in
 # SHAPED_UNRELEASED — in the mould, `publish = false`, not yet released
-# (ADR-0170 decision 10; today `fixbolt-metrics`).
+# (ADR-0170 decision 10, ADR-0182 decision 2; today `fixbolt-metrics` and
+# `fixbolt-store-sqlite`).
 #
 # WHAT IT CANNOT SEE: dev-dependencies (path-only on purpose — cargo strips
 # them, ADR-0160 decision 1); what actually lands in a `.crate` (that is
@@ -66,8 +67,12 @@ PUBLISHED = {
 # the day they merge. ADR-0170 decision 10: `fixbolt-metrics` joins
 # `PUBLISHED` (with ADR-0161's `publish` field) only in the same commit as the
 # `w2w` pair that passes its kill line, and must not need re-shaping then.
+# ADR-0182 decision 2: `fixbolt-store-sqlite` is born in the same mould, and
+# joins `PUBLISHED` only in the commit that records row 4's kill line passed
+# (decision 3).
 SHAPED_UNRELEASED = {
     "fixbolt-metrics": "crates/metrics",
+    "fixbolt-store-sqlite": "crates/store-sqlite",
 }
 LICENCES = ("LICENSE-MIT", "LICENSE-APACHE")
 
