@@ -82,6 +82,12 @@ measuring again, and re-read `--show-eee` rather than trust the command that set
 frames on and read all four `*_flow_control_*` counters (`ethtool -S <nic> | grep flow_control`)
 before and after: they must stay 0.
 
+**Kernel bypass (Onload over AF_XDP) is dropped on this NIC** — `igb` answers the RSS
+indirection-table query but not the RSS key query, and Onload's AF_XDP path needs both. Before
+trying it on any NIC, run `ethtool -x <nic> | grep -A1 'RSS hash key'`; `Operation not supported`
+means stop there. Full trap, evidence and reopen condition:
+[onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks](reference/onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md).
+
 ## 5. Application configuration and the build
 
 - **Core map:** core → shard → session, one session per polling thread

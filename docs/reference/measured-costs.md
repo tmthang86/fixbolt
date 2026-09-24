@@ -4981,3 +4981,34 @@ a `--stamp software` arm of some later boot if the number is ever needed.
 - **The busy turn at N > 1** (ADR-0025 open question 1), so the `hft` ceiling stays 4 although
   the measured wakeup puts the arithmetic crossover at N ≈ 11.
 
+## Onload over AF_XDP: dropped at G1, no latency pair exists — 2026-09-24
+
+`[cost 2026-09-24]` Phase 4 item 4 (kernel bypass, ADR-0098). Two attempts, both stopped before
+any stack was up, so **no wire number was ever produced and none is published here** — this
+entry is the record of the attempt, not a measurement.
+
+**Machine:** host `tmt-B450-I-AORUS-PRO-WIFI`, AMD Ryzen 7 3700X, NIC Intel I211 (`igb`,
+`enp9s0`), kernel `7.0.0-31-generic`, the desktop grub line in force
+([DESIGN.md §9](../DESIGN.md)).
+
+| Attempt | Onload | Stopped at | Line, verbatim |
+|---|---|---|---|
+| 1 | `v9.0.2` (`9f330e7058`) | build, before any registration | `src/lib/efhw/af_xdp.c:375:28: error: passing argument 2 of 'kernel_bind' from incompatible pointer type … expected 'struct sockaddr_unsized *'` |
+| 2 | `174b947d0b9b7b77439463afbabf8a7e417b3706` (`v9_2`, untagged) | registering `enp9s0`, hardware init | `` [sfc efhw] af_xdp_rss_get_support: enp9s0 does not support `get_rxfh_key_size` operation `` then `[sfc efrm] ?: ERROR: hardware init failed rc=-95` |
+
+Attempt 1 installed nothing and touched no module; the NIC was never modified. Attempt 2 built
+and loaded, failed registration identically with default filters, with
+`enable_af_xdp_flow_filters=0`, and with `ethtool -L enp9s0 combined 1`; `onload_tool unload`
+returned the machine to `combined 2` with no module loaded. **Cause:** the desk's `igb` driver
+answers `get_rxfh_indir_size` but not `get_rxfh_key_size` — `ethtool -x enp9s0` already read
+`RSS hash key: Operation not supported` before either attempt — and Onload's
+`af_xdp_rss_get_support` refuses to initialise without both, on every version checked
+(`v9.0.2`, the `v9_2` pin, `master`). Full detail, sources and the two evidence logs' paths:
+[ADR-0201](../decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md)
+*Result*.
+
+**No latency pair exists for this item, and none is owed.** Both attempts stopped at G1, before
+the AF_XDP stack ever came up, so there is nothing to compare against the kernel-TCP twin —
+unlike an item that runs and loses, this one never ran. The trap this cost, and the guard that
+now watches for it on any future NIC, is
+[onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks](onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md).
