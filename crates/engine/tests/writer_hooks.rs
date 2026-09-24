@@ -117,6 +117,65 @@ fn a_retire_after_the_writer_finished_counts_nothing() {
     assert!(count_is_zero());
 }
 
+/// *The rule for a journal*, raced the way the writer can win it: `STOP` is
+/// pushed, the writer pops it and finishes, and only then does the engine's
+/// `retire` run. Nothing is left to wait for — but a retire happened, and
+/// [`writers_retired`] counts retire acts (ADR-0181 *Revision 2*): exactly
+/// one, whatever the order.
+#[test]
+fn the_first_retire_is_counted_even_after_the_writer_finished() {
+    let _serial = serial();
+    assert!(count_is_zero(), "premise: no retired writer outstanding");
+
+    let ticket = WriterTicket::new();
+    let (mut to_writer, mut from_engine) = fixbolt_engine::ring::pair(64);
+    let writer_ticket = ticket.clone();
+    let writer = std::thread::spawn(move || {
+        let mut buf = [0u8; 8];
+        let mut idle = Idle::new();
+        loop {
+            match from_engine.pop(&mut buf) {
+                Some(1) if buf[0] == 0 => break,
+                Some(_) => idle.reset(),
+                None => idle.wait(),
+            }
+        }
+        writer_ticket.finish();
+    });
+    // The engine pushes `STOP` (the stop record's one byte is its own
+    // business; `0` here), and the writer wins the race to its `finish`.
+    let pushed = to_writer.push(&[&[0]]);
+    assert!(pushed, "premise: the stop record fit");
+    writer.join().unwrap();
+    assert_eq!(
+        ticket.state(),
+        TicketState::Finished,
+        "the writer finished first"
+    );
+
+    let ever = writers_retired();
+    assert!(
+        !ticket.retire(pushed),
+        "nothing was left to wait for, so this retire says it counted nothing"
+    );
+    assert_eq!(
+        writers_retired(),
+        ever + 1,
+        "the first retire is a retire, whether or not the writer had finished"
+    );
+    assert!(!ticket.retire(true));
+    assert_eq!(
+        writers_retired(),
+        ever + 1,
+        "a second retire raises nothing"
+    );
+    assert!(
+        wait_for_retired_writers(Duration::ZERO),
+        "and nothing is waited for"
+    );
+    assert_eq!(ticket.state(), TicketState::Finished);
+}
+
 #[test]
 fn wait_for_retired_writers_waits_for_a_ticket_finished_on_another_thread() {
     let _serial = serial();

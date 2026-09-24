@@ -922,8 +922,15 @@ const RETIRED: u8 = 1;
 /// Retired while its ring was full, so no `STOP` could be pushed. It stops the
 /// first time the ring runs dry after reading this, and uncounts itself.
 const RETIRED_STOP_WHEN_DRY: u8 = 2;
-/// A retired writer that has lowered the count. Nothing leaves this state.
+/// A retired writer that has lowered the count — or a writer that finished
+/// unretired and was retired after. Nothing leaves this state.
 const FINISHED: u8 = 3;
+/// A writer that finished before anyone retired it: it lowered nothing. The
+/// first `retire` to meet it moves it to [`FINISHED`] and is counted in
+/// [`writers_retired`], not in what [`wait_for_retired_writers`] waits for.
+/// **Internal**: [`WriterTicket::state`] reports it as
+/// [`TicketState::Finished`]. ADR-0181 *Revision 2*.
+const FINISHED_UNRETIRED: u8 = 4;
 
 /// What a [`WriterTicket`] has been told, as its writer reads it with
 /// [`WriterTicket::state`].
@@ -965,13 +972,21 @@ pub enum TicketState {
 ///   [`Releaser::release`] and then [`WriterTicket::finish`], its **last
 ///   act**.
 ///
-/// **No order of that push and that retire strands the count.** It is raised
-/// only by a `retire` that moves *running* to retired, and lowered only by a
-/// `finish` that moves a retired ticket to [`TicketState::Finished`]; each
-/// happens at most once, by compare-and-swap. A writer that pops the stop
-/// record and finishes before the engine's `retire` finishes a *running*
-/// ticket, which lowers nothing, and the `retire` that follows then counts
-/// nothing. ADR-0181 decision 1, *Revision 1*.
+/// **No order of that push and that retire strands a count.** Two counts,
+/// two questions:
+///
+/// - what [`wait_for_retired_writers`] waits for — **writers still to
+///   finish** — is raised only by a `retire` that moves *running* to retired,
+///   and lowered only by that writer's `finish`;
+/// - [`writers_retired`] — **retire acts** — rises by exactly one on a
+///   ticket's first `retire`, whether its writer had finished or not.
+///
+/// A writer that pops the stop record and finishes before the engine's
+/// `retire` moves its ticket to an internal *finished, never retired* state
+/// (reported as [`TicketState::Finished`]), lowering nothing; the `retire`
+/// that follows counts one retire act, leaves nothing to wait for, and
+/// returns `false`. Each transition happens at most once, by
+/// compare-and-swap. ADR-0181 decision 1, *Revisions 1 and 2*.
 /// `crates/engine/tests/writer_hooks.rs` holds each half; [`FileJournal`]
 /// uses nothing else, so its eight test binaries hold it too.
 #[derive(Debug, Clone)]
@@ -990,12 +1005,20 @@ impl WriterTicket {
         Self(Arc::new(AtomicU8::new(RUNNING)))
     }
 
-    /// Retire the writer this ticket belongs to: **engine thread**. `true`
-    /// when this call moved the ticket from *running*, which counts the
-    /// writer among those [`wait_for_retired_writers`] waits for and in
-    /// [`writers_retired`]; `false`, counting nothing, on a ticket already
-    /// retired or already finished — including one whose writer stopped and
-    /// finished before this call.
+    /// Retire the writer this ticket belongs to: **engine thread**.
+    ///
+    /// - From *running*: counts the writer among those
+    ///   [`wait_for_retired_writers`] waits for, raises [`writers_retired`]
+    ///   by one, and returns `true`.
+    /// - The first call after the writer finished unretired (it popped the
+    ///   stop record and finished before this call): raises
+    ///   [`writers_retired`] by one, leaves nothing to wait for, returns
+    ///   `false`.
+    /// - Any later call: changes nothing, returns `false`.
+    ///
+    /// **`true` means only "this call left a writer to wait for"** — never
+    /// use it as evidence that a retire happened; [`writers_retired`] is that
+    /// evidence.
     ///
     /// `stop_pushed` is the result of the journal's one push of its stop
     /// record, made just before this call. `false` tells the writer to stop
@@ -1016,10 +1039,24 @@ impl WriterTicket {
             .compare_exchange(RUNNING, to, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            // Already retired, or finished: take back the raise above,
-            // which nobody could have paid off, since `finish` lowers only
-            // for the state this call failed to publish.
+            // Not running: take back the raise above, which nobody could have
+            // paid off, since `finish` lowers only for the state this call
+            // failed to publish.
             RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
+            // The writer finished before this, the first retire: a retire act
+            // all the same, and nothing to wait for. Once, by CAS.
+            if self
+                .0
+                .compare_exchange(
+                    FINISHED_UNRETIRED,
+                    FINISHED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                WRITERS_RETIRED.fetch_add(1, Ordering::Relaxed);
+            }
             return false;
         }
         WRITERS_RETIRED.fetch_add(1, Ordering::Relaxed);
@@ -1039,18 +1076,20 @@ impl WriterTicket {
 
     /// The writer's **last act**: the ticket becomes
     /// [`TicketState::Finished`], once, by compare-and-swap. From a retired
-    /// state it lowers the count; from *running* it lowers nothing — the
-    /// writer stopped before anyone retired it — and every later
-    /// [`WriterTicket::retire`] counts nothing. On a finished ticket it does
-    /// nothing.
+    /// state it lowers what [`wait_for_retired_writers`] waits for; from
+    /// *running* it lowers nothing — the writer stopped before anyone retired
+    /// it — and the ticket is *finished, never retired* inside, so the first
+    /// later [`WriterTicket::retire`] still counts one retire act and leaves
+    /// nothing to wait for. On a finished ticket it does nothing.
     pub fn finish(&self) {
-        if let Ok(was) = self
+        let moved = self
             .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
-                (s != FINISHED).then_some(FINISHED)
-            })
-            && was != RUNNING
-        {
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| match s {
+                RUNNING => Some(FINISHED_UNRETIRED),
+                RETIRED | RETIRED_STOP_WHEN_DRY => Some(FINISHED),
+                _ => None,
+            });
+        if matches!(moved, Ok(RETIRED | RETIRED_STOP_WHEN_DRY)) {
             RETIRED_WRITERS.fetch_sub(1, Ordering::AcqRel);
         }
     }
