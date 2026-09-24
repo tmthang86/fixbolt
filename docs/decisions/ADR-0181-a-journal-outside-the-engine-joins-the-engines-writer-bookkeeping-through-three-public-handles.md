@@ -1,6 +1,8 @@
 # ADR-0181 — A journal outside the engine joins the engine's writer bookkeeping through three public handles, and `FileJournal` uses the same three
 
-- **Status**: **Proposed — 2026-09-24, revised in place the same day, twice** (see *Revision 1*, *Revision 2*).
+- **Status**: **Accepted — 2026-09-24, by the manager under the owner's delegation of
+  2026-09-18.** Proposed 2026-09-24, revised in place the same day, twice (see *Revision 1*,
+  *Revision 2*), both revisions folded into the accepted text.
   Written by the architect (Opus) for row 3 of
   [docs/plans/2026-09-23-phase-4-scope.md](../plans/2026-09-23-phase-4-scope.md), planned in
   [docs/plans/2026-09-24-p4-sqlite-store.md](../plans/2026-09-24-p4-sqlite-store.md) step 1.

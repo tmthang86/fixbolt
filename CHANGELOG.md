@@ -73,6 +73,18 @@ decision 1), so the changes below wait for the next version rather than shipping
     `Releaser`'s owner can set it, once.
   - `ring::Idle` (`new`, `reset`, `wait`) and the constants `ring::IDLE_SPINS`,
     `ring::IDLE_SLEEP` are public: one idle rule for every writer thread.
+- **`fixbolt-store-sqlite`: a new crate, not yet released.** A `Journal` whose durable copy is a
+  SQLite database, one file per session — `FileJournal` `Async`'s engine-thread cost with a
+  writer thread that commits to SQLite in batches, joining the engine's writer bookkeeping
+  through the three handles above
+  ([ADR-0180](docs/decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md),
+  [ADR-0182](docs/decisions/ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md)).
+  `publish = false`: born release-shaped but **outside the tagged release family** until phase 4
+  row 4's kill line (engine-thread allocations 0, wire p50 within band, 50 000 msg/s × 60 s with
+  no dropped record) is applied against it in a later pull request — see
+  [docs/plans/2026-09-24-p4-sqlite-store.md](docs/plans/2026-09-24-p4-sqlite-store.md) row 4.
+  Not a dependency of `fixbolt-engine` or of `fixbolt`; usage is
+  [GUIDE.md §6d](docs/GUIDE.md), settings are [CONFIGURATION.md §6](docs/CONFIGURATION.md).
 
 ## Conditions to reach `1.0`
 

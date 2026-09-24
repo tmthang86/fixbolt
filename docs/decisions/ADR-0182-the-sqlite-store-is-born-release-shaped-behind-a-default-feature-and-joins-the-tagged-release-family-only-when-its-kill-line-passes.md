@@ -1,6 +1,9 @@
 # ADR-0182 — The SQLite store is born release-shaped behind a default feature, and joins the tagged release family only when its kill line passes
 
-- **Status**: **Proposed — 2026-09-24, revised in place the same day** (see *Revision 1*).
+- **Status**: **Accepted — 2026-09-24, by the manager under the owner's delegation of
+  2026-09-18.** Proposed 2026-09-24, revised in place the same day (see *Revision 1*), the
+  revision folded into the accepted text. Decision 3 (joining the tagged release family) is
+  not yet applied — that is row 4 of the plan below, in a later pull request.
   Written by the architect (Opus) for row 3 of
   [docs/plans/2026-09-23-phase-4-scope.md](../plans/2026-09-23-phase-4-scope.md), planned in
   [docs/plans/2026-09-24-p4-sqlite-store.md](../plans/2026-09-24-p4-sqlite-store.md). On the day
