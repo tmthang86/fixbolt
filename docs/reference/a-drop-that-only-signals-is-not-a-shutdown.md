@@ -57,10 +57,13 @@ test running in the same binary. `[measured 2026-09-24]` 1 whole-binary run in 1
 3. The three tests in `after_serving.rs` take one lock (`one_at_a_time`), so no test reads
    another's writer.
 
-**Reversal** (with a 50 ms sleep injected before the shard thread's teardown, to widen the
-window): the fix in, 200 runs of 200 green; `Drop` emptied, 20 of 20 red on *"drop(shards)
+**Reversal.** `Drop` emptied, nothing widening the window: 10 runs of 10 red on the
+`Duration::ZERO` check, *"drop(shards) returned while a retired writer was still writing — the
+shard thread's after_serving did not wait"* — the shard usually retires the journal before the
+test reads `writers_retired()`, but its writer has not finished. With a 50 ms sleep injected
+before the shard thread's teardown, 20 of 20 red on the first check instead, *"drop(shards)
 returned before the shard thread retired the connection's journal — Shards' Drop did not join
-the shard"*. Without the sleep, the fix in: 200 of 200 green alone, 200 of 200 green as the whole
-binary. Emptying `after_serving` with the fix in turns the shard test red 10 runs of 20 — not
+the shard"*; the fix in, 200 of 200 green. Without the sleep, the fix in: 200 of 200 green
+alone, 200 of 200 green as the whole binary. Emptying `after_serving` with the fix in turns the shard test red 10 runs of 20 — not
 every run, because the one writer often finishes inside the join anyway; item 105 stays open for
 that.

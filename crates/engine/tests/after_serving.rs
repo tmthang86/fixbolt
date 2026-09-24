@@ -15,9 +15,14 @@
 //! checkout -- crates/engine/src/lib.rs` restores it. **The shard test is red
 //! only sometimes under that reversal** (`[measured 2026-09-24]` 10 runs of 20,
 //! on the same sentence): its one connection's writer often finishes inside
-//! the join anyway. Its own reversal is `Shards`' `Drop` with an empty body —
-//! red 20 of 20 on *"drop(shards) returned before the shard thread retired the
-//! connection's journal"* with a 50 ms sleep before the shard's teardown.
+//! the join anyway. Its own reversal is `Shards`' `Drop` with an empty body.
+//! Without anything widening the window it is red on the `Duration::ZERO`
+//! check — *"drop(shards) returned while a retired writer was still writing"*,
+//! `[measured 2026-09-24]` 10 runs of 10 — because the shard usually retires
+//! the journal before the test reads `writers_retired()`, but not before its
+//! writer has finished. With a 50 ms sleep injected before the shard's
+//! teardown it is red on the first check instead, *"drop(shards) returned
+//! before the shard thread retired the connection's journal"*, 20 of 20.
 //!
 //! # Why every check here can ask for `Duration::ZERO`
 //!
