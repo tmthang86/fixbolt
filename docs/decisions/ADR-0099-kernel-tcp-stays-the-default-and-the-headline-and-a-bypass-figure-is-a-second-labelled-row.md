@@ -9,6 +9,11 @@
   decision 2** and **[ADR-0074](ADR-0074-kernel-bypass-io-uring-and-the-logon-hop-stay-unmeasured-by-decision.md)
   decision 1**; their other decisions stand, and their text is not edited beyond a status line
   naming this ADR.
+- **Bypass dropped**: the bypass item this ADR positions (Onload over AF_XDP) was dropped at
+  probe gate G1 on 2026-09-24, before any stack came up — see
+  [ADR-0201](ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md)
+  *Result*. This ADR's positioning decision (kernel TCP is the headline; a bypass figure, when
+  one exists, is a second labelled row) is unaffected — there is no bypass figure to place.
 - **Date**: 2026-09-23
 - **Deciders**: Tran Manh Thang (chose kernel bypass for phase 4, 2026-09-23). Written by the
   architect (Opus).

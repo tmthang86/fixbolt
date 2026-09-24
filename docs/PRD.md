@@ -179,7 +179,7 @@ line that removes it if it does not pay. A removed item is a completed item.
 | 1 | Metrics exporter + Grafana dashboard | new crate `fixbolt-metrics`, own thread, reads `Snapshot` and the event stream; no async runtime | engine-thread allocations 0 under a 10 Hz scrape; wire p50 / p99 within the band, scrape on vs off |
 | 2 | SQLite-backed store | new crate `fixbolt-store-sqlite`, `FileJournal` `Async`'s shape: ring on the engine thread, batched commits on a writer thread; no synchronous-durability mode | engine-thread allocations 0; wire p50 within the band of `FileJournal` `Async`; 50 000 msg/s for 60 s with no dropped record |
 | 3 | `io_uring` transport | kernel TCP still, so no supersession — ADR-0074 decision 2's trigger (an interval-0 NIC figure) fired on 2026-09-18; feature `io-uring`, off by default, refuses to start rather than fall back | NIC wire p50 ≥ 3 % better in both procedures, or idle turn at N = 16 ≥ 25 % better |
-| 4 | Kernel bypass: Onload over AF_XDP on the I211 | ADR-0099; no engine code; `hft` only, plaintext only; compared generator-side against a same-boot kernel twin | generator-side p50 ≥ 10 % better in both procedures, p99 no worse, zero-copy bound, `--test wire` 59 / 59 under `onload` |
+| 4 | Kernel bypass: Onload over AF_XDP on the I211 — **dropped, 2026-09-24, at probe gate G1** ([ADR-0201](decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md) *Result*; counts as done per ADR-0098 Q1) | ADR-0099; no engine code; `hft` only, plaintext only; compared generator-side against a same-boot kernel twin | generator-side p50 ≥ 10 % better in both procedures, p99 no worse, zero-copy bound, `--test wire` 59 / 59 under `onload` |
 | 5 | SIMD (SWAR first) in `codec` | ADR-0100; measured last because its denominator comes from items 3–4 | codec cases ≥ 15 % better **and** parse ≥ 2 % of the fastest surviving round trip or density at N = 64 ≥ 3 % better |
 
 **Not in phase 4:** a native AF_XDP transport or any userspace TCP stack; `ef_vi` (no hardware);
@@ -193,7 +193,7 @@ with a CI run id; the measured rows quote `scripts/check-machine.sh` from the de
 |---|---|---|
 | 1 | Nothing new built by default | `cargo build --workspace --no-default-features`; `scripts/check-no-optional-deps.sh` |
 | 2 | `io_uring` verdict applied | kept: `--features io-uring --test wire` 59 / 59, both mode scripts pass and are tripped by the wrong mode, alloc 0; killed: feature absent, pair in `measured-costs.md` |
-| 3 | Bypass verdict applied | kept: second labelled row in `DESIGN.md` §8 beside its kernel twin, 59 / 59 under `onload`; killed: negative pair in `measured-costs.md` |
+| 3 | Bypass verdict applied | kept: second labelled row in `DESIGN.md` §8 beside its kernel twin, 59 / 59 under `onload`; killed: negative pair in `measured-costs.md`; **cannot run: the failing gate's evidence in its place** ([ADR-0203](decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)) |
 | 4 | SIMD verdict applied | `bench.sh --strict` A/B quoted; kept: differential fuzz and Miri on the SWAR arm green; killed: code absent |
 | 5 | The store recovers | `cargo test -p fixbolt-store-sqlite` with a crash-and-recover test; engine-thread alloc 0; the throughput run quoted |
 | 6 | The exporter stays off the hot path | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |
