@@ -15,7 +15,9 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 The six published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`,
 `fixbolt-sbe`, `fixbolt`) release in lockstep at one version
 ([ADR-0160](docs/decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)
-decision 1), so the changes below wait for the next version rather than shipping alone.
+decision 1), so the changes below wait for the next version rather than shipping alone. `0.1.0`
+is a git tag, not a crates.io upload (ADR-0161), so `cargo-semver-checks` for this work runs
+against that tag rather than a published baseline.
 
 - **`fixbolt-engine`** — additive observability surface for phase 4's metrics exporter
   ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)):
@@ -83,6 +85,35 @@ decision 1), so the changes below wait for the next version rather than shipping
   [docs/plans/2026-09-24-p4-sqlite-store.md](docs/plans/2026-09-24-p4-sqlite-store.md) row 4.
   Not a dependency of `fixbolt-engine` or of `fixbolt`; usage is
   [GUIDE.md §6d](docs/GUIDE.md), settings are [CONFIGURATION.md §6](docs/CONFIGURATION.md).
+- **A second `Transport`, `io_uring`, behind the off-by-default `io-uring` feature (`engine`,
+  `library`, Linux only, kernel ≥ 6.1)** — receive is a multishot `recv` into a provided buffer
+  ring, reaped by the idle strategy instead of one `read(2)` per socket per turn
+  ([DESIGN.md D5, D8](docs/DESIGN.md),
+  [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md),
+  [ADR-0191](docs/decisions/ADR-0191-the-hft-sleeper-list-reads-io-uring-enter-by-its-min-complete.md)).
+  **`fixbolt_engine::transport::uring`**: `Uring` (the ring, `hft`/`standard` constructors
+  `Uring::hft`/`Uring::standard`, `Uring::register`), `UringConfig` (buffers, buffer length,
+  connections — no hidden default, refused by `UringConfigError`), `UringTransport`,
+  `UringSpin` (`hft`'s idle strategy and reaper) and `UringBlock` (`standard`'s, behind
+  `standard` too), `HftArm` (`Enter`, and — behind `affinity` — `Sqpoll { pin: CorePin }`,
+  never a default), `UringArm`, `UringReport` (counts only: `cqes`, `bytes`, `enobufs`,
+  `rearms`, `stale`, `enter_errors`, `unarmed`, `cq_overflow`, `unisolated`), and
+  `UringRefused` (`Disabled { sysctl }`, `Blocked`, `NotInKernel`, `KernelTooOld`,
+  `TooSmall { have, need }`, `Other`) — a blocked or too-old kernel refuses at startup, named,
+  before any socket is bound, and this transport never falls back to `read(2)`.
+  **`fixbolt_engine::{serve_hft_uring, serve_uring}`** are the new entry points;
+  **`ServeError::Uring(UringRefused)`** is the error they add. **`Transport::NEEDS_REAPER`**
+  and **`Waiting::REAPS`** are new defaulted associated constants (both default `false`, so no
+  implementation outside this crate changes), asserted compatible by a `const` block in
+  `Engine::new` — pairing `UringTransport` with `Spin` or `block::Block` is now a compile error.
+  **`Transport::carrier(&self) -> Carrier`** (defaulted to `Carrier::Other`) and
+  **`Engine::carrier(&self, ConnId) -> Option<Carrier>`** report which receive path is carrying
+  a connection's bytes, read back after the fact rather than assumed from what was asked for —
+  the same shape `TlsMode` already has. `Carrier` is `Kernel`, `Uring` or `Other`.
+  `tools/w2w` gains `--transport kernel|uring`, `--uring-arm enter|sqpoll` and
+  `--sqpoll-core <cpu>` under the same feature, printing its `transport:` line from
+  `Engine::carrier` rather than from the flag
+  ([CONFIGURATION.md](docs/CONFIGURATION.md), [GUIDE.md §9](docs/GUIDE.md)).
 
 ## Conditions to reach `1.0`
 

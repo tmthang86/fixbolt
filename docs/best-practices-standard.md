@@ -202,3 +202,20 @@ constraint 4) — a lightly loaded, perfectly healthy session can leave a snapsh
 between messages, and `fixbolt_healthy` says nothing about that. An alert threshold copied
 from an `hft` deployment, where the engine never sleeps and a snapshot is always fresh, will
 fire on a `standard` deployment that is doing exactly what this mode is for.
+
+## 11. `io_uring` (`--features io-uring`): the natural place to try it is `density`
+
+`[2026-09-24]` A second transport exists behind `--features io-uring`
+([DESIGN.md D5, D8](DESIGN.md), [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)):
+`serve_uring`'s idle turn reaps every connection's completions with one `io_uring_enter` instead
+of a `poll(2)` set built and read every wait. Because §2 already says many sessions per thread
+is the normal `standard` shape, this is where the idle-side saving — if row 7's measurement
+keeps it at all — would actually show for you; it is not expected to change the single-session
+number in [DESIGN.md §8](DESIGN.md). **No `standard` latency figure for `io_uring` is published
+yet, and this page's own opening note applies to it too**: measure your own density with
+`tools/w2w --mode standard --transport uring` before relying on it. It changes nothing about
+this section's rule: `UringBlock` still blocks in the kernel when idle
+(`scripts/check-standard-gives-the-core-back.sh` runs an `io_uring` arm precisely to prove that
+holds), and a `standard` engine that spun under `io_uring` would be exactly the defect §1 warns
+against under `poll(2)`. SQPOLL (`HftArm::Sqpoll`) is not reachable from `standard` at all — the
+type system refuses the pairing — so it is never a knob to consider here.

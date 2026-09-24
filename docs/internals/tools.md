@@ -11,7 +11,7 @@ other way.
 
 | Tool | Files | Keeps |
 |---|---|---|
-| `w2w` | `src/main.rs` | Wire-to-wire harness: the two mode checks trace this binary; counts allocations on both threads over the timed window and asserts zero. `[2026-09-24]` `--metrics <addr>` spawns a `fixbolt-metrics` exporter on the main thread, before any core is pinned, and prints `metrics: <addr>`; refused by `--connect` (ADR-0170) |
+| `w2w` | `src/main.rs` | Wire-to-wire harness: the two mode checks trace this binary; counts allocations on both threads over the timed window and asserts zero. `[2026-09-24]` `--metrics <addr>` spawns a `fixbolt-metrics` exporter on the main thread, before any core is pinned, and prints `metrics: <addr>`; refused by `--connect` (ADR-0170) `[2026-09-24]` `--transport kernel|uring` (feature `io-uring`), `--uring-arm enter|sqpoll` (`sqpoll` needs `--features affinity`), `--sqpoll-core <cpu>` (`--allow-unisolated` waives `isolcpus` for it): the `transport:` line is printed after logon, read back from the engine (`Engine::carrier`), never from the flag — `kernel …` or `uring arm=… cqes=… bytes=… enobufs=… unarmed=… cq-overflow=…`, plus `unisolated=` under SQPOLL |
 | | `src/pair.rs` | Pairing a request's hardware RX stamp with its reply's hardware TX stamp — pure, no socket, no clock |
 | `interop` | `src/main.rs` | Both roles against a real `libquickfix` over kernel TCP, `--role initiator` and `--role acceptor`; behind `#[cfg(all(feature = "tls", target_os = "linux"))]`, the `acceptor` role's TLS branch (`into_tls_table` + `load_pem` + `serve_tls_requiring`) and a background thread printing `interop: event <kind>` off `Observer::events` |
 | | `src/desk.rs` | The application behind `--role acceptor`: acknowledges each order as New (`35=8` with `150=0`, `39=0`, `11=` echoed — nothing is filled), answers nothing else — the tool's own handler, not `library`'s example. Also the application behind `--role dial` and behind both QuickFIX/J arms, so a change to it moves three gates at once |
@@ -39,7 +39,11 @@ Each tool is independent; read whichever one a task needs. Within a tool:
   <seconds>` — another process, so its own allocations never enter `w2w`'s count; it paces
   attempts on a fixed schedule rather than waiting for each answer
   ([a-synchronous-scrape-waits-for-the-exporters-next-tick](../reference/a-synchronous-scrape-waits-for-the-exporters-next-tick.md)),
-  and both mode scripts run with it and `W2W_EXTRA="--metrics <addr>"` beside them
+  and both mode scripts run with it and `W2W_EXTRA="--metrics <addr>"` beside them;
+  `[2026-09-24]` its `--transport uring` runs are what `scripts/check-no-kernel-sleep.sh` and
+  `scripts/check-standard-gives-the-core-back.sh` trace for the `io_uring` arm
+  (ADR-0190, ADR-0191); a build without `--features io-uring` reports that arm *SKIPPED, NOT
+  PASSED*, never a silent pass
 - `interop` — driven by `scripts/interop.sh`, which builds the C++ counterparties and reports
   a pass count per role; never built or run by `cargo test`
 - `jrnl` — `tests/cli.rs`, run as the built binary; `crates/engine/tests/journal_reader.rs`

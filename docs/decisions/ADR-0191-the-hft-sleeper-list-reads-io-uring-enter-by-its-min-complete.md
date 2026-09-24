@@ -1,8 +1,8 @@
 # ADR-0191 — The `hft` sleeper list reads `io_uring_enter` by its `min_complete`
 
-- **Status**: Proposed — 2026-09-24. Written by the architect (Opus) for phase 4 row 5
-  ([plan](../plans/2026-09-24-p4-io-uring-transport.md)). Accepted with that plan, by the owner or
-  by the manager under the owner's standing mandate.
+- **Status**: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18.
+  Written by the architect (Opus) for phase 4 row 5
+  ([plan](../plans/2026-09-24-p4-io-uring-transport.md)).
 - **Date**: 2026-09-24
 - **Deciders**: proposed by the architect; accepted by the owner or the manager.
 - **Related**: `CLAUDE.md` §2 non-negotiable 4 and its *Machine checks* row;

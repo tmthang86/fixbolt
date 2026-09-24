@@ -1,10 +1,10 @@
 # ADR-0190 — The `io_uring` transport is reaped by the idle strategy, and an `hft` turn enters the kernel once without waiting
 
-- **Status**: Proposed — 2026-09-24; **revised in place 2026-09-24** (Revision 1, R1–R4, and
-  Revision 2, R5, at the end of this ADR — decisions 4, 5 and 7 changed while it was still
-  Proposed, after steps 1–4 and 6 were built). Written by the architect (Opus) for phase 4 row 5
-  ([plan](../plans/2026-09-24-p4-io-uring-transport.md)). Accepted with that plan, by the owner or
-  by the manager under the owner's standing mandate.
+- **Status**: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18;
+  **revised in place 2026-09-24** (Revision 1, R1–R4, and Revision 2, R5, at the end of this
+  ADR — decisions 4, 5 and 7 changed while it was still Proposed, after steps 1–4 and 6 were
+  built). Written by the architect (Opus) for phase 4 row 5
+  ([plan](../plans/2026-09-24-p4-io-uring-transport.md)).
 - **Date**: 2026-09-24
 - **Deciders**: proposed by the architect; accepted by the owner or the manager.
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)

@@ -277,3 +277,19 @@ from the thread that builds the `ShardPlan`, before any shard thread pins — ne
 shard thread, which by the time it can call anything is already pinned. Nothing in this
 repository checks placement automatically; `ps -L -o tid,psr,comm` against `isolcpus` is the
 only proof there is one.
+
+## 11. `io_uring` (`--features io-uring`): try it where §1's rule is already bent
+
+`[2026-09-24]` A second transport exists behind `--features io-uring`
+([DESIGN.md D5, D8](DESIGN.md), [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)),
+and it enters the kernel once per idle turn no matter how many sockets are on the thread,
+instead of one `read(2)` per socket per turn. **§1's shape — one session per `hft` polling
+thread — already puts N at 1, where that difference cannot show.** If you follow §1, plain
+`read(2)` and `io_uring` cost the same idle syscall count on your thread, so there is nothing
+to gain by switching. The place to try it is exactly where you have already chosen to bend §1:
+several `hft` sessions sharing one polling thread. **No latency figure for this transport is
+published yet** — the plan's row 7 measurement (not this page) decides whether it is kept at
+all — so measure your own N-sessions-per-thread shape with `tools/w2w --transport uring` before
+trusting it over `read(2)`. `HftArm::Sqpoll` is a separate, measured-only arm that burns a
+second core for the kernel's own polling thread and is never a default; do not reach for it
+without a core to spare and a reason to measure it specifically ([GUIDE.md §9](GUIDE.md)).
