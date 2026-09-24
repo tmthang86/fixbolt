@@ -504,6 +504,21 @@ magnitude and not a band. The band is owed and is tracked in
   ([ADR-0110](decisions/ADR-0110-a-secret-is-masked-in-the-message-log-and-leaves-only-its-number-in-the-journal-file.md)
   decision 4).
 
+  **`[added 2026-09-24]` `fixbolt-store-sqlite`'s `SqliteJournal` follows the same rule, by the
+  same decision.** Its writer thread does not insert a message for which
+  `redact::carries_secret` is true; the number's `highest_out` mark is raised in its place, so a
+  restart that reopens the database sees the same gap `FileJournal` would
+  ([ADR-0180](decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md)
+  decision 7). **No single test in `crates/store-sqlite/tests` exercises the compound case —
+  a secret sent, a restart, then a resend spanning it — so say that plainly rather than name one
+  that does not exist.** The two tests that each cover one half:
+  `tests/serve.rs::a_session_resumed_from_the_database_replays_what_it_sent` restarts the server
+  against the same database and resends a **non-secret** order byte for byte after the restart;
+  `tests/serve.rs::secrets_through_a_real_logon_stay_out_of_the_database` sends secrets through a
+  real `Logon` and a real reply and proves neither the database nor its `-wal` ever holds them,
+  and that a resend **inside the same process** (no restart) still replays them from memory —
+  but it never restarts the server to ask what the *resumed* session does with that number.
+
 ### 4a. `789` and `369` — resynchronising without a `ResendRequest` `[added 2026-09-06]`
 
 Both are **off by default** and both are optional in FIX 4.4. **Reading them is not optional**:
