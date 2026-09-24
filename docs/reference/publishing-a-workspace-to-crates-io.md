@@ -200,6 +200,108 @@ so the first few runs are read correctly; the reversal that proves the
 unmodified worktree at the same `0.1.0`, not against `origin/main`, for
 exactly this reason — see `DESIGN.md` §6 *Packaging*.
 
+**Superseded in part by ADR-0161 decision 5, row 8b.** Once there is no
+crates.io upload, the baseline that matters is the last tag, not
+`origin/main`, and this hole is no longer merely "not yet meaningful" — it is
+the thing `scripts/check-semver-against-tag.sh` exists to close, blocking,
+before the `semver` job ever drops `continue-on-error`. See traps 11 and 12
+below.
+
+## 11. `cargo add --git` on a multi-package repository needs the package name
+
+`cargo add --git https://github.com/tmthang86/fixbolt --rev <sha>` with no
+package name fails outright: `[measured 2026-09-24]`
+
+```
+error: multiple packages found at `https://github.com/tmthang86/fixbolt`: fixbolt, fixbolt-attr-scan, fixbolt-codec, … fixbolt-w2w
+To disambiguate, run `cargo add --git … <package>`
+```
+
+Fifteen names, not six: cargo scans the whole tree for anything with a
+`Cargo.toml`, so beside the twelve workspace members (`publish = false` or
+not), it also lists the three packages outside the workspace
+(`spikes/fixp-probe`, `fuzz`, `spikes/ktls`). Naming the package resolves it
+at once: `cargo add --git <url> --tag <tag> fixbolt` prints `Adding fixbolt
+(git) to dependencies` and writes `fixbolt = { git = "<url>", tag = "<tag>",
+version = "<inferred>" }` — cargo infers the `version` field itself from the
+crate's own manifest at that tag.
+
+**Guard:** `scripts/stranger-check.sh --from git` always passes the package
+name explicitly (ADR-0161 decision 4); `docs/GETTING-STARTED.md` and
+`README.md` do the same in the line a human reads.
+
+## 12. `cargo-semver-checks` exits 0 on a major-looking bump having checked nothing, and a git baseline needs the tag fetched
+
+Trap 10 above named the defect once, against `origin/main`, as "not yet
+meaningful because the baseline is still `0.0.0`". ADR-0161 decision 1 (no
+crates.io upload) turns that from a temporary quirk into the actual gate's
+one blind spot: the real baseline for every future release is the previous
+tag, and the same `0.y` -> `0.(y+1)` skip applies there too, forever, not
+only once at `0.0.0` -> `0.1.0`. `[measured 2026-09-24]`
+`cargo semver-checks --workspace --baseline-rev v0.1.0` against an unchanged
+`0.1.0` runs the real 196-check lint set per crate (58 of 254 skipped by
+design — lints a minor release already permits); forcing the tool to treat
+the SAME comparison as a major bump (`--release-type major`) reads `0 checks:
+0 pass, 254 skip` per crate and still exits 0 — nothing distinguishes "found
+zero problems" from "compared nothing" in the exit status alone.
+
+A second, narrower trap sits right beside it: `--baseline-rev <tag>` needs
+the tag resolvable in the LOCAL checkout (`git rev-parse <tag>^{commit}`) —
+`--baseline-rev v9.9.9` (a tag that exists nowhere) exits 101,
+`error: couldn't parse revision: "v9.9.9^{tree}"`, `The ref partially named
+"v9.9.9" could not be found` — and a shallow checkout (the `actions/checkout`
+default) never has the tag to begin with, so the CI job needs
+`fetch-depth: 0` the same way the old `origin/main`-baseline job already did.
+
+Three more sit behind those two, found in the senior review of PR #112
+(finding F3) and in building its fix, row 8b' `[measured 2026-09-24]`:
+
+- **A hard-coded baseline goes stale and stays green.** With `v0.1.0`
+  written into `ci.yml`, a later `v0.2.0` tag and a `main` at `0.2.0` make
+  the wrapper compare `0.2.0` against `v0.1.0`: a major-level bump, every
+  lint skipped, six `NOTE` lines, `OK`, exit 0 — on every pull request, until
+  somebody remembers to edit the literal. Reproduced in a throwaway clone
+  with the pre-ADR-0162 script. And "the version differs" was too wide an
+  excuse: `0.1.0` -> `0.1.1` is a minor-level comparison that does run
+  lints, so 0 checks there means something else broke, yet the old wrapper
+  printed `NOTE` and `OK` for it too (forced with `--release-type major`).
+- **A tag created in a `git worktree` is a real tag of the repository.**
+  Worktrees share `refs/tags/` with the main checkout (ADR-0162
+  *Research*), so a reversal that tags `v0.2.0` "just in the worktree" leaves
+  a real `v0.2.0` behind, one `git push --tags` away from publishing it.
+  Scenarios that create tags run in a separate `git clone` outside the
+  project tree, with `git remote remove origin` straight after cloning.
+- **`git clone --no-tags --branch <b> <local path>` still brings tags.**
+  git 2.53.0 on the desk: cloning this repository with `--no-tags --branch
+  plan/p3-close-8b`, by path or by `file://`, left `v0.1.0` in the clone;
+  the same clone without `--branch` had no tags. A "no tags" scenario built
+  that way silently tests the tagged case. Clone without `--branch`, then
+  `git checkout -b <b> origin/<b>`, and print `git tag -l` before trusting
+  it.
+
+**Guard:** `scripts/check-semver-against-tag.sh` takes no argument and
+derives the baseline — the newest `vX.Y.Z` tag in `git tag --merged HEAD`,
+compared as integers ([ADR-0162](../decisions/ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md)
+rules 1–2), printed first as `baseline v0.1.0 = highest of: v0.1.0`. It
+reads, per published crate, the `Checked […] N checks: …` line
+cargo-semver-checks itself prints, and fails unless N > 0 — unless the
+workspace version is a major-level bump over the baseline by Cargo's rule
+(rule 4), both versions read with `tomllib`, never inferred from
+cargo-semver-checks' own `(major change)` wording. Regression tests are the
+row 8b' reversals, run by hand in throwaway clones (the plan's *Nhật ký
+giao hàng* quotes each): `v0.2.0` tagged on HEAD at `0.2.0` reads `baseline
+v0.2.0 = highest of: v0.1.0, v0.2.0` and six N > 0; the same with the
+baseline forced to `v0.1.0`, or with `v0.2.0` on an unmerged side commit,
+reads `FAIL semver: tag v0.2.0 exists for workspace version 0.2.0 but the
+baseline is v0.1.0`; `0.1.1` with `--release-type major` reads `FAIL semver:
+fixbolt-codec ran 0 checks against v0.1.0 — 0.1.0 → 0.1.1 is not a
+major-level bump`; `0.2.0` untagged reads six `NOTE … major-level bump` and
+exits 0; `v0.3.0` on a `0.1.0` commit reads `FAIL semver: tag v0.3.0 points
+at a commit whose workspace version is 0.1.0`; a clone with no tags exits 2,
+`no release tag reachable from HEAD`. What it still cannot see: a clone
+missing only the NEWEST tag derives an older baseline without complaint —
+the printed baseline line is the only place that shows.
+
 ## Sources
 
 - The Cargo book: *Publishing on crates.io*; *The manifest format* (`readme`,
@@ -217,3 +319,6 @@ exactly this reason — see `DESIGN.md` §6 *Packaging*.
 - The measurements above; plan
   [2026-09-23-p3-packaging-and-first-release](../plans/2026-09-23-p3-packaging-and-first-release.md)
   *Những gì đã biết chắc* facts 1–5 and 8, *Chia việc* rows 6b and 6c.
+- [ADR-0161](../decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)
+  *Context* (traps 11 and 12: measured on the desk, cargo 1.98.0, cargo-semver-checks 0.50.0,
+  2026-09-24) and *Decision* 4–5.

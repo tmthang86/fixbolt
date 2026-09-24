@@ -429,9 +429,65 @@ Tag đã có trước 8b nên không bị vòng lặp "cần tag để xanh, c�
 1. **Ruleset khoá tag `v*`** (cấm xoá, cấm dời) trên repo GitHub: đồng ý để manager tạo không, nếu
    token của phiên có quyền admin? Không có ruleset thì "tag không bao giờ dời" chỉ là lời hứa.
 
+## Sửa 3 — 2026-09-24: mốc so sánh của semver tự tìm, không ghi cứng `v0.1.0`
+
+**Vì sao.** Senior review của PR #112 (hàng 8b), phát hiện F3. Job `semver` trong `ci.yml` gọi
+`scripts/check-semver-against-tag.sh v0.1.0` với tag viết cứng. Giả sử sau này gắn tag `v0.2.0`
+và `main` lên `0.2.0` mà quên sửa dòng đó. Khi ấy script so `0.2.0` với `v0.1.0`, coi đây là lần
+nâng phiên bản "major", cargo-semver-checks bỏ qua mọi kiểm tra, còn script in sáu dòng `NOTE` rồi
+báo **xanh**. Gate thành ra xanh trên mọi PR mà không so gì cả, đúng cái lỗi script sinh ra để chặn.
+Lỗi thứ hai: script tha "0 kiểm tra" khi phiên bản khác nhau **bất kỳ kiểu nào**, kể cả tăng patch
+(`0.1.0` → `0.1.1`). Trường hợp đó cargo-semver-checks vẫn chạy kiểm tra, nên 0 kiểm tra là có
+chuyện khác hỏng.
+
+**Quyết định:**
+[ADR-0162](../decisions/ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md)
+(*Proposed*, manager chấp nhận). Là **ADR mới**, không phải phụ lục: ADR-0161 đã Accepted, và
+quyết định 5 của nó ghi rõ hai điều bị đổi ở đây (tha khi phiên bản khác nhau; tag viết cứng, sửa
+tay sau mỗi tag). `CLAUDE.md` §5 cấm sửa nội dung một ADR đã Accepted. Job `stranger-git` giữ
+nguyên tag viết cứng: nếu nó cũ, script đỏ vì trang cài đặt nói một tag khác, không xanh giả.
+
+### Quy tắc script phải làm đúng (ADR-0162 *Decision*)
+
+Script **không nhận đối số**; `ci.yml` gọi `scripts/check-semver-against-tag.sh` trơn.
+
+1. **Mốc B tự tìm**: trong các tag `git tag --merged HEAD` có tên khớp đúng
+   `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`, lấy tag có `(major, minor, patch)` lớn
+   nhất, so bằng số nguyên (không dùng `--sort` của git, vì cấu hình máy có thể đổi thứ tự). Không
+   có tag nào → exit 2. Phiên bản trong `git show B:Cargo.toml` (`[workspace.package] version`, đọc
+   bằng `tomllib`) phải bằng tên B bỏ chữ `v`, không bằng → FAIL.
+2. **Phiên bản hiện tại V** (đọc cùng cách từ `Cargo.toml`): có pre-release/build → exit 2;
+   `V < B` → FAIL; có tag `v<V>` ở **bất kỳ đâu** trong repo mà tag đó không phải B → FAIL (có bản
+   phát hành đúng phiên bản này mà nhánh hiện tại không đi ra từ nó — thường là cần rebase lên
+   `main`).
+3. **`V == B`** → cả sáu crate phải có `Checked … N checks` với N > 0. Không ngoại lệ.
+4. **`V > B`** → chỉ tha 0 kiểm tra khi lần nâng là "major" theo quy tắc của Cargo, tính từ con số
+   đúng như `check_release.rs`: `V.major != B.major`; hoặc `V.major == 0` và `V.minor != B.minor`;
+   hoặc `V.major == 0 && V.minor == 0` và `V.patch != B.patch`. Khi đó mỗi crate 0 kiểm tra in một
+   dòng `NOTE` nêu B, V và "major-level bump". Mọi trường hợp `V > B` khác xử như quy tắc 3.
+5. Mã thoát khác 0 của chính cargo-semver-checks vẫn được trả về nguyên, như hiện nay. Trước khi
+   chạy, script in B và cách chọn: `baseline v0.1.0 = highest of: v0.1.0`.
+
+### Hàng 8b' (sửa theo phát hiện F3, trên cùng nhánh `plan/p3-close-8b`)
+
+| Bước | Kết quả | Người làm | File được sửa / **không** được sửa | Gate — xong khi | Test đỏ trước / đảo ngược | Phụ thuộc |
+|---|---|---|---|---|---|---|
+| 8b' | Script semver tự tìm mốc, chỉ tha 0 kiểm tra khi nâng "major" | **senior developer (opus)**: sửa một phát hiện review đã được xác nhận (`CLAUDE.md` §12, *Running an approved plan* bước 3) | Sửa: `scripts/check-semver-against-tag.sh` (quy tắc 1–5 ở trên; bỏ đối số; header viết lại *WHAT IT CANNOT SEE*: clone thiếu tag mới nhất thì âm thầm dùng tag cũ hơn — bù lại, script in B ra); `.github/workflows/ci.yml` (job `semver`: `run: scripts/check-semver-against-tag.sh` không đối số, tên job "… against the newest release tag HEAD descends from (blocking, ADR-0162)", comment cập nhật; giữ `fetch-depth: 0`); `RELEASING.md` (bỏ job `semver` khỏi danh sách chỗ phải đổi tag sau mỗi lần gắn tag, mục *Cutting a release*; lệnh ở mục 6 bỏ `v0.1.0`); `docs/DESIGN.md` §6 (dòng ~1468: bỏ `v0.1.0` khỏi lệnh, ghi mốc tự tìm); `docs/PRD.md` §2 (dòng ~159, tiêu chí 8); `docs/reference/publishing-a-workspace-to-crates-io.md` (bẫy 12: thêm "tag viết cứng thì cũ dần mà vẫn xanh" và "tag tạo trong worktree là tag thật của repo"); `docs/CONFORMANCE.md` (lệnh tiêu chí 8, nếu có ghi `v0.1.0`). **Không**: `crates/`, `scripts/stranger-check.sh`, job `stranger-git`, mọi ADR (manager thêm dòng *Superseded in part … by ADR-0162* vào ADR-0161 khi chấp nhận) | `shellcheck -S info scripts/check-semver-against-tag.sh` sạch; trên desk `scripts/check-semver-against-tag.sh` exit 0, trích `baseline v0.1.0 = highest of: v0.1.0`, sáu dòng `(no change; assume minor)` và sáu dòng N > 0; cả sáu kịch bản đảo ngược bên phải cho đúng câu đã viết trước; `python3 scripts/check-links.py`; `scripts/check-adr-numbers.sh`; trên PR #112 job `semver` xanh, manager ghi run id | **Mọi kịch bản chạy trong một `git clone` ở `target/semver-reversal/`, không bao giờ trong `git worktree`.** Tag tạo trong worktree là tag thật của repo (ADR-0162 *Research*). Sau khi clone, `git remote remove origin` ngay để không thể push. Viết câu mong đợi trước, chạy, trích. **Đỏ trước (script cũ):** (A) trong clone, commit `version = "0.2.0"` rồi `git tag v0.2.0` lên commit đó; chạy script cũ `… v0.1.0` → sáu `NOTE` và `OK`: đây là lỗi F3 tái hiện. (B) trong clone, commit `version = "0.1.1"` và tạm thêm `--release-type major` vào lệnh → script cũ in `NOTE` và `OK`: lỗi thứ hai. **Sau khi sửa:** (A) → `baseline v0.2.0 = highest of: v0.1.0, v0.2.0`, sáu dòng N > 0, exit 0; (A') tạm ép B = `v0.1.0` trong script → `FAIL semver: tag v0.2.0 exists for workspace version 0.2.0 but the baseline is v0.1.0`; (B) → `FAIL semver: fixbolt-codec ran 0 checks against v0.1.0 — 0.1.0 → 0.1.1 is not a major-level bump`; (C) commit `0.2.0`, **không** tag → sáu `NOTE … major-level bump`, exit 0 (trường hợp hợp lệ vẫn qua); (D) `git tag v0.3.0` lên HEAD mà manifest ghi `0.1.0` → `FAIL semver: tag v0.3.0 points at a commit whose workspace version is 0.1.0`; (E) tag `v0.2.0` lên một commit nhánh phụ không merge, HEAD ghi `0.2.0` → cùng câu với (A'): `FAIL semver: tag v0.2.0 exists for workspace version 0.2.0 but the baseline is v0.1.0` (quy tắc 2 chỉ có một câu FAIL); (F) `git clone --no-tags` → exit 2 `no release tag reachable from HEAD`. Xoá `target/semver-reversal/` sau cùng | PR #112 (8b) còn mở; ADR-0162 được chấp nhận |
+
+### Tài liệu phải cập nhật (Sửa 3)
+
+- [ ] `docs/decisions/ADR-0161-…md`: một dòng *Superseded in part — 2026-09-24:* "decision 5's
+      exception and baseline literal by ADR-0162". Manager thêm khi chấp nhận ADR-0162.
+- [ ] Các file tài liệu có trong ô "Sửa" của hàng 8b' ở trên.
+- [ ] Bảng *Cách kiểm chứng* (Sửa 2), dòng 8: lệnh thành `scripts/check-semver-against-tag.sh`,
+      không đối số. Bảng đó không sửa lại; dòng này thay nó.
+
 ## Nhật ký giao hàng
 
 | Bước | Commit | Bằng chứng |
 |---|---|---|
 | 6a | *(manager commit)* | `check-release-versions.sh` đỏ trước khi sửa manifest: 37 dòng FAIL, trong đó có câu viết trước `FAIL fixbolt-dict: dependency fixbolt-codec has no version requirement`; sau đó xanh `OK — 6 crates at 0.1.0 …`. Hai lần đảo ngược: `"0.1.0"` → `… is not "=0.1.0"`; sửa một byte `crates/codec/LICENSE-MIT` → `LICENSE-MIT copies differ`. Trên bản chép không có `vendor/`: `cargo publish --workspace --dry-run --allow-dirty` exit 0, sáu `Packaging` và sáu `Verifying`. `cargo +1.88.0 check -p fixbolt --all-features` và `-p fixbolt-engine --all-features` đều `Finished`. Mô phỏng docs.rs (`--cfg docsrs -D warnings`, nightly) cho sáu crate đều exit 0 |
 | 6a' | *(manager commit)* | Tìm ra nguyên nhân bằng cách chỉ đổi một biến: 1.85 → 0 cảnh báo, 1.88 → 15. Sau `clippy --fix`: clippy ba kiểu exit 0; `score` 4 passed, `wire` 2 passed (cả hai mode), `score_fixt` 2 passed, `wire_fixt` 1 passed; `alloc` của session và engine toàn 0; `check-indexing-debt` 176, trần 176. Đo lại dry run có README, xem báo cáo của bước |
+| 7b | tag `v0.1.0` → `890c785` | Trước khi có tag: `cargo add fixbolt --git … --tag v0.1.0` → `failed to find tag \`v0.1.0\``; sau khi push: `git ls-remote --tags origin 'v0.1.0^{}'` → `890c7850fbc6e564a7854404253382c1e9977664`. CI của `main` trên commit đó: run 36011477652, 19/19. Ruleset 23943722 đọc lại: `enforcement active`, `refs/tags/v*`, `deletion update non_fast_forward`, không ai được miễn |
+| 8b | `8a38fd7`, `00d73c5` | Đỏ trước `unknown argument: --tag`; tag sai `failed to find tag \`v9.9.9\``; đảo ngược (a)(b)(c) đỏ đúng câu; (d) do manager làm: đổi tên `fixbolt_codec::checksum` → `failure function_missing`, exit 100. Review: CI đỏ vì `CARGO_TERM_COLOR=always` (run 36015377663) → thêm `--color never`, xanh cả khi bật màu |
+| 8b' | `4b1c945` | ADR-0162. Đỏ trước trên script cũ (A: bump 0.2.0 vẫn OK; B: 0.1.1 + major vẫn OK); sau khi sửa bảy kịch bản in đúng câu viết trước, trong các clone đã gỡ `origin`. CI run 36018953370 xanh 20/20, gồm `semver` (chặn) và `stranger-git`. **Phase 3 đóng khi PR #112 merge** |

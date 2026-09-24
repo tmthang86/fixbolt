@@ -7,26 +7,25 @@ repository logs on, logs out, and stops the acceptor — so this page cannot dri
 code the way prose next to an example can.
 
 ```sh
-cargo add fixbolt@0.1.0
+cargo add fixbolt --git https://github.com/tmthang86/fixbolt --tag v0.1.0
 ```
 
-> **Not on crates.io yet.** The six published crates are already `0.1.0` in this repository
-> ([ADR-0160](decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)),
-> but nothing has been uploaded until the owner runs `cargo publish` (`RELEASING.md`) — and the
-> `v0.1.0` git tag does not exist until that same step. Until both are true, depend on a commit or
-> branch of this repository instead of the line above:
->
-> ```toml
-> fixbolt = { git = "https://github.com/tmthang86/fixbolt", rev = "<a commit sha from this repository>" }
-> ```
->
-> This whole note, and the line above, go away the day the crate is actually on crates.io — at
-> that point `cargo add fixbolt@0.1.0` is the whole story.
+```toml
+fixbolt = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }
+```
+
+**Not on crates.io** — by decision, not by omission:
+[ADR-0161](decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)
+released `0.1.0` as the git tag `v0.1.0` rather than a crates.io upload, so this is the whole
+install, and it stays this way unless a later ADR decides otherwise. There is no docs.rs page
+either — API documentation is `cargo doc --open` in your own checkout of the dependency.
 
 `fixbolt-dict` ships QuickFIX's FIX 4.4 dictionary inside the crate itself (`spec/FIX44.xml`,
-under [`NOTICE`](../NOTICE)), so there is nothing else to fetch and no `vendor/` checkout: `cargo
-add fixbolt` (or the git line above) is the whole install, with nothing but crates.io — or git —
-reachable ([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)).
+under [`NOTICE`](../NOTICE)), so there is nothing else to fetch and no `vendor/` checkout: the
+`cargo add` line above is the whole install, with nothing but GitHub and crates.io reachable (the
+tree itself comes from GitHub; a handful of ordinary dependencies such as `roxmltree` and `libc`
+still come from crates.io the normal way) — no `vendor/` checkout either way
+([ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)).
 
 ---
 
@@ -250,11 +249,13 @@ line and press enter to stop it.
 
 Two things prove this page cannot silently drift from working code:
 
-- **`scripts/stranger-check.sh --from packaged`** (and, once fixbolt is on crates.io, `--from
-  registry --version 0.1.0`) pastes exactly the two blocks above into a fresh crate outside this
-  repository, builds it against the same bytes a `.crate` upload contains, and drives a real
-  Logon/Logout through it with a client that shares no code with fixbolt
-  (`scripts/stranger-logon.py`) — ADR-0097 exit criterion 7.
+- **`scripts/stranger-check.sh --from packaged`** and **`--from git --tag v0.1.0`** paste exactly
+  the two blocks above into a fresh crate outside this repository — the first builds it against
+  the same bytes a `.crate` upload would contain, the second `cargo add`s fixbolt straight from
+  GitHub at the released tag, the way `README.md` and the install line above actually tell a
+  stranger to depend on it — and both drive a real Logon/Logout through it with a client that
+  shares no code with fixbolt (`scripts/stranger-logon.py`) — ADR-0097 exit criterion 7, read
+  through ADR-0161 decision 4.
 - **[`crates/library/examples/acceptor.rs`](../crates/library/examples/acceptor.rs)** and
   **[`crates/library/examples/shared/order_handler.rs`](../crates/library/examples/shared/order_handler.rs)**
   are the same handler and the same entry point, built and tested inside this workspace by

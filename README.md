@@ -60,23 +60,26 @@ Where each piece of work stands, day by day, is in [STATUS.md](STATUS.md).
 ### As a user: install the crate
 
 ```sh
-cargo add fixbolt@0.1.0
+cargo add fixbolt --git https://github.com/tmthang86/fixbolt --tag v0.1.0
 ```
-
-**Not on crates.io yet.** The six published crates are already `0.1.0` in this repository, but
-nothing has been uploaded until the owner runs `cargo publish` ([`RELEASING.md`](RELEASING.md))
-— and the `v0.1.0` git tag does not exist until that same step. Until both are true, depend on a
-commit or branch of this repository instead:
 
 ```toml
-fixbolt = { git = "https://github.com/tmthang86/fixbolt", rev = "<a commit sha from this repository>" }
+fixbolt = { git = "https://github.com/tmthang86/fixbolt", tag = "v0.1.0" }
 ```
+
+**Not on crates.io** — by decision, not by omission: `0.1.0` is released as the git tag `v0.1.0`,
+not a crates.io upload
+([ADR-0161](docs/decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)).
+This is the whole install unless a later ADR decides to publish; there is no docs.rs page either
+— API documentation is `cargo doc --open` in your own checkout of the dependency.
 
 `crates/dict` ships QuickFIX's FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 dictionaries inside the crate
 itself, at `crates/dict/spec/`, under [`NOTICE`](NOTICE) — so `fixbolt-dict`, and everything
-built on top of it (including `fixbolt`), builds with **nothing but crates.io** (or git, until
-then) reachable: no `vendor/` checkout, no external toolchain (ADR-0104). Two steps to a running
-acceptor: [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
+built on top of it (including `fixbolt`), builds with **nothing but GitHub and crates.io**
+reachable (the tree itself comes from GitHub at the tag; a handful of ordinary dependencies such
+as `roxmltree` and `libc` still come from crates.io the normal way): no `vendor/` checkout, no
+external toolchain (ADR-0104). Two steps to a running acceptor:
+[`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
 ### Support level
 

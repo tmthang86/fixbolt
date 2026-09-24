@@ -7,7 +7,10 @@ this generates from ship inside the crate**, at `spec/`, byte-identical to a pin
 under `NOTICE` — the one deliberate exception to "no QuickFIX source is copied"
 ([ADR-0001](../decisions/ADR-0001-relationship-to-quickfix.md) decision 5,
 [ADR-0104](../decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)),
-made so `cargo add fixbolt` builds with nothing but crates.io. Everything else QuickFIX's
+made so `fixbolt` builds with nothing but what is in the repository (the git tag) or in a
+`.crate` — no `vendor/` checkout either way
+([ADR-0161](../decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)).
+Everything else QuickFIX's
 — the `.def` acceptance corpus and its own generated C++ — stays a test oracle in gitignored
 `vendor/`, never committed. Behind the `fix50sp2` feature, `build.rs` also emits the FIXT 1.1 /
 FIX 5.0 SP2 pair; `fix50sp2` adds no dependency (`roxmltree` is already unconditional)

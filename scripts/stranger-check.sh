@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# ADR-0160 decision 6, plan row 8a
-# (docs/plans/2026-09-23-p3-packaging-and-first-release.md): before the first
-# publish, the PACKAGED SOURCES are the stranger; after it, crates.io is. This
-# script is the one command that plays that stranger for real — not a cargo
-# build, a socket conversation with a fresh binary, driven by a client that
-# shares no code with this repository (scripts/stranger-logon.py, Python
-# standard library only).
+# ADR-0160 decision 6, ADR-0161 decisions 1 and 4, plan row 8a and row 8b
+# (docs/plans/2026-09-23-p3-packaging-and-first-release.md, *Sửa 2*): before
+# the first publish, the PACKAGED SOURCES are the stranger; ADR-0161 decided
+# there is no publish, so the tag `v0.1.0` on GitHub is the release a
+# stranger actually depends on. This script is the one command that plays
+# that stranger for real — not a cargo build, a socket conversation with a
+# fresh binary, driven by a client that shares no code with this repository
+# (scripts/stranger-logon.py, Python standard library only).
 #
 # It does five things, in order:
 #   1. Builds a throwaway crate at target/stranger/<scratch>/, OUTSIDE this
-#      workspace (its own `[workspace]`), depending on `fixbolt` either
-#      through `[patch.crates-io]` onto `target/package/fixbolt-<version>/`
-#      (`--from packaged` — the exact bytes a `.crate` upload would contain,
-#      the same technique `scripts/check-packaged-build.sh` uses) or through
-#      `cargo add fixbolt@<version>` with no patch (`--from registry`, ADR-0097
-#      exit criterion 7's post-publish half).
+#      workspace (its own `[workspace]`), depending on `fixbolt` one of three
+#      ways:
+#        --from packaged  — `[patch.crates-io]` onto
+#                            `target/package/fixbolt-<version>/`, the exact
+#                            bytes a `.crate` upload would contain (the same
+#                            technique `scripts/check-packaged-build.sh`
+#                            uses).
+#        --from registry  — `cargo add fixbolt@<version>` with no patch
+#                            (ADR-0097 exit criterion 7's post-publish half;
+#                            unused while ADR-0161 decision 1 holds, kept for
+#                            the day a publish does happen).
+#        --from git       — `cargo add --git <url> --tag <tag> fixbolt`, no
+#                            patch: the channel ADR-0161 decision 3 actually
+#                            tells a stranger to use.
 #   2. Takes that crate's `src/main.rs` and `acceptor.cfg` NOT from a fixture
 #      this script carries, but from docs/GETTING-STARTED.md itself — the two
 #      fenced code blocks immediately following the HTML comments
@@ -32,6 +41,15 @@
 #      pasted `main.rs` both carry — and waits up to 10 s for the process to
 #      exit 0, having printed `stopped:` on the way out.
 #
+# `--from git` additionally proves the source, the way ADR-0161 decision 4
+# asks: the build log must name `<url>?tag=<tag>#<sha8>`, not a local path,
+# and the scratch crate's own `Cargo.lock` must carry
+# `source = "git+<url>?tag=<tag>#<sha40>"` with `<sha40>` equal to
+# `git rev-parse <tag>^{commit}` in THIS checkout — and it refuses to run at
+# all if `docs/GETTING-STARTED.md`'s own install line names a different tag
+# than the one this run was asked to check (the page and the gate must speak
+# of one release).
+#
 # WHAT IT CANNOT SEE: whether `docs/GETTING-STARTED.md`'s prose still
 # describes the pasted code accurately — it only proves the code compiles,
 # links against the exact bytes named, and answers on the wire; crates.io's
@@ -39,16 +57,23 @@
 # `[patch]` never touches); a `main.rs` that hardcodes a working example but
 # would mislead a reader who changed one line (`docs/GETTING-STARTED.md`'s
 # prose is a human check, walked by `CLAUDE.md` §4's sync table, not this
-# script's job).
+# script's job); a tag that moves or is deleted on GitHub AFTER this
+# checkout's own clone already moved with it — `--from git`'s sha comparison
+# reads `<tag>^{commit}` from THIS checkout, so a checkout that followed the
+# same force-push sees no mismatch either (ADR-0161 decision 2's ruleset is
+# what is supposed to make that unreachable, not this script).
 #
 # Exit 0 when the whole round trip and the stdin-triggered exit both
 # succeed; 1 on any FAIL (each printed, prefixed `FAIL` where the failing
 # tool did not already print one itself); 2 when the script itself cannot
-# run (bad arguments, cargo missing).
+# run (bad arguments, cargo missing, or — `--from git` only — the named tag
+# is not resolvable in THIS checkout, so the expected sha cannot even be
+# computed).
 #
 # Usage:
 #   scripts/stranger-check.sh --from packaged [--allow-dirty]
 #   scripts/stranger-check.sh --from registry --version 0.1.0
+#   scripts/stranger-check.sh --from git --tag v0.1.0 [--url https://github.com/tmthang86/fixbolt]
 #
 # `--from packaged` refuses a stale target/package/ (built from a commit
 # other than HEAD) or a dirty working tree (unless --allow-dirty, local
@@ -57,7 +82,13 @@
 # `--from registry` is EXPECTED RED until the owner has run `cargo publish`
 # (ADR-0097 exit criterion 5, `RELEASING.md`): `cargo add` cannot resolve a
 # name the index has never heard of, and this script says so rather than
-# treating that as its own bug.
+# treating that as its own bug. Unused while ADR-0161 decision 1 holds
+# ("Không publish") — kept, not removed, because publishing later stays one
+# command away (ADR-0160 decision 6, ADR-0161 decision 6).
+#
+# `--from git` is the mode ADR-0161 decision 4 made the real gate: `--url`
+# defaults to `https://github.com/tmthang86/fixbolt`, the same repository
+# `docs/GETTING-STARTED.md` and `README.md` name.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -66,6 +97,8 @@ cd "${ROOT}" || exit 2
 MODE=""
 REGISTRY_VERSION=""
 ALLOW_DIRTY=0
+TAG=""
+GIT_URL="https://github.com/tmthang86/fixbolt"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from)
@@ -74,6 +107,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --version)
       REGISTRY_VERSION="${2:-}"
+      shift 2
+      ;;
+    --tag)
+      TAG="${2:-}"
+      shift 2
+      ;;
+    --url)
+      GIT_URL="${2:-}"
       shift 2
       ;;
     --allow-dirty)
@@ -87,12 +128,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${MODE}" != "packaged" && "${MODE}" != "registry" ]]; then
-  echo "stranger-check: FAIL — usage: stranger-check.sh --from packaged | --from registry --version X" >&2
+if [[ "${MODE}" != "packaged" && "${MODE}" != "registry" && "${MODE}" != "git" ]]; then
+  echo "stranger-check: FAIL — usage: stranger-check.sh --from packaged | --from registry --version X | --from git --tag X [--url Y]" >&2
   exit 2
 fi
 if [[ "${MODE}" == "registry" && -z "${REGISTRY_VERSION}" ]]; then
   echo "stranger-check: FAIL — --from registry needs --version X" >&2
+  exit 2
+fi
+if [[ "${MODE}" == "git" && -z "${TAG}" ]]; then
+  echo "stranger-check: FAIL — --from git needs --tag X" >&2
   exit 2
 fi
 
@@ -263,6 +308,81 @@ if [[ "${MODE}" == "packaged" ]]; then
       echo "${name} = { path = \"${ROOT}/target/package/${name}-${WORKSPACE_VERSION}\" }"
     done
   } >"${scratch}/Cargo.toml"
+elif [[ "${MODE}" == "git" ]]; then
+  {
+    echo "[workspace]"
+    echo
+    echo "[package]"
+    echo "name = \"stranger\""
+    echo "version = \"0.0.0\""
+    echo "edition = \"2024\""
+    echo "publish = false"
+    echo
+    echo "[dependencies]"
+  } >"${scratch}/Cargo.toml"
+
+  echo "== cargo add --git ${GIT_URL} --tag ${TAG} fixbolt (no [patch] — cloned straight from GitHub) =="
+  add_log="${scratch}/add.log"
+  # `--color never`: CARGO_TERM_COLOR=always (this file's own workflow sets
+  # it) wraps `Compiling`/`Adding` in ANSI escapes that the plain-text greps
+  # below never match — see docs/reference/cargo-output-colour-defeats-plain-
+  # text-parsing.md, the same trap scripts/check-indexing-debt.sh already
+  # paid for once. `--color` on the command line overrides the environment
+  # variable, so this is not cosmetic.
+  if ! cargo add --color never --git "${GIT_URL}" --tag "${TAG}" fixbolt --manifest-path "${scratch}/Cargo.toml" >"${add_log}" 2>&1; then
+    cat "${add_log}" >&2
+    echo "stranger-check: FAIL — could not add fixbolt from ${GIT_URL} at tag ${TAG}" >&2
+    exit 1
+  fi
+  cat "${add_log}"
+
+  # ADR-0161 decision 4 / plan row 8b reversal (b): the page and this run
+  # must name the same release. Checked only AFTER `cargo add` has already
+  # succeeded against the tag THIS RUN was asked for — a run given a tag
+  # that does not exist at all (the wrong-tag reversal above) must fail with
+  # that cargo/git error, not with a doc mismatch that would otherwise fire
+  # first regardless of which tag is wrong.
+  #
+  # Senior review of PR #112 finding F5: the first cut read only the FIRST
+  # `tag = "…"` in docs/GETTING-STARTED.md — a second, drifted `--tag vX` or
+  # `tag = "vX"` anywhere else in that file, or in README.md, went unread.
+  # This reads every occurrence of either spelling in both files and demands
+  # every one of them name the same tag this run was asked to check.
+  if ! python3 - "${ROOT}/docs/GETTING-STARTED.md" "${ROOT}/README.md" "${ROOT}" "${TAG}" <<'PY'
+import re
+import sys
+
+getting_started, readme, root, expected = sys.argv[1:5]
+pattern = re.compile(r'--tag[ \t]+(v[0-9][0-9A-Za-z.+-]*)|tag[ \t]*=[ \t]*"(v[0-9][0-9A-Za-z.+-]*)"')
+
+found_any = False
+fails = []
+for path in (getting_started, readme):
+    rel = path[len(root) + 1 :] if path.startswith(root + "/") else path
+    with open(path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, start=1):
+            for m in pattern.finditer(line):
+                tag_value = m.group(1) or m.group(2)
+                found_any = True
+                if tag_value != expected:
+                    fails.append(
+                        f"stranger-check: FAIL — {rel}:{lineno} names tag {tag_value}, this run checks {expected}"
+                    )
+
+if not found_any:
+    print(
+        "stranger-check: FAIL — docs/GETTING-STARTED.md names no tag = \"...\" install line",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+if fails:
+    for line in fails:
+        print(line, file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    exit 1
+  fi
 else
   {
     echo "[workspace]"
@@ -277,7 +397,7 @@ else
   } >"${scratch}/Cargo.toml"
 
   echo "== cargo add fixbolt@${REGISTRY_VERSION} (no [patch] — the real crates.io index) =="
-  if ! cargo add "fixbolt@${REGISTRY_VERSION}" --manifest-path "${scratch}/Cargo.toml"; then
+  if ! cargo add --color never "fixbolt@${REGISTRY_VERSION}" --manifest-path "${scratch}/Cargo.toml"; then
     echo "stranger-check: FAIL — could not select fixbolt = \"${REGISTRY_VERSION}\" from the" >&2
     echo "    registry. Expected RED until the owner has run 'cargo publish'" >&2
     echo "    (RELEASING.md, ADR-0097 exit criterion 5) — this is not a bug in" >&2
@@ -288,7 +408,10 @@ fi
 
 echo "== cargo build --manifest-path ${scratch}/Cargo.toml =="
 build_log="${scratch}/build.log"
-if ! cargo build --manifest-path "${scratch}/Cargo.toml" >"${build_log}" 2>&1; then
+# `--color never`, and it is not cosmetic — see the comment on the `cargo
+# add --git` call above. This is the log the --from git source checks below
+# grep for a plain-text `Compiling fixbolt v… (…)` line.
+if ! cargo build --color never --manifest-path "${scratch}/Cargo.toml" >"${build_log}" 2>&1; then
   echo "stranger-check: FAIL — the pasted docs/GETTING-STARTED.md code did not build:" >&2
   cat "${build_log}" >&2
   exit 1
@@ -299,6 +422,80 @@ BIN="${scratch}/target/debug/stranger"
 if [[ ! -x "${BIN}" ]]; then
   echo "stranger-check: FAIL — build finished but ${BIN} is not there" >&2
   exit 1
+fi
+
+# --- --from git only: prove the build actually came from GitHub at this tag,
+#     not from a local path (ADR-0161 decision 4, plan row 8b reversal (a)) --
+if [[ "${MODE}" == "git" ]]; then
+  # The expected sha comes from THIS checkout, not from GitHub again — a
+  # tag this checkout has never fetched cannot be verified, so that is
+  # exit 2 (the script cannot run the check), not a FAIL of fixbolt itself.
+  tag_sha="$(git -C "${ROOT}" rev-parse "${TAG}^{commit}" 2>/dev/null || true)"
+  if [[ -z "${tag_sha}" ]]; then
+    echo "stranger-check: FAIL — tag ${TAG} is not resolvable in this checkout (git fetch --tags?) — cannot compute the expected commit" >&2
+    exit 2
+  fi
+  expected_source="git+${GIT_URL}?tag=${TAG}#${tag_sha}"
+
+  # Senior review of PR #112 finding F4: the first cut checked only the
+  # `fixbolt` package's own "Compiling" line and its own Cargo.lock entry —
+  # an outside `[patch]` retargeting `fixbolt-codec` alone (leaving `fixbolt`
+  # itself resolved from GitHub) stayed green. Every `fixbolt*` package that
+  # actually resolved into the scratch crate's OWN Cargo.lock (not a fixed
+  # list of six — `fixbolt-sbe` is absent by default, the `sbe` feature is
+  # off) must both appear in the build log compiling from this exact source
+  # and be pinned to it in the lock file. Cargo.lock is TOML; read with
+  # `tomllib`, the same way check-release-versions.sh and
+  # check-semver-against-tag.sh already read manifests, never with a
+  # line-oriented grep that a reformatted lock file could slip past.
+  if ! python3 - "${build_log}" "${scratch}/Cargo.lock" "${GIT_URL}" "${TAG}" "${expected_source}" <<'PY'
+import re
+import sys
+import tomllib
+
+build_log_path, lock_path, url, tag, expected_source = sys.argv[1:6]
+
+with open(lock_path, "rb") as f:
+    lock = tomllib.load(f)
+fixbolt_pkgs = [p for p in lock.get("package", []) if p.get("name", "").startswith("fixbolt")]
+if not fixbolt_pkgs:
+    print(f"stranger-check: FAIL — no fixbolt* package found in {lock_path} at all", file=sys.stderr)
+    sys.exit(1)
+
+text = open(build_log_path, encoding="utf-8", errors="replace").read()
+compiling_re = re.compile(
+    r"^[ \t]*Compiling (fixbolt[A-Za-z0-9_-]*) v[0-9][0-9A-Za-z.+-]* \(([^)]*)\)[ \t]*$",
+    re.M,
+)
+compiled_from = {m.group(1): m.group(2) for m in compiling_re.finditer(text)}
+
+expected_needle = f"{url}?tag={tag}#"
+fails = []
+for pkg in fixbolt_pkgs:
+    name = pkg["name"]
+
+    paren = compiled_from.get(name)
+    if paren is None:
+        fails.append(f"stranger-check: FAIL — no 'Compiling {name} v...' line in the build log")
+    elif expected_needle not in paren:
+        fails.append(f"stranger-check: FAIL — {name} was compiled from {paren}, not from {url}?tag={tag}")
+
+    source = pkg.get("source")
+    if source != expected_source:
+        fails.append(
+            f"stranger-check: FAIL — {lock_path} does not pin {name} to source {expected_source} (has {source!r})"
+        )
+
+if fails:
+    for line in fails:
+        print(line, file=sys.stderr)
+    sys.exit(1)
+
+print(f"stranger-check: {len(fixbolt_pkgs)} fixbolt* package(s) resolved to {expected_source}: {', '.join(sorted(compiled_from))}")
+PY
+  then
+    exit 1
+  fi
 fi
 
 PORT="$(python3 -c 'import socket
@@ -393,5 +590,11 @@ if [[ -z "${stopped_line}" ]]; then
 fi
 echo "${stopped_line}"
 
+case "${MODE}" in
+  packaged) version_desc="${WORKSPACE_VERSION}" ;;
+  registry) version_desc="${REGISTRY_VERSION}" ;;
+  git) version_desc="tag ${TAG}" ;;
+esac
+
 cleanup_ok=1
-echo "stranger-check: OK — --from ${MODE}, fixbolt ${WORKSPACE_VERSION:-${REGISTRY_VERSION}}, Logon/Logout answered, acceptor stopped cleanly"
+echo "stranger-check: OK — --from ${MODE}, fixbolt ${version_desc}, Logon/Logout answered, acceptor stopped cleanly"
