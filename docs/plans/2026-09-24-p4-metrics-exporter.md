@@ -380,3 +380,43 @@ và việc exporter mặc định **không** đọc event.
 ## Nhật ký giao hàng
 
 (trống — điền khi đóng từng bước)
+
+## Sửa 1 — 2026-09-24 (senior review PR #108, head `f99681a`, phát hiện F2 và F5)
+
+Architect quyết hai câu hỏi API của review. Cả hai **nằm trong lần sửa plan này, không cần ADR
+mới**: không cái nào đổi điều ADR-0170 quyết (exporter chỉ giữ `Observer`; engine dựng snapshot
+tối đa một lần mỗi `min_request_interval`; độ tươi được xin, chờ, rồi báo thật; event chỉ khi bật).
+Chúng chỉ chốt hình dạng API mà quyết định 3 và 7 để ngỏ. ADR-0170 mang một dòng ghi chú trỏ về
+mục này, như ADR-0110 trỏ về *Sửa 2* của plan hàng 3 phase 3.
+
+**F2 — closure của `with_events` phải biết event đến từ engine nào.** `ConnId` bắt đầu lại từ 0 ở
+mỗi engine (`crates/engine/src/lib.rs:184-186`), nên với hai lần `.engine(name, …)` thì
+`FnMut(&Event)` không phân biệt được hai phiên cùng `conn=0`. **Chữ ký chốt:**
+
+```rust
+pub fn with_events<F>(self, handler: F) -> Self
+where
+    F: FnMut(&'static str, &Event) + Send + 'static;
+```
+
+Tham số đầu là **đúng chuỗi `name` đã đưa cho `.engine(name, …)`** — cũng là giá trị label
+`engine` của mọi series, nên event và biểu đồ gọi engine bằng cùng một tên. Không dùng chỉ số
+(`usize`): người dùng phải tự nhớ thứ tự gọi `.engine`, và chỉ số không phải cái họ đặt tên. Chuỗi
+`&'static str` sẵn có, không cấp phát. Crate đang `publish = false`, ngoài gia đình release, nên
+đổi bây giờ không phá ai.
+
+**F5 — xin snapshot mà không chép rồi vứt.** `refresh` gọi `request()` chỉ để bật cờ `wanted`,
+nên mỗi lần xin nó chép cả `Snapshot` dưới lock của ô rồi bỏ đi; trong lúc đó `try_lock` của engine
+có thể trượt và việc công bố lùi một lượt. Engine không bao giờ bị chặn (vẫn là `try_lock`), nên
+đây không phạm bất biến 4 — nhưng là tranh chấp tránh được, đúng loại ADR-0170 muốn không có.
+**Quyết định: thêm `Observer::ask(&self)`** vào engine — chỉ `wanted.store(true, Release)`, không
+chạm ô, không trả gì. `request()` giữ nguyên hành vi, viết lại bên trong thành `ask()` rồi đọc như
+`latest()`. Exporter dùng `ask()` thay cho `let _ = e.observer.request();`. API thêm, không phá gì
+(`cargo-semver-checks` phải thấy là thêm). Không chọn "chấp nhận và ghi tài liệu": sửa tốn ba dòng,
+còn ghi tài liệu thì để lại một lần lock thừa trên mỗi lần xin, mãi mãi.
+
+| Bước | Kết quả | Người làm | File được sửa / không được sửa | Gate | Phụ thuộc |
+|---|---|---|---|---|---|
+| S1 | **Test đỏ trước**: `crates/metrics/tests/exporter.rs::with_events_names_the_engine_each_event_came_from` (hai engine `"a"`, `"b"`, mỗi cái một Logon → closure nhận `("a", LoggedOn)` và `("b", LoggedOn)`, cả hai `conn = 0`); `crates/engine/tests/observe_occupancy.rs::ask_raises_the_flag_and_reads_nothing` (`ask()` rồi một `turn()` → `published()` tăng đúng 1; `ask()` trước lần công bố đầu không panic, không trả gì). Đỏ = lỗi biên dịch, trích nguyên văn. Rồi code: `Observer::ask`, `request` viết lại qua `ask`; chữ ký `with_events` và kiểu `OnEvent` mới; `refresh` gọi `ask()` | senior developer (opus) — đụng `crates/engine` | Sửa: `crates/engine/src/observe.rs`, `crates/engine/tests/observe_occupancy.rs`, `crates/metrics/src/{lib.rs, thread.rs}`, `crates/metrics/tests/exporter.rs`, và example/test nào đang gọi `with_events`. **Không** sửa file khác trong `crates/engine/`, test có sẵn ngoài hai file trên | `cargo test -p fixbolt-engine --test observe_occupancy --test observe --test events --test admin`; `cargo test -p fixbolt-metrics`; `cargo bench -p fixbolt-engine --bench alloc` (`observe-idle`, `observe-asked`, `observe-asked-ring` vẫn 0); `cargo bench -p fixbolt-metrics --bench alloc` (`metrics-idle 0 metrics-scraped 0`); `cargo test --all`; `cargo test --no-default-features`; clippy `-D warnings`; `cargo fmt --check`; `scripts/check-indexing-debt.sh` | — |
+| S2 | **Đảo ngược**: R15 closure nhận tên của engine đầu tiên cho mọi event → `with_events_names_the_engine…` đỏ; R16 `ask()` không bật cờ → `ask_raises_the_flag…` đỏ **và** `a_scrape_storm…`/`the_snapshot_age…` phải cho thấy exporter không còn nhận snapshot mới | senior developer (opus), cùng agent | như S1; khôi phục hết | từng cái đỏ đúng test đã ghi trước, rồi xanh lại | S1 |
+| S3 | **Tài liệu, cùng commit**: `CHANGELOG.md` (`Observer::ask`; chữ ký `with_events`), `DESIGN.md` §3 dòng `observe`, `docs/internals/engine.md`, `docs/internals/metrics.md`, `docs/GUIDE.md` §8a (ví dụ `with_events`) | developer (sonnet) | chỉ các file đó | `python3 scripts/check-links.py` xanh | S2 |

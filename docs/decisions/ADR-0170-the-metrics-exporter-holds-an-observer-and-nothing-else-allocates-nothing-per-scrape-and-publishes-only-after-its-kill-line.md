@@ -6,6 +6,12 @@
   crate to crates.io. The owner decided 2026-09-24 that phase 3 closes with the git tag `v0.1.0`
   and that no crates.io publish is planned (ADR-0161, being written). Row 2 now brings the crate
   into the tagged release family instead. "Published" in this ADR's title means "released by tag".
+- Refined, not changed, 2026-09-24 by plan [2026-09-24-p4-metrics-exporter](../plans/2026-09-24-p4-metrics-exporter.md)
+  *Sửa 1* (senior review of PR #108, findings F2 and F5): decision 7's handler is
+  `FnMut(&'static str, &Event)`, the first argument being the name given to `.engine(name, …)`,
+  because `ConnId` restarts at 0 in every engine; decision 3's ask is a new `Observer::ask()`,
+  which raises the flag without copying the cell, in place of a `request()` whose copy was thrown
+  away. What this ADR decides is unchanged, so no superseding ADR.
 - **Date**: 2026-09-24
 - **Deciders**: written by the architect (Opus) for phase 4 row 1; accepted by the owner, or by
   the manager under the owner's standing mandate.
