@@ -1,5 +1,6 @@
 # ADR-0097 — Phase 3 makes the engine dependable by a stranger, and FIXP waits on an oracle that runs
 
+- **Superseded in part — 2026-09-24:** Q5, decision 2's steps (iv) *the first publish* and (v) *the post-publish check*, and exit criteria 7–8 by [ADR-0161](ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md) — 0.1.0 is a git tag, not a crates.io upload.
 - **Status**: **Accepted — 2026-09-23, by the owner, all eight recommendations (Q1–Q8) as
   proposed.** Proposed the same day with
   [plans/2026-09-23-phase-3-scope](../plans/2026-09-23-phase-3-scope.md), which lists the
