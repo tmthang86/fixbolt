@@ -362,4 +362,11 @@ sửa. Không đổi gì khác trong plan.
 
 ## Nhật ký giao hàng
 
-*(trống — điền khi từng bước đóng)*
+| Bước | Commit | Bằng chứng |
+|---|---|---|
+| 1 (+ sửa rev 1, rev 2) | `98bf3d7`, `8d6b21c`, `a6aea19` (trước rebase) | Đỏ trước: `writer_hooks.rs` không biên dịch; rev 1: `a_retire_after_the_writer_finished_counts_nothing` đỏ ở `:110`; rev 2: `the_first_retire_is_counted_even_after_the_writer_finished` đỏ ở `:161` (`left 0 right 1`). Bench alloc với 5 ms chèn giữa push và retire: `retire 0`, exit 0. Tám binary test cũ của engine xanh, không sửa |
+| 2–3 | `e596f4a` (trước rebase) | 14/14 test đỏ tại `open`; R1–R5, R5b đỏ đúng câu; store 17 passed ×3; `--no-default-features` không biên dịch `libsqlite3-sys` |
+| 4–6 | `906d7cd` (trước rebase) | alloc `sqlite-* 0` (R6 → `sqlite-put 1`); soak 50 000/s × 5 s: `unwritten 0 rows 250000 mismatched 0` (R7 → `249999 rows`, FAIL); w2w `sqlite-async` allocs 0; ba script mode GREEN đúng mode, RED sai mode. Máy bàn, dòng grub desktop: số đếm, không phải số đo |
+| 7 | `c5339e2`, `dee487e` (trước rebase) | Tài liệu theo §4; ADR-0180/0181/0182 Accepted |
+| 8 | `6e462ec` (trước rebase) | Senior review: không lỗi chặn; probe stress `WriterTicket` 200 000 vòng xanh. M1 (crash test giờ đi qua `SqliteJournal::open` trên WAL còn lại; đảo ngược → `resumed at highest_out 0`), L1 (gate ctxt: w2w chết ở hft từng cho PASS — sửa, harness mới đỏ trước `crash-hft: the gate exited 0`), L2, L3. CI run id: ghi khi merge |
+| 4a–4c | — | Cặp đo trên boot §9 (hàng 7) — chưa chạy |
