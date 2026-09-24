@@ -219,20 +219,39 @@ target/release/examples/soak --rate 50000 --seconds 60 --synchronous full   --di
 ghi ~650 MB; xoá `target/soak` sau mỗi lần (ổ đang đầy 88 %).
 
 **4b. Cặp `w2w` — trong một boot §9, đi cùng boot của hàng 7** (build sẵn cả hai nhánh trước
-boot theo ADR-0090, binary `--features sqlite`). Đường `app` (chỉ bản tin ứng dụng mới vào
-journal), cả `hft` lẫn `standard`, NIC có hardware timestamp như con số công bố, hai procedure
-(ADR-0068):
+boot theo ADR-0090: binary `control` cho `file-async`, binary `sqlite` — `--features affinity,sqlite`
+— cho `sqlite-async`). Đường `app` (chỉ bản tin ứng dụng mới vào journal), hai procedure
+(ADR-0068), chạy tách hai tiến trình qua cáp với generator là Mac mini. Các biến tách
+(`LISTEN`, `GENERATOR_SSH`, lõi engine/client) **giống hệt khối `io_uring` của driver 7a.1**.
+**Mỗi mode một thước, vì `w2w-baseline.sh` từ chối `WIRE_NIC` cho arm `standard`** (dòng 433:
+chỉ `hft` công bố số wire; dấu TX đánh thức engine `standard` đang chờ —
+`docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md`):
+
+- **`hft`** — thước là **wire p50 của phía acceptor**, dấu thời gian phần cứng trên NIC
+  (`WIRE_NIC=enp9s0 OBSERVER_CORE=7`): đúng thước của con số công bố.
+- **`standard`** — thước là **p50 khứ hồi đo từ phía Mac** (bảng counterparty, dòng `p50`
+  thường, không `WIRE_NIC`), chạy ở một lần gọi riêng như script yêu cầu. Cả hai nhánh cùng
+  mang stack chưa ghim của Mac, nên so tương đối vẫn công bằng; nhưng đây **không** phải số wire
+  và không được ghi là số wire.
 
 ```
-W2W_EXTRA="--journal file-async"   ARMS="hft:app standard:app" scripts/w2w-baseline.sh   # procedure 1, nhánh đối chứng
-W2W_EXTRA="--journal sqlite-async" ARMS="hft:app standard:app" scripts/w2w-baseline.sh   # procedure 1, nhánh store
-# lặp lại cho procedure 2
-scripts/compare-w2w-procedures.sh <summary file-async> <summary sqlite-async>
+# procedure 1 (procedure 2: cùng bốn lệnh, đảo thứ tự nhánh)
+WIRE_NIC=enp9s0 OBSERVER_CORE=7 W2W_EXTRA="--journal file-async"   ARMS="hft:app"      scripts/w2w-baseline.sh
+WIRE_NIC=enp9s0 OBSERVER_CORE=7 W2W_EXTRA="--journal sqlite-async" ARMS="hft:app"      scripts/w2w-baseline.sh
+                                W2W_EXTRA="--journal file-async"   ARMS="standard:app" scripts/w2w-baseline.sh
+                                W2W_EXTRA="--journal sqlite-async" ARMS="standard:app" scripts/w2w-baseline.sh
+# mỗi lệnh kèm LISTEN / GENERATOR_SSH / lõi như khối io_uring của 7a.1
+scripts/compare-w2w-procedures.sh <summary hft file-async>      <summary hft sqlite-async>
+scripts/compare-w2w-procedures.sh <summary standard file-async> <summary standard sqlite-async>
 ```
 
-Đạt khi, ở **cả hai mode và cả hai procedure**, `wire p50` của nhánh store lệch không quá 5 %
-so với nhánh `file-async` (ngưỡng ADR-0068 quyết định 2); dòng allocs của luồng engine bằng 0.
-p99 và p99.9 được ghi lại, không phải vạch (ADR-0098 chỉ đặt vạch ở p50).
+`compare-w2w-procedures.sh` tự so dòng `wire p50` khi arm có dòng wire (`hft`), và dòng `p50`
+thường khi không có (`standard`) — ADR-0071 quyết định 2. Đạt khi, **ở cả hai procedure**:
+`hft` — `wire p50` của nhánh store lệch không quá 5 % so với `file-async`; `standard` — `p50`
+phía Mac của nhánh store lệch không quá 5 % so với `file-async` (ngưỡng ADR-0068 quyết định 2
+cho cả hai); dòng allocs của luồng engine bằng 0 ở mọi lần chạy. Vạch của ADR-0098 (*"wire p50
+… within the band"*) được xét bằng cặp `hft`; cặp `standard` là vạch thêm của plan này, xét bằng
+thước phía Mac và ghi đúng tên thước đó. p99 và p99.9 được ghi lại, không phải vạch.
 
 **4c. Áp phán quyết.** Đạt cả 4a, 4b và bước 4 của plan này (alloc 0) → ADR-0182 quyết định 3:
 crate vào nhóm phát hành bằng tag — bỏ `publish = false`, thêm tên vào ba danh sách script, thêm
@@ -328,6 +347,18 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4, đi từng dòng:
 - Feature link SQLite của hệ thống, SQLCipher.
 - Đưa store vào crate `fixbolt` (facade).
 - Đo hàng 4 — plan này chỉ dựng thước và viết quy trình.
+
+## Sửa 1 — 2026-09-24: thước của 4b ở `standard`
+
+Architect của hàng 6–7 phát hiện: 4b cũ đòi `standard:app` "NIC có hardware timestamp", nhưng
+`scripts/w2w-baseline.sh` (dòng 433) từ chối `WIRE_NIC` cho mọi arm `standard` — dấu TX đánh
+thức engine `standard` đang chờ, nên `standard` không công bố số wire (Q10). Driver 7a.1 của
+plan hàng 6–7 (`docs/plans/2026-09-24-p4-bypass-and-s9-boot.md`, nhánh `plan/p4-bypass-boot`, *Sửa 2*) chạy 4b đúng như chữ, nên chữ phải đúng.
+**Đổi:** `hft` giữ thước wire p50 phía acceptor (NIC); `standard` chạy ở lần gọi riêng không
+`WIRE_NIC`, xét bằng p50 khứ hồi phía Mac, cùng ngưỡng 5 % — cùng thước mà khối `io_uring` của
+boot đó dùng cho `standard`. Không bỏ nửa `standard`: store chạy luồng ghi ngủ/thức cạnh engine
+`standard`, và đó đúng là mode có thể thấy tranh chấp. ADR-0180/0182 không ghi tên thước nên không
+sửa. Không đổi gì khác trong plan.
 
 ## Nhật ký giao hàng
 
