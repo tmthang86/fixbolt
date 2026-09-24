@@ -9,6 +9,12 @@ why a series name is public API is
 [ADR-0171](../decisions/ADR-0171-a-series-name-is-public-api-promtool-is-the-format-oracle-and-the-dashboard-names-no-data-source.md).
 The two numbers it needed from the engine — `Snapshot::ring_to_app`,
 `Snapshot::presession_slots` — and `Observer::latest` live in `engine`'s `observe`, not here.
+`[2026-09-24, plan *Sửa 1*, review of PR #108]` two more live there and are used here:
+**`Observer::ask()`**, which `refresh` calls instead of a `request()` whose returned `Snapshot`
+it would only discard; and **`Builder::with_events<F: FnMut(&'static str, &Event) + Send +
+'static>`**, whose first argument is the exact string given to `.engine(name, …)` — needed because
+`ConnId` restarts at 0 in every engine, so an event's `id()` alone cannot say which engine it
+came from (finding F2).
 
 ## Files, and what each keeps
 

@@ -22,7 +22,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `recovery.rs` | `Recovery`, `Resumed`, `NoRecovery`, `FromFn` — asked once the counterparty is known |
 | `msglog.rs` | `MessageLog`, `FileLog` — every message seen or sent, both directions, one line each |
 | `redact.rs` | `MASKED`, `mask`, `carries_secret` — what never reaches disk in clear, and the SOH-splitting scan that finds it, called from `msglog.rs` and `journal.rs`. `[2026-09-23]` |
-| `observe.rs` | `Handles`, `Observer`, `Event`, `Admin` — the operator's on-request view. `[2026-09-24]` `Occupancy { used, capacity }`; `Snapshot::ring_to_app()`/`presession_slots() -> Option<Occupancy>` (`None` means "nothing reported," not zero); `Observer::latest()`, which reads the published cell without raising the request flag — added for `fixbolt-metrics` (ADR-0170) and additive under `cargo-semver-checks` |
+| `observe.rs` | `Handles`, `Observer`, `Event`, `Admin` — the operator's on-request view. `[2026-09-24]` `Occupancy { used, capacity }`; `Snapshot::ring_to_app()`/`presession_slots() -> Option<Occupancy>` (`None` means "nothing reported," not zero); `Observer::latest()`, which reads the published cell without raising the request flag — added for `fixbolt-metrics` (ADR-0170) and additive under `cargo-semver-checks`. `[2026-09-24, plan *Sửa 1*, review of PR #108 F5]` `Observer::ask()`, which raises the request flag and locks nothing; `request()` is now `ask()` then `latest()`, so a caller who only wanted the flag raised no longer pays for a copy it throws away |
 | `origin.rs` | `Sender`, the fixed origination queue — a message an application starts from another thread |
 | `settings.rs` | `Settings`, `Problem` — the QuickFIX-shaped configuration file |
 | `reconnect.rs` | `Policy` — doubling backoff, and `connect_and_serve` |
@@ -72,7 +72,9 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
   hand-built engine and one behind `serve*`'s front door differ on `presession_slots`
   (`Engine::note_presession_slots`, called beside every `note_unframeable`), and `latest()` does
   not itself raise the request flag. `benches/alloc.rs` case `observe-asked-ring` holds
-  non-negotiable 1 for the `RingDispatch` read
+  non-negotiable 1 for the `RingDispatch` read. `[plan *Sửa 1*]` `ask_raises_the_flag_and_reads_nothing`:
+  a `turn()` after `ask()` moves `published()` by exactly one, and `ask()` before the first
+  publish neither panics nor returns anything
 - `tests/standard.rs`, `tests/hft_wire.rs`, `tests/hft_pinned.rs`, `tests/waker_sigpipe.rs`,
   `tests/listener_cadence.rs` — the mode split, machine-checked also by
   `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh`

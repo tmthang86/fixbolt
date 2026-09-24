@@ -137,8 +137,9 @@ Lý do và phương án bị loại ở ADR-0170, ADR-0171. Ở đây chỉ phư
   `Exporter::builder(addr: SocketAddr)` → `.engine(name: &'static str, observer: Observer)` (gọi
   nhiều lần được) → `.min_request_interval(Duration)` (mặc định 100 ms) → `.fresh_wait(Duration)`
   (50 ms) → `.tick(Duration)` (100 ms) → `.read_timeout(Duration)` (1 s) →
-  `.with_events(FnMut(&Event) + Send + 'static)` (tuỳ chọn) → `.spawn() -> Result<Exporter,
-  ExportError>`. `Exporter::local_addr()`, `Exporter::stop()` (dừng và join; `Drop` cũng dừng).
+  `.with_events(FnMut(&'static str, &Event) + Send + 'static)` (tuỳ chọn, chữ ký chốt ở *Sửa 1*
+  bên dưới) → `.spawn() -> Result<Exporter, ExportError>`. `Exporter::local_addr()`,
+  `Exporter::stop()` (dừng và join; `Drop` cũng dừng).
   Lỗi là enum `thiserror`-kiểu nhưng viết tay (không thêm dependency): bind hỏng, spawn hỏng.
 - **Luồng exporter** tên `fixbolt-metrics`: mỗi `tick` thức dậy — rút event nếu được giao, nhận
   mọi kết nối đang chờ (listener non-blocking), trả lời từng cái trên socket blocking có
@@ -390,8 +391,9 @@ Chúng chỉ chốt hình dạng API mà quyết định 3 và 7 để ngỏ. AD
 mục này, như ADR-0110 trỏ về *Sửa 2* của plan hàng 3 phase 3.
 
 **F2 — closure của `with_events` phải biết event đến từ engine nào.** `ConnId` bắt đầu lại từ 0 ở
-mỗi engine (`crates/engine/src/lib.rs:184-186`), nên với hai lần `.engine(name, …)` thì
-`FnMut(&Event)` không phân biệt được hai phiên cùng `conn=0`. **Chữ ký chốt:**
+mỗi engine (`crates/engine/src/lib.rs:184-186`), nên với hai lần `.engine(name, …)` thì một closure
+chỉ nhận `&Event`, không nhận tên engine, không phân biệt được hai phiên cùng `conn=0`. **Chữ ký
+chốt:**
 
 ```rust
 pub fn with_events<F>(self, handler: F) -> Self

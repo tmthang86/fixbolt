@@ -12,6 +12,10 @@
   because `ConnId` restarts at 0 in every engine; decision 3's ask is a new `Observer::ask()`,
   which raises the flag without copying the cell, in place of a `request()` whose copy was thrown
   away. What this ADR decides is unchanged, so no superseding ADR.
+- Clarified 2026-09-24 (review of #108): the exporter bounds each connection by one deadline from
+  accept (`read_timeout`, default 1 s) covering request and reply; N slow or silent clients delay
+  a scrape queued behind them by up to N × `read_timeout` (+ one `fresh_wait`) — see plan *Sửa 1*
+  and [a-timeout-per-read-does-not-bound-a-client-that-trickles](../reference/a-timeout-per-read-does-not-bound-a-client-that-trickles.md).
 - **Date**: 2026-09-24
 - **Deciders**: written by the architect (Opus) for phase 4 row 1; accepted by the owner, or by
   the manager under the owner's standing mandate.

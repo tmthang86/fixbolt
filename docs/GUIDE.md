@@ -1445,9 +1445,12 @@ Four things to hold onto:
    ([an-exporter-thread-inherits-its-spawners-cpu-affinity](reference/an-exporter-thread-inherits-its-spawners-cpu-affinity.md)
    has the mechanism and what to check). `tools/w2w --metrics` does this from the main thread,
    before `--engine-core`/`--client-core` pin anything, and that is the order to copy.
-2. **`.with_events(...)` takes the event stream from everyone else.** Reading an event removes
-   it (see above), and the exporter is not exempt: call it only if nothing else is also calling
-   `watch.events(...)`, or route both through the one closure you hand the exporter.
+2. **`.with_events(|engine_name, event| ...)` takes the event stream from everyone else.**
+   Reading an event removes it (see above), and the exporter is not exempt: call it only if
+   nothing else is also calling `watch.events(...)`, or route both through the one closure you
+   hand the exporter. The handler's first argument is the exact string you gave `.engine(name,
+   ...)` — not an index — because `ConnId` restarts at 0 in every engine, so with two engines
+   watched an event's `id()` alone cannot say which one it came from.
 3. **Bind loopback or a private interface — never the open internet.** No TLS, no keep-alive,
    no authentication (ADR-0170 decision 6). The listener answers whoever can reach the socket,
    and the documentation is the only thing standing between this port and the internet.
