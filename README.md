@@ -185,6 +185,8 @@ crates/
   engine/        TCP acceptor and connector; the thread that drives the sessions
   library/       package `fixbolt`: the application-facing API. One crate to depend on,
                  a Handler that receives a parsed message and answers through a Reply
+  metrics/       package `fixbolt-metrics`: a Prometheus exporter holding an Observer and
+                 nothing else; allocates nothing per scrape. Not released yet (ADR-0170)
 tools/
   w2w/           wire-to-wire harness; the binary the two mode checks trace
   jrnl/          reads a journal file from outside the process that wrote it

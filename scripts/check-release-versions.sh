@@ -23,6 +23,10 @@
 #      root reach its `.crate` (ADR-0104 decision 4), so each crate carries a
 #      copy, and a copy that drifts is a second licence.
 #
+# The same rules 2 (inheritance only), 3 and 5 hold every crate in
+# SHAPED_UNRELEASED — in the mould, `publish = false`, not yet released
+# (ADR-0170 decision 10; today `fixbolt-metrics`).
+#
 # WHAT IT CANNOT SEE: dev-dependencies (path-only on purpose — cargo strips
 # them, ADR-0160 decision 1); what actually lands in a `.crate` (that is
 # `scripts/check-package-contents.sh`, and `cargo package --list`); whether the
@@ -56,6 +60,15 @@ PUBLISHED = {
     "fixbolt-sbe": "crates/sbe",
     "fixbolt": "crates/library",
 }
+# name -> directory: crates in the lockstep mould that are NOT released yet —
+# `publish = false`, so rule 4 holds them out of `cargo publish --workspace`,
+# while rules 2 (all but the `publish` half), 3 and 5 hold their shape from
+# the day they merge. ADR-0170 decision 10: `fixbolt-metrics` joins
+# `PUBLISHED` (with ADR-0161's `publish` field) only in the same commit as the
+# `w2w` pair that passes its kill line, and must not need re-shaping then.
+SHAPED_UNRELEASED = {
+    "fixbolt-metrics": "crates/metrics",
+}
 LICENCES = ("LICENSE-MIT", "LICENSE-APACHE")
 
 fails = []
@@ -84,7 +97,8 @@ for m in members:
     manifest = load(root / m / "Cargo.toml")
     member_names[manifest.get("package", {}).get("name", m)] = m
 
-for name, directory in PUBLISHED.items():
+for name, directory in {**PUBLISHED, **SHAPED_UNRELEASED}.items():
+    released = name in PUBLISHED
     if name not in member_names:
         fails.append(f"FAIL {name}: not a workspace member")
         continue
@@ -95,8 +109,10 @@ for name, directory in PUBLISHED.items():
     package = manifest.get("package", {})
     if package.get("version") != {"workspace": True}:
         fails.append(f"FAIL {name}: version is not inherited (version.workspace = true)")
-    if package.get("publish") is False or package.get("publish") == []:
+    if released and (package.get("publish") is False or package.get("publish") == []):
         fails.append(f"FAIL {name}: publish = false on a crate that is published")
+    if not released and package.get("publish") is not False:
+        fails.append(f"FAIL {name}: shaped but not released, and not publish = false")
 
     tables = []
     for key in ("dependencies", "build-dependencies"):
@@ -153,9 +169,11 @@ for line in fails:
 if fails:
     print(f"check-release-versions: {len(fails)} failure(s)")
     sys.exit(1)
+shaped = len(PUBLISHED) + len(SHAPED_UNRELEASED)
 print(
-    f"check-release-versions: OK — {len(PUBLISHED)} crates at {ws_version}, every internal "
-    f'normal dependency "{want}", {len(PUBLISHED) * len(LICENCES)} licence copies identical, '
+    f"check-release-versions: OK — {len(PUBLISHED)} crates at {ws_version} and "
+    f"{len(SHAPED_UNRELEASED)} shaped but unreleased ({', '.join(SHAPED_UNRELEASED)}), every "
+    f'internal normal dependency "{want}", {shaped * len(LICENCES)} licence copies identical, '
     f"{len(member_names) - len(PUBLISHED)} other members publish = false"
 )
 PY

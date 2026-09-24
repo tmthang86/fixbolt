@@ -6,6 +6,7 @@ members = [
     "crates/dict",
     "crates/engine",
     "crates/library",
+    "crates/metrics",
     "crates/sbe",
     "crates/sbe-gen",
     "crates/session",

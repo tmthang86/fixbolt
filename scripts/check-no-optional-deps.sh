@@ -79,6 +79,13 @@ CASES=(
   # shape as the `fixbolt:libc` line above, and the same reason: asked per
   # crate, because a sibling in the workspace would answer for it at scope.
   "fixbolt:fixbolt-sbe"
+  # `[2026-09-24]` crates/metrics, phase 4 row 1 (ADR-0170 decision 9). It
+  # needs only `fixbolt_engine::observe`, which no feature gates, so it takes
+  # the engine with `default-features = false` and has no features of its own.
+  # A user building `hft` without `standard` must get no `libc` through it —
+  # and its dev-dependency on the engine WITH `standard` is exactly the sibling
+  # that would switch the flag back on at workspace scope. Asked per crate.
+  "fixbolt-metrics:libc"
 )
 
 rc=0
