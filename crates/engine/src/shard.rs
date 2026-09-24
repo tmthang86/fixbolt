@@ -247,10 +247,26 @@ const ABORT: u8 = 2;
 /// sound only where each shard serves an identity of its own — which the API
 /// above cannot yet arrange.
 ///
-/// **Dropping this shuts them down.** Each thread's loop ends when its channel
-/// disconnects, which happens when the last [`Shards`] holding the sender is
-/// dropped; the engine goes with it, and so do the connections it owned. That
-/// is process shutdown, and it is the only shutdown this offers.
+/// **Dropping this shuts them down, and returns only once they are down.**
+/// Each thread's loop ends when its channel disconnects, which the drop does
+/// first; the engine goes with it, and so do the connections it owned; then
+/// the thread waits for the journal writers those connections retired
+/// (ADR-0153 decision 4). **The drop joins every shard thread**, so when it
+/// returns an `Async` journal's writer has written its last byte — or the
+/// shard's wait timed out first. That is process shutdown, and it is the only
+/// shutdown this offers: no `Logout` is sent (ADR-0088 decision 5).
+///
+/// **The drop blocks the thread that drops it**, for as long as the slowest
+/// shard takes to finish the [`Shardable::turn`] or [`Shardable::idle`] it is
+/// in, drop its engine — which for an engine with a `FileLog` joins that log's
+/// writer **with no timeout** — and wait for its retired journal writers (1 s
+/// floor per shard, result discarded). A `turn` or `idle` that never returns
+/// makes the drop never return. **Drop it on a thread that may block, never on
+/// an engine or shard thread**: joining another shard from an `hft` shard is a
+/// `futex` wait on an engine thread (`CLAUDE.md` §2 rule 4). Dropped on one of
+/// its own shard threads, it does not join that thread — it would join itself
+/// — and that thread still ends on its next pass.
+/// `crates/engine/tests/after_serving.rs` holds the join.
 ///
 /// `J` is the journal its engines hold, and it defaults to
 /// [`Store`](crate::journal::Store) so `Shards::<PRE>` keeps meaning what it
@@ -307,14 +323,14 @@ impl<const PRE: usize, J> Shards<PRE, J> {
         let (status_tx, status_rx) = mpsc::channel::<Result<CoreId, AffinityError>>();
 
         let mut senders = Vec::with_capacity(plan.shards().len());
-        let mut threads = Vec::with_capacity(plan.shards().len());
+        let mut threads: Vec<JoinHandle<()>> = Vec::with_capacity(plan.shards().len());
 
         for (i, core) in plan.shards().iter().copied().enumerate() {
             let (tx, rx) = mpsc::channel::<(Pending<TcpTransport, PRE>, Start<J>)>();
             senders.push(tx);
 
             let make = Arc::clone(&make);
-            let gate = Arc::clone(&gate);
+            let thread_gate = Arc::clone(&gate);
             let status = status_tx.clone();
 
             let handle = std::thread::Builder::new()
@@ -334,7 +350,7 @@ impl<const PRE: usize, J> Shards<PRE, J> {
                     // is indistinguishable from one on the hot path to anything
                     // that traces this thread.
                     loop {
-                        match gate.load(Ordering::Acquire) {
+                        match thread_gate.load(Ordering::Acquire) {
                             GO => break,
                             ABORT => return,
                             _ => std::hint::spin_loop(),
@@ -384,7 +400,34 @@ impl<const PRE: usize, J> Shards<PRE, J> {
                     // floor is the timeout.
                     drop(engine);
                     crate::after_serving(None);
-                })?;
+                });
+            // **A spawn that fails leaves no shard behind**, like the two
+            // refusals below: the ones already spawned are waiting at the gate
+            // and would spin there for the life of the process.
+            // `a_failed_spawn_leaves_no_shard_spinning_at_the_gate` makes one
+            // spawn fail; nothing else in the process can ask for that.
+            #[cfg(test)]
+            let handle = if spawn_failure_tests::FAIL_SPAWN_AT.with(std::cell::Cell::get) == Some(i)
+            {
+                // The real thread goes where the error path will abort and
+                // join it; joining it here, before `ABORT`, would never return.
+                if let Ok(h) = handle {
+                    threads.push(h);
+                }
+                Err(std::io::Error::other("injected spawn failure"))
+            } else {
+                handle
+            };
+            let handle = match handle {
+                Ok(h) => h,
+                Err(e) => {
+                    gate.store(ABORT, Ordering::Release);
+                    for h in threads {
+                        drop(h.join());
+                    }
+                    return Err(ShardError::Io(e));
+                }
+            };
             threads.push(handle);
         }
         drop(status_tx);
@@ -513,6 +556,35 @@ impl<const PRE: usize, J> Shards<PRE, J> {
     #[must_use]
     pub fn all_alive(&self) -> bool {
         self.threads.iter().all(|h| !h.is_finished())
+    }
+}
+
+/// **Disconnect, then join.** Without the join, the thread that dropped this
+/// raced the shard's teardown: a `wait_for_retired_writers` asked right after
+/// the drop could read zero **before** the shard had retired anything, and a
+/// process exiting there lost what the writer had not reached. `[measured
+/// 2026-09-24]` main's CI run 35918095562, 1990 of 2000 records; locally 2 of
+/// 100 runs. Trap: `docs/reference/a-drop-that-only-signals-is-not-a-shutdown.md`.
+impl<const PRE: usize, J> Drop for Shards<PRE, J> {
+    fn drop(&mut self) {
+        // The order is the whole fix: a thread joined while its sender is
+        // alive never sees the disconnect, and the join never returns.
+        self.senders.clear();
+        let me = std::thread::current().id();
+        for h in self.threads.drain(..) {
+            // **Never join the thread doing the dropping.** A `Shards` dropped
+            // on one of its own shard threads would join itself, and std
+            // panics on that (`EDEADLK`, "Resource deadlock avoided") — inside
+            // this `Drop`. That thread's own loop still ends: its sender is
+            // gone, so it sees the disconnect on its next pass and runs its
+            // teardown. Test `dropping_the_runtime_on_its_own_shard_thread_does_not_panic`.
+            if h.thread().id() == me {
+                continue;
+            }
+            // A shard that panicked has nothing left to wait for, and a drop
+            // may not panic in turn.
+            let _ = h.join();
+        }
     }
 }
 
@@ -900,5 +972,89 @@ fn start_and_hand<const PRE: usize, J, V: crate::recovery::Recovery<J>>(
     match shards.hand_started(p, start) {
         Err(ShardError::ThreadGone(n)) => Err(ShardError::ThreadGone(n)),
         Ok(_) | Err(_) => Ok(()),
+    }
+}
+
+/// **F4 of PR #106's review**: a spawn that fails part-way through
+/// [`Shards::start`] must abort the threads already spawned, as the two
+/// refusals after it do. Before, `?` returned with them spinning at the gate
+/// for the life of the process.
+#[cfg(test)]
+mod spawn_failure_tests {
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    use super::{ShardError, Shardable, Shards, Start};
+    use crate::affinity::{CoreId, ShardPlan, Topology};
+    use crate::transport::TcpTransport;
+
+    std::thread_local! {
+        /// Which shard's spawn `Shards::start` fails, on this test thread only.
+        pub(super) static FAIL_SPAWN_AT: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    struct Idle;
+
+    impl Shardable for Idle {
+        fn add_started(
+            &mut self,
+            _: TcpTransport,
+            _: fixbolt_session::Config,
+            _: &[u8],
+            _: Start<crate::journal::Store>,
+        ) -> bool {
+            false
+        }
+        fn turn(&mut self) -> bool {
+            false
+        }
+        fn idle(&mut self) {
+            std::thread::yield_now();
+        }
+    }
+
+    /// Two physical cores, or `None` — said out loud, because a `#[test]` that
+    /// returns early reports `ok`.
+    fn two_cores() -> Option<ShardPlan> {
+        let topology = Topology::read().ok()?;
+        let mut cores: Vec<CoreId> = Vec::new();
+        for c in topology.online() {
+            if !cores.iter().any(|t| topology.siblings_of(*t).contains(c)) {
+                cores.push(*c);
+            }
+            if cores.len() == 2 {
+                return Some(ShardPlan::new(cores).allow_unisolated());
+            }
+        }
+        eprintln!("SKIPPED: fewer than two physical cores, so the failed-spawn test DID NOT RUN");
+        None
+    }
+
+    #[test]
+    fn a_failed_spawn_leaves_no_shard_spinning_at_the_gate() {
+        let Some(plan) = two_cores() else { return };
+        // Held by `make`, which every spawned thread holds a clone of until it
+        // ends: a count above one after `start` returns is a thread still
+        // alive at the gate.
+        let marker = Arc::new(());
+        let held = Arc::clone(&marker);
+
+        FAIL_SPAWN_AT.with(|c| c.set(Some(1)));
+        let result = Shards::<64>::start(&plan, move |_| {
+            let _ = &held;
+            Idle
+        });
+        FAIL_SPAWN_AT.with(|c| c.set(None));
+
+        assert!(
+            matches!(result, Err(ShardError::Io(_))),
+            "the failed spawn is reported as Io"
+        );
+        assert_eq!(
+            Arc::strong_count(&marker),
+            1,
+            "Shards::start returned while shard 0 was still alive at the gate — \
+             a failed spawn did not abort the threads already spawned"
+        );
     }
 }

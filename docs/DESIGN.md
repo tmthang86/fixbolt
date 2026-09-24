@@ -479,6 +479,10 @@ writers; the writer uncounts itself as its last act. `journal::wait_for_retired_
 sleeps on that count, and every `serve*`, `connect_and_serve*` and sharded serve loop calls it
 **after** its loop has returned, with the shutdown grace (never under 1 s) as the timeout. A
 caller driving `Engine` directly must call it before exiting ([GUIDE.md §6b](GUIDE.md)).
+Dropping `shard::Shards` disconnects and then **joins** every shard thread, so it returns only
+after each shard's wait — `[2026-09-24]` it used to detach them, and a wait asked straight after
+the drop read zero writers before any shard had retired one
+([the trap](reference/a-drop-that-only-signals-is-not-a-shutdown.md)).
 `[2026-09-23]` before this the drop joined the writer on the engine thread mid-serving — a
 `futex` wait in `hft`, a stall of every other session in `standard`
 ([ADR-0153](decisions/ADR-0153-a-connections-journal-is-retired-without-waiting-and-its-writer-is-awaited-only-after-serving.md),

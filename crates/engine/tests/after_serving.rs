@@ -1,5 +1,5 @@
 //! **Row M, Sửa 5 item 2**: a test that would notice if `after_serving`
-//! (`crates/engine/src/lib.rs:3370`) stopped waiting for retired journal
+//! (`crates/engine/src/lib.rs`, `fn after_serving`) stopped waiting for retired journal
 //! writers.
 //!
 //! `cargo test -p fixbolt-engine --features standard` was 372/0 with
@@ -9,13 +9,22 @@
 //! [`fixbolt_engine::connect_and_serve`], and the shard runtime's serve path
 //! (`fixbolt_engine::shard::Shards`).
 //!
-//! **Required reversal**: make `after_serving` an empty body. All three tests
-//! here must go red on their own assertion, quoting
-//! *"serve returned while N retired writers were still writing"* or the
-//! equivalent record-count shortfall — then `git checkout --
-//! crates/engine/src/lib.rs` restores it.
+//! **Required reversal**: make `after_serving` an empty body. The two blocking
+//! doors go red on their own assertion, quoting *"returned while a retired
+//! writer was still writing"* or the record-count shortfall — then `git
+//! checkout -- crates/engine/src/lib.rs` restores it. **The shard test is red
+//! only sometimes under that reversal** (`[measured 2026-09-24]` 10 runs of 20,
+//! on the same sentence): its one connection's writer often finishes inside
+//! the join anyway. Its own reversal is `Shards`' `Drop` with an empty body.
+//! Without anything widening the window it is red on the `Duration::ZERO`
+//! check — *"drop(shards) returned while a retired writer was still writing"*,
+//! `[measured 2026-09-24]` 10 runs of 10 — because the shard usually retires
+//! the journal before the test reads `writers_retired()`, but not before its
+//! writer has finished. With a 50 ms sleep injected before the shard's
+//! teardown it is red on the first check instead, *"drop(shards) returned
+//! before the shard thread retired the connection's journal"*, 20 of 20.
 //!
-//! # Why the shard test cannot ask for `Duration::ZERO`
+//! # Why every check here can ask for `Duration::ZERO`
 //!
 //! `serve_with_recovery` and `connect_and_serve` are ordinary blocking calls:
 //! `after_serving` runs **inside** them, on the calling thread, before they
@@ -23,21 +32,17 @@
 //! the wait has already happened and `wait_for_retired_writers(Duration::ZERO)`
 //! is the honest check.
 //!
-//! The sharded runtime offers no such moment. Its only public door,
-//! `serve_sharded_hft_with_recovery`, returns `Result<Infallible, _>` — it
-//! cannot return on success, so there is nothing to join. `Shards`' own
-//! rustdoc says shutdown is dropping it: *"Each thread's loop ends when its
-//! channel disconnects... that is process shutdown, and it is the only
-//! shutdown this offers"* — ADR-0088 decision 5 left it that way on purpose.
-//! Dropping `Shards` only signals the shard thread; noticing the disconnect,
-//! dropping the engine, and calling `crate::after_serving(None)` happens
-//! asynchronously on that thread, with no handle left to join it by. So this
-//! test's third case drives `Shards` directly (the same building block
-//! `shard.rs`'s own serve loop uses) and, after dropping it, calls
-//! `wait_for_retired_writers` with a real timeout rather than `Duration::ZERO`
-//! — the function polls every 1 ms regardless, so a working `after_serving`
-//! still returns `true` almost at once; a hollowed-out one exhausts the
-//! timeout and returns `false`, which is exactly the reversal this row needs.
+//! The sharded runtime's only public door, `serve_sharded_hft_with_recovery`,
+//! returns `Result<Infallible, _>` and never returns on success, so the third
+//! case drives `Shards` directly (the building block that door uses) and drops
+//! it. **Since 2026-09-24 that drop joins every shard thread**, and each one
+//! runs `after_serving(None)` before it ends — the same moment the blocking
+//! doors give. Until then the drop only signalled the thread, and this test
+//! waited with a 5 s timeout on a count the shard had not raised yet: it read
+//! zero, returned at once, and main's CI run 35918095562 found 1990 records of
+//! 2000. `docs/reference/a-drop-that-only-signals-is-not-a-shutdown.md`.
+//!
+//! The count is process-wide, so the three tests take `one_at_a_time`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Not a library crate's source: non-negotiable 7 is about `crates/*/src`, and
 // `scripts/check-indexing-debt.sh` counts nothing outside it. An index that
@@ -114,6 +119,22 @@ fn message_records_on_disk(path: &std::path::Path) -> usize {
 #[cfg(all(feature = "standard", unix))]
 const RECORDS_WANTED: u32 = 2_000;
 
+/// **One test at a time in this binary.** Every test here asks
+/// `wait_for_retired_writers(Duration::ZERO)`, and the count it reads is
+/// **process-wide** (ADR-0153 *Consequences*): a writer another test retired a
+/// moment ago makes this test's check red although its own serve waited.
+/// `[measured 2026-09-24]` 1 whole-binary run in 150 red on attempt 1 of
+/// `serve_with_recovery_returns_after_its_writers_finished` that way.
+#[cfg(all(feature = "standard", unix))]
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that panicked while holding it poisoned it; the next one still
+    // runs alone, which is all the lock is for.
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // ---------------------------------------------------------------------------
 // serve_with_recovery / connect_and_serve — both are blocking calls that run
 // `after_serving` before they return, so `.join()` on the thread that called
@@ -134,7 +155,9 @@ mod through_the_blocking_doors {
     use fixbolt_engine::recovery::{Recovery, Resumed};
     use fixbolt_session::{Application, Config};
 
-    use super::{RECORDS_WANTED, logon_now, message_records_on_disk, order_now, scratch_path};
+    use super::{
+        RECORDS_WANTED, logon_now, message_records_on_disk, one_at_a_time, order_now, scratch_path,
+    };
 
     type Disk = FileJournal<4_096, 512>;
 
@@ -228,6 +251,7 @@ mod through_the_blocking_doors {
     /// a hollowed-out `after_serving` cannot hide.
     #[test]
     fn serve_with_recovery_returns_after_its_writers_finished() {
+        let _alone = one_at_a_time();
         for attempt in 0..5 {
             let path = scratch_path(&format!("serve-with-recovery-{attempt}"));
             let addr = free_addr();
@@ -307,6 +331,7 @@ mod through_the_blocking_doors {
     /// whether the protocol is right end to end.
     #[test]
     fn connect_and_serve_with_recovery_returns_after_its_writers_finished() {
+        let _alone = one_at_a_time();
         for attempt in 0..5 {
             let path = scratch_path(&format!("connect-and-serve-{attempt}"));
             let venue = TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -417,7 +442,9 @@ mod through_the_shard_runtime {
     use fixbolt_engine::{Acceptor, Application, Config, Engine};
     use fixbolt_session::Config as SessionConfig;
 
-    use super::{RECORDS_WANTED, logon_now, message_records_on_disk, order_now, scratch_path};
+    use super::{
+        RECORDS_WANTED, logon_now, message_records_on_disk, one_at_a_time, order_now, scratch_path,
+    };
 
     const PRE: usize = 4_096;
     type Disk = FileJournal<4_096, 512>;
@@ -497,6 +524,7 @@ mod through_the_shard_runtime {
     /// anything to `drop`.
     #[test]
     fn shard_serve_returns_after_its_writers_finished() {
+        let _alone = one_at_a_time();
         let Some(plan) = one_shard() else {
             panic!(
                 "no online core to host one shard — Topology::read said so, \
@@ -597,22 +625,33 @@ mod through_the_shard_runtime {
         let _sock = client.join().expect("the client thread must not panic");
 
         // **Dropping `Shards` is the only shutdown this offers** (its own
-        // rustdoc). It signals the shard thread; noticing, retiring the
-        // journal, and calling `after_serving(None)` happens on that thread,
-        // asynchronously — see the module doc for why the wait below is not
-        // `Duration::ZERO`.
+        // rustdoc), and since 2026-09-24 it **joins** every shard thread: the
+        // thread notices the disconnect, drops the engine (retiring the
+        // journal), and runs `after_serving(None)` before the drop returns.
+        // So nothing below waits. Before the join, this test called
+        // `wait_for_retired_writers(5 s)` here, which read the count as zero
+        // **before the shard had retired anything** and returned at once —
+        // main's CI run 35918095562 found 1990 of 2000 records.
+        let retired_before = fixbolt_engine::journal::writers_retired();
         drop(shards);
 
         assert!(
-            fixbolt_engine::journal::wait_for_retired_writers(Duration::from_secs(5)),
-            "the shard's retired writer did not finish within 5 s of the \
-             runtime being torn down — after_serving did not wait"
+            fixbolt_engine::journal::writers_retired() > retired_before,
+            "drop(shards) returned before the shard thread retired the \
+             connection's journal — Shards' Drop did not join the shard"
+        );
+        // `Duration::ZERO` is honest now, for the reason the two blocking
+        // doors above give: the wait happened on the joined thread.
+        assert!(
+            fixbolt_engine::journal::wait_for_retired_writers(Duration::ZERO),
+            "drop(shards) returned while a retired writer was still writing — \
+             the shard thread's after_serving did not wait"
         );
         let on_disk = message_records_on_disk(&path);
         assert_eq!(
             on_disk, RECORDS_WANTED as usize,
-            "all {RECORDS_WANTED} records must be on disk once the retired \
-             writer is accounted for; found {on_disk}"
+            "all {RECORDS_WANTED} records must be on disk the moment \
+             drop(shards) returns; found {on_disk}"
         );
 
         let _ = std::fs::remove_file(&path);

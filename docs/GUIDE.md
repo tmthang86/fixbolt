@@ -1124,7 +1124,19 @@ instead, call `fixbolt_engine::journal::wait_for_retired_writers(timeout)` after
 before the process exits** — otherwise a clean exit can lose what a writer had not yet written,
 the loss `Async` accepts on a crash and not on a clean stop. It returns `false` if the timeout
 passed first. Dropping the `Engine` retires every journal it still holds, so drop it *before*
-the wait. The compiler cannot hold this line; nothing but this paragraph and the rustdoc does.
+the wait. **If you drive `shard::Shards` yourself, dropping it is the wait**: since
+`[2026-09-24]` the drop joins every shard thread, and each one has dropped its engine and waited
+for its writers before it ends. That wait's result is discarded (a 1 s floor per shard), so to
+learn whether the writers finished, or to give them longer, call
+`wait_for_retired_writers(timeout)` **after** the drop — never before it or instead of it: until
+that date the drop only signalled the threads, and a wait asked at once read zero writers before
+any shard had retired one and returned `true` with nothing awaited
+([the trap](reference/a-drop-that-only-signals-is-not-a-shutdown.md)). **The drop blocks the
+thread that drops it** — for the slowest shard's current `turn` or `idle`, its engine's drop (a
+`FileLog` joins its writer there, with no timeout) and that 1 s wait — **so drop it on a thread
+that may block, never on an engine or shard thread**: joining another shard from an `hft` shard
+is a `futex` wait on an engine thread, which `hft` mode forbids. Dropped on one of its own shard threads it
+does not join that thread, which would be joining itself. The compiler cannot hold this line; nothing but this paragraph and the rustdoc does.
 **`ready` and `recover` run on the engine thread in `serve*`**, between turns, while other
 sessions are being served — `ready` must not make a system call, and a `recover` that reads a file costs every
 one of them that read (a known cost, ADR-0154 *Consequences*; the sharded runtime asks both on

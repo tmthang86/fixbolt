@@ -515,6 +515,112 @@ fn a_route_outside_the_range_is_refused_and_not_clamped() {
     }
 }
 
+/// A shard that, on its first turn after the runtime is parked in `slot`, takes
+/// it and drops it **on this shard thread** — PR #106 review F1's probe shape.
+struct SelfDropper {
+    index: usize,
+    slot: Arc<std::sync::Mutex<Option<Shards<PRE>>>>,
+    /// Set only once the drop has **returned** on this thread.
+    returned: Arc<std::sync::atomic::AtomicBool>,
+    /// Per shard, raised when that shard's engine is dropped.
+    dropped: Arc<Vec<AtomicUsize>>,
+    /// Shard 1's drop count, read the moment the drop returned.
+    other_dropped_at_return: Arc<AtomicUsize>,
+}
+
+impl Shardable for SelfDropper {
+    fn add_started(
+        &mut self,
+        _: TcpTransport,
+        _: Config,
+        _: &[u8],
+        _: Start<fixbolt_engine::journal::Store>,
+    ) -> bool {
+        false
+    }
+    fn turn(&mut self) -> bool {
+        if self.index != 0 {
+            return false;
+        }
+        let taken = self.slot.lock().ok().and_then(|mut s| s.take());
+        if let Some(shards) = taken {
+            drop(shards);
+            if let Some(other) = self.dropped.get(1) {
+                self.other_dropped_at_return
+                    .store(other.load(Ordering::Acquire), Ordering::Release);
+            }
+            self.returned.store(true, Ordering::Release);
+        }
+        false
+    }
+    fn idle(&mut self) {
+        std::thread::yield_now();
+    }
+}
+
+impl Drop for SelfDropper {
+    fn drop(&mut self) {
+        if let Some(d) = self.dropped.get(self.index) {
+            d.fetch_add(1, Ordering::Release);
+        }
+    }
+}
+
+/// **Dropping `Shards` on one of its own shard threads does not panic**, and
+/// still joins the others. `[2026-09-24]` the join-on-drop joined the dropping
+/// thread itself and std panicked inside the library's `Drop`: *"failed to join
+/// thread: Resource deadlock avoided (os error 35)"*. The drop now skips that
+/// one handle. Two shards where the machine has two physical cores; one
+/// otherwise, which still proves the no-panic half.
+#[test]
+fn dropping_the_runtime_on_its_own_shard_thread_does_not_panic() {
+    let Some(plan) = plan_or_none(2).or_else(|| plan_for(1)) else {
+        return;
+    };
+    let n = plan.shards().len();
+    let slot: Arc<std::sync::Mutex<Option<Shards<PRE>>>> = Arc::new(std::sync::Mutex::new(None));
+    let returned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dropped: Arc<Vec<AtomicUsize>> = Arc::new((0..n).map(|_| AtomicUsize::new(0)).collect());
+    let other_dropped_at_return = Arc::new(AtomicUsize::new(usize::MAX));
+
+    let (s, r, d, o) = (
+        Arc::clone(&slot),
+        Arc::clone(&returned),
+        Arc::clone(&dropped),
+        Arc::clone(&other_dropped_at_return),
+    );
+    let shards = Shards::<PRE>::start(&plan, move |index| SelfDropper {
+        index,
+        slot: Arc::clone(&s),
+        returned: Arc::clone(&r),
+        dropped: Arc::clone(&d),
+        other_dropped_at_return: Arc::clone(&o),
+    })
+    .expect("a plan this machine accepts");
+    *slot.lock().expect("not poisoned") = Some(shards);
+
+    assert!(
+        spin_until(|| returned.load(Ordering::Acquire), Duration::from_secs(5)),
+        "dropping Shards on its own shard thread never returned — it panicked \
+         (joined itself) or hung"
+    );
+    if n == 2 {
+        assert_eq!(
+            other_dropped_at_return.load(Ordering::Acquire),
+            1,
+            "the drop returned before the other shard's engine was dropped — \
+             it did not join the other shard"
+        );
+    }
+    assert!(
+        spin_until(
+            || dropped[0].load(Ordering::Acquire) == 1,
+            Duration::from_secs(5)
+        ),
+        "the dropping shard's own loop must still end on the disconnect"
+    );
+}
+
 #[test]
 fn dropping_the_runtime_ends_every_thread() {
     let Some(plan) = plan_for(2) else { return };

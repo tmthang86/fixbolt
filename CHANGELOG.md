@@ -607,6 +607,26 @@ and `fixbolt-sbe-gen` (the SBE schema compiler — available by git, pinned to t
 
 ### Fixed
 
+- **Dropping `shard::Shards` now joins every shard thread.** It disconnects the channels, then
+  waits for each thread to drop its engine and run its wait for retired journal writers
+  (ADR-0153 decision 4). Before, the drop only signalled the threads: a
+  `wait_for_retired_writers` asked right after it could read zero before any shard had retired
+  its journal, return `true` with nothing awaited, and let a clean exit lose what an `Async`
+  writer had not reached. `[measured 2026-09-24]` main's CI run 35918095562, 1990 records of
+  2000. **The drop now blocks the thread that drops it**, for as long as the slowest shard takes
+  to finish its current `turn` or `idle`, drop its engine (a `FileLog`'s writer is joined there
+  with no timeout) and wait for its retired writers (1 s floor, result discarded); drop it on a
+  thread that may block, never on an engine or shard thread. Dropped on one of its own shard
+  threads it skips joining that thread instead of panicking (`EDEADLK`). Tests
+  `shard_serve_returns_after_its_writers_finished`,
+  `dropping_the_runtime_on_its_own_shard_thread_does_not_panic`;
+  [the trap](docs/reference/a-drop-that-only-signals-is-not-a-shutdown.md).
+- **`Shards::start` no longer leaves shard threads spinning when a later thread fails to spawn.**
+  It returned `ShardError::Io` with the threads already spawned waiting at the start gate for
+  the life of the process; it now aborts and joins them, as its two other refusals did. Test
+  `a_failed_spawn_leaves_no_shard_spinning_at_the_gate` (unit, `shard.rs`, needs two physical
+  cores).
+
 - **A session with a `FileJournal` ending no longer makes the engine thread wait.** Removing a
   finished connection dropped its journal on the engine thread, and the drop joined the `Async`
   writer: a `futex` wait mid-serving — rule 4 broken in `hft`, a stall of every other session
