@@ -9,6 +9,12 @@
   ADR-0068's 5 %; (b) both paths in both procedures; (c) the corpus over Onload-accelerated loopback.
   Before this revision decisions 3 and 5 stated the same readings as the architect's proposal,
   awaiting Q2.
+  **Note, 2026-09-24 — the bypass arm will not run.** Onload over AF_XDP was dropped at the probe's
+  gate G1 on the desk's I211 (`hardware init failed rc=-95`: `igb` on `7.0.0-31` lacks
+  `get_rxfh_key_size`; ADR-0201 *Result*). No arm this ADR describes was measured, decision 4's
+  prediction was never tested, and none of its instruments (the `FIXBOLT_BYPASS` rows,
+  `BYPASS=onload`, `bypass-verdict.sh`, `check-wire-under-onload.sh`) is built. The ADR stays
+  Proposed as the design a reopening would start from.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus) for rows 6 and 7 of
   [plans/2026-09-23-phase-4-scope](../plans/2026-09-23-phase-4-scope.md).

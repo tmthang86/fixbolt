@@ -2,6 +2,12 @@
 
 - **Status**: Proposed — 2026-09-24, with
   [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md).
+  **Note, 2026-09-24 — the Onload block will not run.** Onload over AF_XDP was dropped at the probe
+  (ADR-0201 *Result*). Decisions 1, 2 and 5 stand for the boot, which now measures the `io_uring`
+  A/B (row 5) and the SQLite-store `w2w` pair (row 4, step 4b). Decision 3's order loses its Onload
+  block: procedure 1 is the `io_uring` block then the store pair, the bench rotation fills the gap,
+  procedure 2 reverses both. Decision 4 is carried out early: Onload is uninstalled from the desk
+  before the boot, and the boot checks that no `onload` or `sfc_resource` module is loaded.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus).
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)

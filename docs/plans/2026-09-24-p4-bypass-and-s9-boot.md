@@ -1,6 +1,6 @@
 # Phase 4, hàng 6 và 7: dụng cụ đo cho Onload trên AF_XDP, và boot §9 duy nhất đo cả `io_uring` lẫn Onload
 
-> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đã duyệt (anh trả lời Q1, Q2 ngày 2026-09-24; manager duyệt phần còn lại theo uỷ quyền 2026-09-18)
+> **Loại:** Plan · **Ngày:** 2026-09-24 · **Trạng thái:** Đã duyệt (anh trả lời Q1, Q2 ngày 2026-09-24; manager duyệt phần còn lại theo uỷ quyền 2026-09-18) · **Sửa 2 (2026-09-24): Onload bị bỏ ở cổng G1; hàng 7 chỉ đo `io_uring` và cặp store**
 > **Phạm vi:** hàng 6 và 7 của bảng *Chia việc* trong [phase-4-scope](2026-09-23-phase-4-scope.md);
 > kèm [ADR-0200](../decisions/ADR-0200-a-bypass-arm-is-judged-from-the-counterparty-against-a-same-boot-kernel-twin-and-its-kill-line-is-arithmetic-written-first.md),
 > [ADR-0201](../decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md),
@@ -12,15 +12,21 @@
 
 ## Tóm tắt một đoạn
 
-Hàng 6 dựng **dụng cụ đo** cho nhánh Onload: các dòng §9, các dòng kiểm trong
-`scripts/check-machine.sh`, cách chạy `w2w` hai nhánh (kernel và Onload) đo từ phía Mac, và một
-script tính phán quyết giữ/bỏ. Hàng 7 là **một boot §9 duy nhất** đo A/B `io_uring` (của hàng 5) và
-A/B Onload, rồi áp phán quyết. **Phát hiện quan trọng nhất khi đọc số cũ:** thời gian khứ hồi đo từ
-Mac là ~232 µs, trong đó toàn bộ phần của máy bàn (từ lúc gói vào NIC tới lúc gói ra NIC) chỉ ~27 µs.
-Muốn p50 phía Mac tốt hơn 10 % thì Onload phải cắt ~23 µs — tức 86 % của *toàn bộ* phần máy bàn, kể
-cả phần phần cứng NIC và phần việc của chính engine mà Onload không đụng tới được. **Dự đoán: Onload
-sẽ bị bỏ.** Plan đề xuất vẫn đo (một boot vốn đã phải chạy cho `io_uring`), nhưng anh có thể chọn bỏ
-ngay dựa trên phép tính này (câu hỏi Q1).
+**Sửa 2, 2026-09-24 — Onload trên AF_XDP bị bỏ ở cổng G1 của bước thăm dò, trước khi có phép đo
+nào.** Lần 1, Onload `v9.0.2` không biên dịch được trên kernel `7.0.0-31`. Lần 2, bản ghim
+`174b947d0b` (nhánh `v9_2`) biên dịch và cài được, nhưng **không dựng được stack trên `enp9s0`**:
+Onload đòi driver trả lời "khoá băm RSS dài bao nhiêu" (`get_rxfh_key_size`), và `igb` của kernel
+này không có thao tác đó — kể cả khi đã tắt bộ lọc và để NIC còn một hàng đợi. Mã Onload ở `v9.0.2`,
+`v9_2` và `master` đều coi thiếu thao tác đó là lỗi, nên đổi bản Onload không cứu được. Theo Q1 của
+ADR-0098, **bị bỏ vẫn tính là xong**. Vì vậy: các dụng cụ đo riêng cho Onload (6.2–6.5) **không
+dựng**; 6.6 chỉ còn gỡ Onload khỏi máy bàn và ghi lại việc bỏ; **hàng 7 là boot §9 đo `io_uring`
+(hàng 5) và cặp `w2w` của store SQLite (hàng 4b)**. Phép tính "phải cắt 86 %" viết trước (bên dưới)
+chưa bao giờ được đem ra thử — Onload dừng trước đó.
+
+*Tóm tắt ban đầu (trước Sửa 2), giữ lại để thấy plan đã tính gì:* hàng 6 dựng dụng cụ đo cho nhánh
+Onload, hàng 7 đo A/B `io_uring` và A/B Onload trong một boot; thời gian khứ hồi đo từ Mac ~232 µs
+trong khi toàn bộ phần máy bàn ~27 µs, nên muốn p50 phía Mac tốt hơn 10 % thì Onload phải cắt ~86 %
+phần máy bàn — dự đoán: bỏ.
 
 ## Bối cảnh
 
@@ -140,6 +146,10 @@ Ethernet. Cách đi vòng (ADR-0201): tắt bộ lọc của Onload và cho NIC 
 đó là của Onload. Việc zero-copy có bind thật hay không được **đọc lại từ kernel** (`ss --xdp`,
 `zc:1`) ở bước thăm dò 6.1 — trước khi viết một dòng script nào.
 
+**Sửa 2:** thăm dò không bao giờ tới được bước bind zero-copy hay bộ lọc — Onload dừng sớm hơn, lúc
+khởi tạo NIC, vì thiếu thao tác khoá RSS (xem *Nhật ký giao hàng* và ADR-0201 *Result*). Hai kết luận
+trên đúng về driver nhưng không được thử.
+
 **Hardware timestamp không sống sót dưới Onload**: chương trình XDP chuyển gói đi trước khi kernel
 tạo `skb`, nên tap `AF_PACKET` của `w2w` không thấy gói nào; gói gửi đi qua vòng TX của XSK, không
 qua socket kernel có `SO_TIMESTAMPING`; `igb` không có đường metadata timestamp cho XDP. Nên — đúng
@@ -206,81 +216,97 @@ Kết quả thăm dò là **cổng**:
 Cổng nào bỏ Onload thì các bước 6.2–6.6 chỉ còn phần tài liệu (bẫy + kết quả), và hàng 7 chỉ đo
 `io_uring`.
 
-**6.2 Dòng kiểm trong `scripts/check-machine.sh`.** Biến mới `FIXBOLT_BYPASS`, ba giá trị; **không
-đặt thì không in thêm dòng nào** (khuôn `FIXBOLT_NIC`):
+**Kết quả 6.1 (Sửa 2): G1 hỏng hai lần — Onload bị bỏ.**
 
-| `FIXBOLT_BYPASS` | Dòng | PASS khi |
-|---|---|---|
-| `absent` | `bypass modules` | không có module `onload` / `sfc_resource` nào đang nạp |
-| `absent`, `twin` | `no xdp on nic` | `bpftool net show dev $NIC` (hoặc `ip -d link`) không có chương trình XDP |
-| `twin`, `onload` | `onload version` | bản userland (`onload --version`) khớp bản module đang nạp |
-| `twin` | `afxdp register` | NIC **chưa** đăng ký (đường sysfs lấy từ 6.1) |
-| `onload` | `afxdp register` | NIC **đã** đăng ký và bật |
-| `onload` | `af_xdp flow filters` | giá trị `enable_af_xdp_flow_filters` bằng giá trị bước 6.1 quyết định |
-| `onload` | `xdp mode` | `xdpdrv` (native); `xdpgeneric` là FAIL — *chỉ khi 6.1 cho thấy chương trình được gắn lúc đăng ký; nếu chỉ gắn khi có stack thì dòng này chuyển sang đọc lại mỗi lần chạy (6.3)* |
-| cả ba | `nic channels` | `ethtool -l` combined bằng `FIXBOLT_CHANNELS`; thiếu biến đó là UNKNOWN |
+| Lần | Onload | Dừng ở | Dòng nguyên văn |
+|---|---|---|---|
+| 1 | `v9.0.2` (`9f330e7058`) | biên dịch | `src/lib/efhw/af_xdp.c:375:28: error: passing argument 2 of ‘kernel_bind’ from incompatible pointer type … expected ‘struct sockaddr_unsized *’` |
+| 2 | `174b947d0b` (nhánh `v9_2`, không tag; cổng `merge-base` in `has-sockaddr-unsized-fix`) | đăng ký `enp9s0` | `` [sfc efhw] af_xdp_rss_get_support: enp9s0 does not support `get_rxfh_key_size` operation `` · `[sfc efrm] ?: ERROR: hardware init failed rc=-95` |
 
-Phần quyết định là **hàm thuần** (nhận output lệnh, trả `PASS|FAIL|UNKNOWN<TAB>giá trị`) và có ca
-trong `scripts/check-machine-verdicts.sh` — gồm output thật chép từ bước 6.1.
+Lần 2 hỏng y hệt với bộ lọc mặc định, với `enable_af_xdp_flow_filters=0`, và với
+`ethtool -L enp9s0 combined 1`; sau đó ghi `register` trả errno 114 (`EALREADY`), `unregister` trả
+errno 16 (`EBUSY`); `onload_tool unload --onload-only` gỡ được module. G2–G4 không áp dụng — không có
+stack nào. Output: `target/p4-probe/{onload_install-v9_2.txt, probe-v9_2.txt, after-v9_2.txt}` (trên
+desk, không commit).
 
-**6.3 Nhánh Onload trong `scripts/w2w-baseline.sh`.** Biến mới `BYPASS=onload` (mặc định rỗng →
-không đổi gì). Khi bật:
+**Vì sao là do máy này, không do bản Onload:** hàm `af_xdp_rss_get_support` của Onload
+(`src/lib/efhw/af_xdp.c`, có ở `v9.0.2`, `v9_2`, `master`) trả `-EOPNOTSUPP` khi driver thiếu
+`get_rxfh_indir_size` hoặc `get_rxfh_key_size`, và `af_xdp_nic_init_hardware` trả thẳng lỗi đó.
+`igb` trong kernel `7.0.0-31` có `get_rxfh_indir_size` nhưng **không có** `get_rxfh_key_size` —
+chính `ethtool -x enp9s0` đọc hôm nay đã in `RSS hash key: Operation not supported`. Upstream Linux
+thêm thao tác này cho `igb` bằng các commit `dfaf57ef99cf`, `1ae67b2b28bc` *"igb: expose RSS key via
+ethtool get_rxfh"*, `e3c94e9782a7` (vào cây 2026-07-01), có từ **`v7.3-rc1`**, không có trong
+`v7.2`. **Tìm trong issue của Onload mà không thấy** ai báo đúng lỗi `get_rxfh_key_size`; chỉ có
+các báo cáo "hardware init failed" trên card ảo (vmxnet3 #257, virtio-net #270).
 
-- nửa `--listen` chạy dưới `onload -p latency` với `EF_NO_FAIL=0 EF_AF_XDP_ZEROCOPY=1
-  EF_USE_HUGE_PAGES=0`; header in mọi biến `EF_*` và bản `onload_stackdump` đọc tùy chọn của stack;
-- `WIRE_NIC` bị **từ chối** trước khi chạy (ADR-0200 quyết định 1);
-- sau dòng `listening:` và **trước** khi khởi động generator: chờ `carrier` của NIC lên (nếu 6.1 thấy
-  link nhảy), đọc `sudo -n ss --xdp -a -e` → phải có XSK trên `ifindex` của NIC với `zc:1`;
-- đọc `Tcp: InSegs/OutSegs` trong `/proc/net/snmp` trước generator và sau khi nửa listen thoát →
-  tăng **< 1 % số request**;
-- vi phạm bất kỳ điều nào → **FAIL** cả nhánh (không phải loại một lần chạy); `allocs 0` giữ nguyên;
-- khối tóm tắt ghi nhãn `bypass: onload <version> zc` để không ai lẫn nó với nhánh kernel;
-- nhánh twin chạy **cùng script, không `BYPASS`, không `WIRE_NIC`**, cùng `GENERATOR_SSH`.
+**Mở lại khi nào:** khi máy đo có một NIC mà driver vừa có thao tác khoá RSS (`get_rxfh_key_size`,
+`get_rxfh_indir_size`) vừa có AF_XDP zero-copy — ví dụ `igb` trên kernel ≥ 7.3 — **và** một bản
+Onload biên dịch được trên kernel đó (README của Onload hiện ghi tới 7.0). Kiểm trước, không cần cài
+gì: `ethtool -x <nic>` phải in được khoá RSS, không phải `Operation not supported`.
 
-Phần đọc `zc:1` và phần so bộ đếm là **hàm thuần**, có ca trong
-`scripts/check-w2w-baseline-summary.sh`. Dòng `sudo -n ss` phải qua
-`scripts/check-sudo-names-what-root-can-find.sh` (ADR-0093).
+**6.2, 6.3, 6.5 — không dựng (Sửa 2).** Các dòng `FIXBOLT_BYPASS` trong `check-machine.sh`, nhánh
+`BYPASS=onload` của `w2w-baseline.sh`, và `check-wire-under-onload.sh` chỉ có nghĩa khi có một stack
+Onload để đo; không có stack thì chúng là những cổng không ai đọc. Thiết kế của chúng vẫn nằm trong
+ADR-0200 (quyết định 1, 2, 5) cho lần mở lại.
 
-**6.4 Script phán quyết.** `scripts/bypass-verdict.sh <twin P1> <onload P1> [<twin P2> <onload P2>]`
-đọc bốn (hoặc hai) tóm tắt của `w2w-baseline.sh`, in từng mệnh đề cho từng path, từng procedure, và
-một dòng cuối `verdict: KEEP` / `verdict: DROP (<mệnh đề>, <path>, procedure <n>)`. Số học đúng như
-ADR-0200 quyết định 3. Test `scripts/check-bypass-verdict.sh` có ca: giữ; bỏ vì p50; bỏ vì p99; bỏ vì
-chỉ một path hụt; bỏ ngay ở procedure 1 khi chỉ có hai file; và một ca dựng từ số *C-40*.
+**6.4 — không dựng (Sửa 2).** `bypass-verdict.sh` chỉ có một đầu vào là nhánh Onload. Vạch bỏ của
+`io_uring` có hình khác (≥ 3 % trên dòng `wire`, **hoặc** ≥ 25 % ở `turn` N = 16, ADR-0098 mục 1) và
+thuộc plan hàng 5; nếu hàng 5 muốn một script phán quyết thì dựng ở đó, cho đúng vạch của nó. Số học
+của vạch Onload vẫn ghi ở ADR-0200 quyết định 3.
 
-**6.5 Bộ 59 định nghĩa dưới Onload.** `scripts/check-wire-under-onload.sh <wire-test-binary>`: chạy
-binary test `wire` đã build sẵn dưới `onload` với `EF_TCP_SERVER_LOOPBACK=1
-EF_TCP_CLIENT_LOOPBACK=1 EF_NO_FAIL=0`; đọc `Tcp: PassiveOpens` trước/sau, FAIL nếu tăng bằng số
-kết nối bộ test mở; trên máy không có `onload` thì từ chối và nói rõ lý do.
+**6.6 — gỡ Onload và ghi lại việc bỏ.**
 
-**6.6 Tài liệu.** `DESIGN.md` §9 thêm các dòng boot bypass (bảng 6.2 + các `EF_*` in trong header);
-`docs/hft-playbook.md` mục Onload-trên-AF_XDP (các bước của 6.1, ghi rõ *chưa đo*, và rằng trên
-`igb` Onload chiếm trọn NIC); `docs/GUIDE.md` (bypass chỉ `hft`, chỉ plaintext, `standard` dưới
-Onload không hỗ trợ); `docs/best-practices-hft.md`; ba bẫy mới trong `docs/reference/` (bên dưới),
-mỗi cái chỉ tên test canh nó.
+- Gỡ khỏi máy bàn ngay (ADR-0202 quyết định 4 nói "sau boot", nay không còn boot nào cần nó):
+  `sudo -n ~/src/onload/scripts/onload_uninstall`; kiểm `lsmod` không còn `onload`/`sfc_resource`,
+  `/etc/modprobe.d/onload.conf` (thăm dò thấy file này) không còn; `ethtool -l enp9s0` combined 2
+  (đã trả lại). `~/src/onload` giữ lại được — ngoài repo.
+- `docs/reference/measured-costs.md`: mục *Onload over AF_XDP on the I211 — dropped at the probe, no
+  pair*: hai dòng lỗi nguyên văn, commit của hai lần, kernel, lệnh; và phép tính 86 % ghi rõ *dự
+  đoán, chưa thử*. ADR-0098 định nghĩa "bỏ" bằng *cặp số đã làm nó bị bỏ* — ở đây không có cặp nào,
+  và trên kernel này không thể có; mục ghi đúng như vậy.
+- `docs/reference/onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md` (bẫy mới). **Test canh nó
+  là chính bước thăm dò G1** (các lệnh của 6.1, chạy lại được), cộng một kiểm tra trước một dòng
+  không cần cài gì: `ethtool -x <nic>` in `RSS hash key: Operation not supported` → Onload AF_XDP sẽ
+  hỏng lúc khởi tạo NIC.
+- `docs/hft-playbook.md`: một đoạn — Onload-trên-AF_XDP không chạy được với `igb` trên kernel ≤ 7.2;
+  kiểm tra trước ở trên; điều kiện mở lại.
+- `docs/PRD.md` §2 *Phase 4*: hạng mục bypass — *bỏ 2026-09-24 ở bước thăm dò*.
+- ADR-0098 và ADR-0099: mỗi cái thêm **một dòng status** ghi kết quả (ADR-0098 quyết định: "the ADR
+  that let it in is marked with the result"); ADR-0200/0201/0202 đã ghi (Sửa 2).
+- `STATUS.md`: hạng mục đóng; *Not proven*: phép tính 86 % chưa bao giờ được đo.
 
-### Hàng 7 — boot §9 (hai PR: 7a chuẩn bị, 7b chạy boot)
+### Hàng 7 — boot §9 cho `io_uring` và cặp store (hai PR: 7a chuẩn bị, 7b chạy boot)
+
+**Sửa 2:** không còn khối Onload. Boot đo **A/B `io_uring`** theo plan hàng 5
+(`docs/plans/2026-09-24-p4-io-uring-transport.md`) và **cặp `w2w` store SQLite vs `FileJournal`
+`Async`** theo plan hàng 4, mục *4b* (`docs/plans/2026-09-24-p4-sqlite-store.md`, ghi rõ "đi cùng boot
+của hàng 7"). ADR-0201 không còn áp dụng: NIC giữ `combined 2` (đúng cấu hình của con số §6),
+generator điều khiển qua cáp như trước.
 
 **7a — trước reboot (một phiên):**
 
 1. `scripts/boot-p4.sh` — driver chạy trọn boot không cần người (ADR-0202 quyết định 2): trước mỗi
-   khối đọc `check-machine.sh` với `FIXBOLT_BYPASS` đúng khối, dừng khi có dòng đỏ, lưu mọi output
-   vào `target/boot-p4-evidence/`. Thứ tự (ADR-0202 quyết định 3):
-   - **Procedure 1**: khối `io_uring` — control và `io_uring`, `hft` admin + app **có** dấu NIC
-     (`WIRE_NIC=enp9s0`, `OBSERVER_CORE=7`), rồi `standard` admin + app (chỉ bảng phía Mac); rồi
-     khối Onload — twin trước, Onload sau (nạp module → đăng ký → chạy → gỡ đăng ký → gỡ module).
+   khối đọc `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh`, dừng khi có dòng đỏ, lưu mọi output vào
+   `target/boot-p4-evidence/`. Thứ tự (ADR-0202 quyết định 3, bỏ khối Onload):
+   - **Procedure 1**: khối `io_uring` (theo plan hàng 5: control và `io_uring`, `hft` có dấu NIC
+     `WIRE_NIC=enp9s0 OBSERVER_CORE=7`, rồi `standard` chỉ bảng phía Mac); rồi cặp store
+     (`--journal file-async` rồi `--journal sqlite-async`).
    - **Giữa hai procedure** (≥ 30 phút, ADR-0068): vòng `ab-rotation.sh` cho `turn.rs` N = 1, 16, 64
      và `density.rs`, control vs `io_uring`, 20 vòng.
-   - **Procedure 2**: khối Onload trước (Onload rồi twin) — **chỉ khi** `bypass-verdict.sh` của
-     procedure 1 không in `DROP`; rồi khối `io_uring` đảo thứ tự.
-   - Cuối: `check-wire-under-onload.sh` (nếu Onload chưa bị bỏ), rồi `check-machine.sh` lần cuối.
+   - **Procedure 2**: cặp store đảo thứ tự, rồi khối `io_uring` đảo thứ tự.
+   - Cuối: `check-machine.sh` lần cuối.
+   **Điểm phải dừng và báo:** plan hàng 4 *4b* đòi `standard:app` "NIC có hardware timestamp", nhưng
+   `w2w-baseline.sh` từ chối `WIRE_NIC` cho arm `standard` (Q10; dấu TX đánh thức engine đang chờ —
+   `docs/reference/a-transmit-timestamp-wakes-a-blocking-engine.md`). Driver không tự chọn: manager
+   đưa chỗ lệch này về architect của hàng 4 trước 7a.1.
 2. Diễn tập driver trên dòng desktop với `RUNS=2` — output ghi *không phải số đo*.
-3. Build sẵn (ADR-0090 quyết định 2): worktree `../fb-p4-boot/control` và `../fb-p4-boot/uring` ở
-   commit merge của 7a, cờ `RUSTFLAGS` như `bench.sh`, `w2w` với `--features affinity` (+ `io-uring`
-   ở cây `uring`), binary test `wire` (`--no-run`), bench `turn`/`density`; `MANIFEST.txt` ghi sha256;
-   `scripts/check-bench-alignment.sh` đọc lại. `w2w` của Mac build ở cùng commit, ghi sha256.
-4. Kiểm trước reboot: ssh tới Mac qua địa chỉ **không phải cáp** chạy được
-   (`ssh -o BatchMode=yes thangtran@<địa chỉ> true`); Mac không ngủ (`pmset -g`, đọc; nếu phải đổi
-   thì là việc của anh — agent không có sudo trên Mac); Onload không tự nạp khi khởi động.
+3. Build sẵn (ADR-0090 quyết định 2): một worktree cho mỗi bộ feature dưới `../fb-p4-boot/` ở commit
+   merge của 7a — `control` (`affinity`), `uring` (`affinity,io-uring`), `sqlite`
+   (`affinity,sqlite`) — cờ `RUSTFLAGS` như `bench.sh`, bench `turn`/`density`; `MANIFEST.txt` ghi
+   sha256; `scripts/check-bench-alignment.sh` đọc lại. `w2w` của Mac build ở cùng commit, ghi sha256.
+4. Kiểm trước reboot: `ip -br link show enp9s0` có carrier; `ssh -o BatchMode=yes
+   thangtran@192.168.77.2 true` thành công; Mac không ngủ (`pmset -g`, đọc; đổi là việc của anh).
+   **Hai chặn hiện tại ở *Rủi ro*.**
 5. Handoff: `STATUS.md` *Start here* (hành động đầu tiên, danh sách *đừng làm*, cái chưa chứng minh)
    + *Nhật ký giao hàng* của plan này, cùng commit; PR 7a merge, **ghi CI run id**; chờ run đó xong
    rồi mới làm gì tiếp (§8).
@@ -293,30 +319,22 @@ mỗi cái chỉ tên test canh nó.
 
 1. Kiểm handoff: nhánh, commit có trên `main`, CI run id xanh. Không khớp → coi là cũ, đọc lại
    `STATUS.md` từ mục mới nhất.
-2. `grep -o 'isolcpus=[^ ]*' /proc/cmdline` → `isolcpus=6,7,14,15`.
+2. `grep -o 'isolcpus=[^ ]*' /proc/cmdline` → `isolcpus=6,7,14,15`; `lsmod | grep -E
+   '^(onload|sfc_resource)'` rỗng.
 3. Đặt runtime: `sudo -n fixbolt-machine on`; dừng (không `disable`) `apt-daily`,
-   `apt-daily-upgrade`, `fwupd-refresh`, `man-db`, `update-notifier-motd`, `packagekit.service`;
-   `sudo -n ethtool -L enp9s0 combined 1` (nếu ADR-0201 giữ); chờ `Link detected: yes`; IRQ của
-   `enp9s0` (đọc số từ `/proc/interrupts` — **đổi sau khi đổi số hàng đợi**) → `0-5`;
-   `sudo -n ethtool -C enp9s0 rx-usecs 0`; `sudo -n ethtool --set-eee enp9s0 eee off`, chờ link.
-4. `FIXBOLT_NIC=enp9s0 FIXBOLT_BYPASS=absent FIXBOLT_CHANNELS=1 scripts/check-machine.sh` → không
-   dòng đỏ, quote nguyên văn.
+   `apt-daily-upgrade`, `fwupd-refresh`, `man-db`, `update-notifier-motd`, `packagekit.service`; IRQ
+   của `enp9s0` (đọc số từ `/proc/interrupts`) → `0-5`; `sudo -n ethtool -C enp9s0 rx-usecs 0`;
+   `sudo -n ethtool --set-eee enp9s0 eee off`, chờ `Link detected: yes`.
+4. `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` → `pass 17 fail 0 unknown 0`, quote nguyên văn.
 5. Một lần chạy bỏ đi (lần đầu sau reboot luôn bị gnome-shell làm bẩn).
 6. Kiểm `MANIFEST.txt` (sha256), rồi chạy `scripts/boot-p4.sh` nền; **không gọi tool nào** cho tới khi
    nó thoát (mỗi lần gọi tốn một vòng — boot E).
-7. Phán quyết: `scripts/bypass-verdict.sh …`, `scripts/compare-w2w-procedures.sh …`, phán quyết
-   `io_uring` theo plan hàng 5; quote nguyên văn.
+7. Phán quyết: `scripts/compare-w2w-procedures.sh …`; phán quyết `io_uring` theo plan hàng 5; phán
+   quyết store theo plan hàng 4; quote nguyên văn.
 8. Áp phán quyết (ADR-0098: bỏ = gỡ code trên cùng nhánh, ghi cặp số vào `measured-costs.md`, ghi kết
-   quả lên dòng trạng thái của ADR đã cho nó vào):
-   - Onload **bỏ**: cặp số (A/B, một procedure nếu bỏ ở procedure 1) vào `measured-costs.md` cạnh
-     dự đoán; `DESIGN.md` §8 không thêm dòng; ADR-0098 và ADR-0200 thêm dòng kết quả.
-   - Onload **giữ**: dòng thứ hai có nhãn trong `DESIGN.md` §8 cạnh twin cùng boot (ADR-0099 quyết
-     định 2); playbook bỏ chữ *chưa đo*.
-   - `io_uring` **bỏ**: senior developer gỡ feature `io-uring` trên cùng nhánh; **giữ**: theo plan
-     hàng 5.
-9. Dọn: `sudo -n ~/src/onload/scripts/onload_uninstall` (bất kể phán quyết — ADR-0202 quyết định
-   4), `combined 2`, dòng grub desktop theo lệnh của anh lúc đó, `STATUS.md` handoff, senior review,
-   CI, merge.
+   quả lên dòng trạng thái của ADR đã cho nó vào): `io_uring` bỏ → senior developer gỡ feature
+   `io-uring`; giữ → theo plan hàng 5. Store theo plan hàng 4.
+9. Dọn: dòng grub desktop theo lệnh của anh lúc đó, `STATUS.md` handoff, senior review, CI, merge.
 
 ### Giao diện cần từ hàng 5 (`io_uring`) — chỉ chừng này
 
@@ -332,110 +350,96 @@ Nếu plan hàng 5 chọn tên khác, 7a dùng tên đó; nếu thiếu một tr
 
 ## Bất biến bị đụng tới
 
-Hàng 6 và 7 **không đụng `crates/`** — chỉ script, tài liệu, và cách chạy.
+Sau Sửa 2, hàng 6 **không đụng `crates/` và không thêm script đo nào** — chỉ gỡ Onload khỏi máy bàn và
+tài liệu. Hàng 7 không đụng `crates/`; các bất biến mà `io_uring` và store chạm tới do plan hàng 5 và
+hàng 4 giữ. Riêng hàng 7 giữ:
 
-- **1 (không cấp phát trên hot path)**: `w2w` vẫn khẳng định `allocs 0` trên cả hai nửa dưới
-  `onload`; thư viện Onload cấp phát trên luồng engine là **bỏ** (cổng G3), không trừ ra.
-- **3 (59/59)**: dưới `onload` bằng `check-wire-under-onload.sh` với loopback tăng tốc (ADR-0200
-  quyết định 5, câu hỏi Q2); `io_uring` theo plan hàng 5.
-- **4 (ngủ/spin theo mode)**: Onload chỉ `hft`; `standard` dưới Onload không đo, ghi *không hỗ trợ*
-  trong `GUIDE.md`. Nếu Onload được giữ thì chứng minh luồng engine không ngủ dưới Onload là một
-  mục **còn nợ** (ghi ở *Not proven*) — dự đoán là bỏ, nên không dựng trước.
-- **6 (feature chặn `mod`)**: không feature mới ở hàng 6/7.
-- **8 (`unsafe`)**: không có.
-- **10 (số đo)**: các dòng §9 cho boot bypass có **trước** con số đầu tiên (6.2 + 6.6); mỗi con số
-  của boot kèm lệnh, máy, output `check-machine.sh` với `FIXBOLT_BYPASS` của khối đó.
-- 2, 5, 7, 9: không đụng.
+- **4 (ngủ/spin theo mode)**: mọi con số của boot ghi mode; `standard` không chạy với `WIRE_NIC`.
+- **10 (số đo)**: mọi con số kèm lệnh, máy, output `check-machine.sh` của khối đó; không build lại
+  giữa boot (`MANIFEST.txt`).
+- 1, 2, 3, 5, 6, 7, 8, 9: không đụng ở hai hàng này.
 
 ## Chia việc
 
-Mỗi hàng một commit xanh; manager chạy lại gate và commit. 6.2, 6.3, 6.4, 6.5 sửa file rời nhau nên
-chạy song song sau 6.1.
+Mỗi hàng một commit xanh; manager chạy lại gate và commit.
 
 | Bước | Kết quả — file tạo / sửa (và **không** đụng) | Người làm | Gate | Xong khi | Reversal | Phụ thuộc |
 |---|---|---|---|---|---|---|
-| 6.0 | Plan này + ADR-0200/0201/0202 được duyệt; anh trả lời Q1, Q2 (**xong 2026-09-24**: Q1 = A, Q2 = đồng ý cả ba) | anh | — | có câu trả lời | — | phase 3 đóng bằng tag `v0.1.0` (ADR-0161) |
-| 6.1 | **Cài Onload + thăm dò** (dòng desktop). Không file repo nào; output vào `target/p4-probe/`. *Sửa 1: lần 1 (`v9.0.2`) hỏng G1 ở build; lần 2 ghim `174b947d0b` (nhánh `v9_2`, không tag)* | developer (sonnet) — lệnh viết sẵn trong brief; build hỏng trên kernel 7.0 thì **dừng và báo** | `git merge-base --is-ancestor 268f1d4c8a HEAD` thoát 0 (in `has-sockaddr-unsized-fix`); `git rev-parse HEAD` = `174b947d0b9b7b77439463afbabf8a7e417b3706`; rồi các lệnh ở *Cách làm* 6.1, quote nguyên văn | có output cho G1–G5; manager xếp cổng và điền *Result* của ADR-0201 | — | 6.0 |
-| 6.2 | `scripts/check-machine.sh` (khối `FIXBOLT_BYPASS`), `scripts/check-machine-verdicts.sh` (ca mới, có output thật của 6.1). **Không đụng** dòng nào đang có | developer (sonnet) | `scripts/check-machine-verdicts.sh`; `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` **không** đặt `FIXBOLT_BYPASS` → danh sách tên dòng giống hệt trước khi sửa (`grep -E '^(PASS\|FAIL\|\? \? \?)' \| cut -c8-30`, so với bản chụp trước) | ca mới xanh; 17 tên dòng cũ không đổi | đổi `xdpdrv` thành `xdpgeneric` trong ca fixture → ca `xdp mode` đỏ, nêu tên ca | 6.1 |
-| 6.3 | `scripts/w2w-baseline.sh` (nhánh `BYPASS=onload`), `scripts/check-w2w-baseline-summary.sh` (ca `zc`, ca bộ đếm), danh sách của `scripts/check-sudo-names-what-root-can-find.sh`. **Không đụng** `tools/w2w` | developer (sonnet) | `scripts/check-w2w-baseline-summary.sh`; `scripts/check-sudo-names-what-root-can-find.sh`; `BYPASS=onload WIRE_NIC=enp9s0 … scripts/w2w-baseline.sh` → bị từ chối trước khi chạy | ca xanh; lời từ chối quote được | ca `ss` có `zc:0` → FAIL đúng tên; ca bộ đếm tăng 22 000 → FAIL | 6.1 |
-| 6.4 | `scripts/bypass-verdict.sh`, `scripts/check-bypass-verdict.sh` (mới) | developer (sonnet) | `scripts/check-bypass-verdict.sh` | sáu ca xanh, gồm ca *C-40* in `DROP (p50 …)` | đổi `0.10` thành `0.01` → ca "bỏ vì p50" đỏ | 6.0 |
-| 6.5 | `scripts/check-wire-under-onload.sh` (mới) | developer (sonnet) | trên desk có Onload: `cargo test -p fixbolt-engine --test wire --no-run`, rồi script với binary đó → `59 / 59` + dòng `PassiveOpens` | 59/59 và delta nhỏ hơn số kết nối | bỏ `EF_TCP_*_LOOPBACK` → FAIL ở dòng `PassiveOpens` (chứng minh guard bắt được chạy-qua-kernel) | 6.1 |
-| 6.6 | `docs/DESIGN.md` §9; `docs/hft-playbook.md`; `docs/GUIDE.md`; `docs/best-practices-hft.md`; ba file bẫy trong `docs/reference/`; `CHANGELOG.md` nếu script mới được coi là công cụ công khai | developer (sonnet); manager viết `STATUS.md` | `python3 scripts/check-links.py`; `scripts/check-adr-numbers.sh` | mỗi bẫy chỉ tên test canh nó | — | 6.2–6.5 |
-| 6.7 | Senior review PR hàng 6, sửa phát hiện đã xác minh, CI xanh, merge | senior developer (opus) | mọi gate trên + CI | CI run id của commit đóng được ghi | — | 6.6 |
-| 7a.1 | `scripts/boot-p4.sh` (mới) + diễn tập `RUNS=2` trên dòng desktop | **senior developer (opus)** — nối giao diện của hàng 5 và 6, sai thì hỏng cả boot | diễn tập chạy hết mọi khối, có `target/boot-p4-evidence/`; `bash -n`; shellcheck nếu có | output diễn tập ghi *không phải số đo* | cho `check-machine.sh` một dòng đỏ giả (`FIXBOLT_CHANNELS=2` khi đang 1) → driver dừng trước khối đầu | hàng 5 merge, 6.7 |
-| 7a.2 | Build sẵn `../fb-p4-boot/`, `MANIFEST.txt`, `w2w` của Mac | runner (haiku) — brief tự đủ, lệnh chép từ ADR-0090 quyết định 2 | `sha256sum -c MANIFEST.txt`; `scripts/check-bench-alignment.sh` | mọi dòng `OK` | — | 7a.1 |
-| 7a.3 | Kiểm trước reboot (7a bước 4), handoff, merge 7a, đổi grub, reboot | manager | `grep CMDLINE /etc/default/grub` | CI run id ghi trong handoff; `isolcpus` có, `nohz_full` không | — | 7a.2 |
-| 7b.1 | Hành động đầu tiên của boot (7b bước 1–5) | manager | `check-machine.sh` bước 4 | không dòng đỏ | — | reboot |
+| 6.0 | Plan + ADR được duyệt; Q1, Q2 (**xong 2026-09-24**: Q1 = A, Q2 = đồng ý cả ba) | anh | — | có câu trả lời | — | phase 3 đóng bằng tag `v0.1.0` (ADR-0161) |
+| 6.1 | **Cài Onload + thăm dò — xong, G1 hỏng hai lần** (`v9.0.2`: biên dịch; `174b947d0b`: `hardware init failed rc=-95`). Không file repo nào; output ở `target/p4-probe/` | developer (sonnet) | `git merge-base --is-ancestor 268f1d4c8a HEAD` in `has-sockaddr-unsized-fix`; các lệnh ở *Cách làm* 6.1 | **xong**: G1 FAIL → Onload bỏ | — | 6.0 |
+| 6.2 | ~~Dòng `FIXBOLT_BYPASS` trong `check-machine.sh`~~ — **không dựng** (Sửa 2: không có stack để kiểm) | — | — | — | — | — |
+| 6.3 | ~~Nhánh `BYPASS=onload` của `w2w-baseline.sh`~~ — **không dựng** (Sửa 2) | — | — | — | — | — |
+| 6.4 | ~~`bypass-verdict.sh`~~ — **không dựng** (Sửa 2: đầu vào duy nhất là nhánh Onload; vạch `io_uring` thuộc hàng 5) | — | — | — | — | — |
+| 6.5 | ~~`check-wire-under-onload.sh`~~ — **không dựng** (Sửa 2) | — | — | — | — | — |
+| 6.6a | **Gỡ Onload khỏi máy bàn.** Không file repo nào | runner (haiku) — lệnh tự đủ | `sudo -n ~/src/onload/scripts/onload_uninstall`; `lsmod \| grep -cE '^(onload\|sfc_resource)'` → `0`; `test ! -e /etc/modprobe.d/onload.conf && echo gone`; `ethtool -l enp9s0` combined 2 | ba output quote nguyên văn | — | 6.1 |
+| 6.6b | **Ghi lại việc bỏ.** `docs/reference/measured-costs.md` (mục mới), `docs/reference/onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md` (mới), `docs/hft-playbook.md`, `docs/PRD.md` §2, một dòng status ở ADR-0098 và ADR-0099, `STATUS.md` (manager). **Không đụng** `scripts/`, `crates/`, `DESIGN.md` §8/§9 | developer (sonnet); manager viết `STATUS.md` | `python3 scripts/check-links.py`; `scripts/check-adr-numbers.sh`; `ethtool -x enp9s0 \| grep -A1 'RSS hash key'` in `Operation not supported` (bằng chứng cho kiểm tra trước ghi trong file bẫy) | file bẫy nêu tên test canh nó (bước thăm dò G1 + kiểm tra `ethtool -x`); hai dòng lỗi nguyên văn trong `measured-costs.md` | — | 6.6a |
+| 6.7 | Senior review PR hàng 6, CI xanh, merge | senior developer (opus) | các gate trên + CI | CI run id của commit đóng được ghi | — | 6.6b |
+| 7a.0 | **Gỡ hai chặn**: Mac nhận lại khoá ssh của máy bàn; cáp `enp9s0` có carrier | **anh** | `ssh -o BatchMode=yes thangtran@192.168.77.2 true`; `cat /sys/class/net/enp9s0/carrier` → `1` | cả hai đạt | — | — |
+| 7a.1 | `scripts/boot-p4.sh` (mới), khối `io_uring` + cặp store, diễn tập `RUNS=2` | **senior developer (opus)** — nối giao diện của hàng 4 và 5, sai thì hỏng cả boot | diễn tập chạy hết mọi khối, có `target/boot-p4-evidence/`; `bash -n` | output diễn tập ghi *không phải số đo* | cho `check-machine.sh` một dòng đỏ giả (bật lại EEE) → driver dừng trước khối đầu, nêu tên dòng | hàng 4 (tới bước 6 của nó) và hàng 5 merge; 6.7; 7a.0 |
+| 7a.2 | Build sẵn `../fb-p4-boot/{control,uring,sqlite}`, `MANIFEST.txt`, `w2w` của Mac | runner (haiku) — brief tự đủ, lệnh chép từ ADR-0090 quyết định 2 | `sha256sum -c MANIFEST.txt`; `scripts/check-bench-alignment.sh` | mọi dòng `OK` | — | 7a.1 |
+| 7a.3 | Kiểm trước reboot, handoff, merge 7a, đổi grub, reboot | manager | `grep CMDLINE /etc/default/grub` | CI run id ghi trong handoff; `isolcpus` có, `nohz_full` không | — | 7a.2 |
+| 7b.1 | Hành động đầu tiên của boot (7b bước 1–5) | manager | `check-machine.sh` bước 4 | `pass 17 fail 0 unknown 0` | — | reboot |
 | 7b.2 | Chạy `scripts/boot-p4.sh` | manager chạy; runner (haiku) trích output sau khi xong | output driver | driver thoát 0, hoặc dừng ở dòng đỏ đã nêu tên | — | 7b.1 |
-| 7b.3 | Phán quyết + áp phán quyết: `measured-costs.md`, `DESIGN.md` §8 (nếu giữ), ADR-0098/0200 dòng kết quả, `docs/hft-playbook.md`, `PRD.md`; gỡ `io-uring` nếu bỏ | manager (tài liệu); senior developer (opus) gỡ code | `scripts/bypass-verdict.sh`; phán quyết hàng 5; `cargo test --all`, `--no-default-features`, clippy | mỗi cặp số kèm lệnh, máy, `check-machine.sh` | — | 7b.2 |
-| 7b.4 | Dọn (Onload gỡ, `combined 2`, grub), senior review, CI, merge, `STATUS.md` | manager; senior developer (opus) review | CI | CI run id của commit đóng | — | 7b.3 |
+| 7b.3 | Phán quyết + áp phán quyết `io_uring` và store (`measured-costs.md`, `DESIGN.md` §8 nếu có dòng mới, dòng kết quả ADR, `PRD.md`); gỡ `io-uring` nếu bỏ | manager (tài liệu); senior developer (opus) gỡ code | `scripts/compare-w2w-procedures.sh`; phán quyết theo plan hàng 4, 5; `cargo test --all`, `--no-default-features`, clippy | mỗi cặp số kèm lệnh, máy, `check-machine.sh` | — | 7b.2 |
+| 7b.4 | Dọn (grub), senior review, CI, merge, `STATUS.md` | manager; senior developer (opus) review | CI | CI run id của commit đóng | — | 7b.3 |
+
+6.6a đi trước 6.6b vì file bẫy trích trạng thái sau khi gỡ. 7a.0 là việc của anh và chặn mọi bước
+7a có Mac.
 
 ## Cách kiểm chứng
 
 | # | Tiêu chí | Lệnh | Đạt khi |
 |---|---|---|---|
-| 1 | Zero-copy thật | `sudo -n ss --xdp -a -e` sau `listening:` mỗi lần chạy Onload | XSK trên `ifindex` của `enp9s0`, `zc:1` — mọi lần chạy |
-| 2 | Chạy thật qua Onload | `/proc/net/snmp` `Tcp: InSegs/OutSegs` trước/sau mỗi lần | tăng < 1 % số request |
-| 3 | Twin sạch | `FIXBOLT_BYPASS=twin scripts/check-machine.sh` | `no xdp on nic` PASS, `afxdp register` PASS (chưa đăng ký) |
-| 4 | Không cấp phát | dòng `allocs` của hai nửa `w2w` | `0` cả hai, cả hai nhánh |
-| 5 | 59/59 dưới Onload | `scripts/check-wire-under-onload.sh <binary>` | `59 / 59`, `PassiveOpens` không tăng cỡ số kết nối |
-| 6 | Vạch bỏ Onload | `scripts/bypass-verdict.sh` trên các tóm tắt của boot | in `verdict:` với từng mệnh đề |
-| 7 | Hai procedure tái lập | `scripts/compare-w2w-procedures.sh` | theo ADR-0068; không tái lập vẫn công bố cặp, đánh dấu |
-| 8 | Máy đúng §9 cho từng khối | output `check-machine.sh` mà driver lưu trước mỗi khối | không dòng đỏ |
-| 9 | Script chưa hỏng gì cũ | `check-machine-verdicts.sh`, `check-w2w-baseline-summary.sh`, `check-w2w-compare.sh`, tên 17 dòng cũ | xanh, không đổi |
+| 1 | Onload bị bỏ có bằng chứng | `target/p4-probe/probe-v9_2.txt`, `onload_install.txt` | hai dòng lỗi nguyên văn được chép vào `measured-costs.md` và ADR-0201 *Result* |
+| 2 | Kiểm tra trước của bẫy đúng | `ethtool -x enp9s0 \| grep -A1 'RSS hash key'` | `Operation not supported` |
+| 3 | Onload đã rời máy bàn | `lsmod`, `/etc/modprobe.d/onload.conf` | không module, không file |
+| 4 | Máy đúng §9 cho từng khối của boot | output `check-machine.sh` mà driver lưu trước mỗi khối | không dòng đỏ |
+| 5 | Hai procedure tái lập | `scripts/compare-w2w-procedures.sh` | theo ADR-0068; không tái lập vẫn công bố cặp, đánh dấu |
+| 6 | Không build lại giữa boot | `sha256sum -c MANIFEST.txt` trước và sau | `OK` cả hai lần |
+| 7 | Vạch `io_uring`, vạch store | theo plan hàng 5, hàng 4 | như hai plan đó viết |
 
-"Test pass" chưa đủ: số của boot là số đo trên máy bàn §9, qua cáp thật tới Mac, output của
-`check-machine.sh` đi kèm từng khối; bước thăm dò 6.1 chỉ cho *sự thật* (zc, bộ lọc, allocs, bộ
-đếm), không cho con số độ trễ nào.
+"Test pass" chưa đủ: số của boot đo trên máy bàn §9, qua cáp thật tới Mac, output
+`check-machine.sh` đi kèm từng khối.
 
 ## Tài liệu phải cập nhật
 
-- [ ] `docs/DESIGN.md` §9 — dòng boot bypass (6.6); §8 — dòng thứ hai có nhãn **chỉ nếu giữ** (7b.3)
-- [ ] `docs/hft-playbook.md` — quy trình Onload trên AF_XDP, `igb` = NIC dành riêng (6.6, 7b.3)
-- [ ] `docs/GUIDE.md` — bypass chỉ `hft`, plaintext, `standard` không hỗ trợ (6.6)
-- [ ] `docs/best-practices-hft.md` — ghi rõ mode `hft` (6.6)
-- [ ] `docs/reference/` — ba bẫy: *igb từ chối luật n-tuple TCP của Onload* (canh: ca fixture 6.2 +
-      ADR-0201 *Result*), *Onload không tăng tốc loopback mặc định* (canh: reversal của 6.5),
-      *Onload lặng lẽ rơi về kernel* (canh: ca bộ đếm của 6.3); và mọi bất ngờ của 6.1 / boot
-- [ ] `docs/reference/measured-costs.md` — mọi cặp A/B của boot, kể cả cặp làm bỏ, cạnh dự đoán (7b.3)
-- [ ] `docs/PRD.md` §2 *Phase 4* — kết quả hai hạng mục (7b.3)
-- [ ] ADR-0098, ADR-0200 — dòng kết quả; ADR-0201 *Result* (6.1)
-- [ ] `STATUS.md` — handoff 7a (trước reboot), 7b (sau boot); *Not proven*
-- [ ] `docs/internals/` — không (không crate nào đổi); `CONFIGURATION.md` — không (không khoá mới của engine)
+- [ ] `docs/reference/measured-costs.md` — mục Onload bị bỏ ở bước thăm dò, không có cặp (6.6b); các
+      cặp của boot, kể cả cặp làm hạng mục bị bỏ (7b.3)
+- [ ] `docs/reference/onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md` — bẫy mới, canh bởi
+      bước thăm dò G1 và kiểm tra `ethtool -x` (6.6b)
+- [ ] `docs/hft-playbook.md` — Onload-trên-AF_XDP không chạy với `igb` ≤ 7.2; điều kiện mở lại (6.6b)
+- [ ] `docs/PRD.md` §2 *Phase 4* — bypass bỏ (6.6b); kết quả `io_uring`, store (7b.3)
+- [ ] ADR-0098, ADR-0099 — một dòng status mỗi cái (6.6b); ADR-0200/0201/0202 — đã ghi Sửa 2
+- [ ] `docs/DESIGN.md` §9 — **không** thêm dòng bypass (không có boot bypass); §8 — theo phán quyết
+      `io_uring`/store (7b.3)
+- [ ] `docs/GUIDE.md`, `docs/best-practices-hft.md` — không đổi vì Onload (không có gì để khuyên)
+- [ ] `STATUS.md` — 6.7, handoff 7a (trước reboot), 7b (sau boot); *Not proven*
 
 ## Bẫy đã lường trước
 
 | Bẫy | Test canh |
 |---|---|
-| Onload lặng lẽ rơi về kernel (issue #337) → đo kernel mà dán nhãn Onload | `EF_NO_FAIL=0`; bộ đếm `Tcp: InSegs/OutSegs` mỗi lần (ca fixture 6.3); `zc:1` |
-| Tưởng zero-copy mà thật ra copy / generic XDP | `ss --xdp` `zc:1` mỗi lần; dòng `xdp mode` |
-| `igb` từ chối luật TCP của Onload → socket hỏng hoặc rơi về kernel | thăm dò 6.1 đọc `dmesg`; ADR-0201; dòng `af_xdp flow filters` |
-| RSS chia hai hàng, XSK chỉ nghe một → luồng rơi sang hàng kia | `combined 1` cho cả boot; dòng `nic channels` |
-| Tắt bộ lọc → mọi TCP trên `enp9s0` vào stack Onload → ssh qua cáp tới Mac chết giữa lần chạy | `GENERATOR_SSH` qua địa chỉ không phải cáp, kiểm ở 7a bước 4 |
-| `onload cargo test --test wire` chạy trên loopback **kernel** (mặc định không tăng tốc) → 59/59 vô nghĩa | `check-wire-under-onload.sh` + reversal bỏ `EF_TCP_*_LOOPBACK` |
-| Chương trình XDP vẫn gắn khi chạy twin → twin chậm hơn thật, Onload "thắng" giả | `FIXBOLT_BYPASS=twin` → `no xdp on nic` |
-| Đổi số hàng đợi / gắn XDP làm link nhảy và đổi số IRQ → mất ghim IRQ | `check-machine.sh` trước mỗi khối; chờ `carrier` trước generator (6.3) |
-| Thư viện Onload cấp phát trên luồng engine | `allocs 0` của `w2w` giữ nguyên (cổng G3) |
-| Dùng dấu NIC cho twin mà không có cho Onload → hai thước | `BYPASS=onload` từ chối `WIRE_NIC`; twin chạy không `WIRE_NIC` |
+| **Onload AF_XDP đòi thao tác khoá RSS mà `igb` (kernel ≤ 7.2) không có** — đã gặp | bước thăm dò G1; kiểm tra trước `ethtool -x <nic>` |
+| Onload `v9.0.2` không biên dịch trên kernel ≥ 6.19 (`sockaddr_unsized`) — đã gặp | cổng `git merge-base --is-ancestor 268f1d4c8a HEAD` trước khi build |
+| Đăng ký hỏng để lại trạng thái kẹt (`register` → `EALREADY`, `unregister` → `EBUSY`) — đã gặp | `onload_tool unload`, rồi `lsmod` rỗng (6.6a) |
+| Onload tự nạp lúc khởi động (`/etc/modprobe.d/onload.conf`) → boot đo trên kernel có module lạ | 6.6a gỡ; 7b bước 2 `lsmod` rỗng |
 | Build lại giữa boot → layout đổi | `MANIFEST.txt` sha256 trước/sau (ADR-0090) |
 | Gọi tool giữa lúc driver chạy → máy không yên, mất vòng | không gọi tool cho tới khi driver thoát (7b bước 6) |
-| Module Onload tự nạp khi khởi động → khối `io_uring` đo trên kernel có module lạ | `FIXBOLT_BYPASS=absent` → `bypass modules` |
 | Lần chạy đầu sau reboot bẩn | 7b bước 5 bỏ đi một lần |
 | Dùng `grub.fixbolt-s9` (có `nohz_full`) | 7a bước 6 `grep` không thấy `nohz_full` |
+| Arm `standard` với `WIRE_NIC` (plan hàng 4 *4b*) — script từ chối | 7a.1 dừng và báo trước khi viết driver |
 
 ## Rủi ro
 
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
-| Onload không qua vạch p50 (phép tính ở trên) | **Rất cao** | đó là kết quả được thiết kế sẵn: ghi cặp số âm, tính là *xong* (Q1 của ADR-0098) |
-| Onload không build được trên `7.0.0-31` — **đã xảy ra với `v9.0.2`** (`kernel_bind`, `sockaddr_unsized`) | Đã xảy ra một lần | ghim `174b947d0b` (nhánh `v9_2`, chứa `268f1d4c8a`); hỏng nữa → thử đầu `master` `0ba003ed33` **một lần**; vẫn hỏng → **bỏ** với hai log build |
-| Bản ghim không có tag — không phải bản phát hành được đặt tên | Thấp–trung bình | ghi sha đầy đủ ở mọi dòng §9 và con số; `git rev-parse HEAD` quote ở 6.1 và ở đầu boot |
-| Module Onload làm treo máy bàn của anh (không phải bản release) | Thấp–trung bình | cài lúc anh biết; `onload_uninstall` sau boot; Secure Boot tắt nên không cần ký |
-| **Chặn hàng 7 — Mac từ chối khoá của máy bàn** `[2026-09-24]`: `192.168.77.2` trả lời ping nhưng ssh báo `Permission denied (publickey,password,keyboard-interactive)`; khoá được đưa ra là `SHA256:70H/+HuFNSlCQtlqXCpf4IR4zyqLiPHojYpgjBeWQvA` (`tmt@tmt-B450-fixbolt-direct`) | **Chặn** | **chỉ anh** làm được: thêm lại khoá công khai đó vào `~/.ssh/authorized_keys` của `thangtran` trên Mac. Không có nó thì không có generator — 6.1 phần chạy `w2w`, 7a.1 diễn tập, 7a bước 4 và cả boot đều dừng. Kiểm lại bằng `ssh -o BatchMode=yes thangtran@192.168.77.2 true` **và** qua địa chỉ không phải cáp (ADR-0201 quyết định 3) |
-| Mac ngủ hoặc mất Tailscale/Wi-Fi giữa đêm | Trung bình | kiểm `pmset` trước reboot; driver dừng khi generator lỗi, không chạy tiếp vô ích |
-| Boot dài 4–6 giờ, hỏng sớm là mất phần còn lại | Trung bình | procedure 2 của Onload chỉ chạy khi procedure 1 đạt; driver lưu từng khối |
-| Hàng 5 chưa xong khi hàng 6 xong | Trung bình | 7a chờ hàng 5 merge; hàng 6 không phụ thuộc hàng 5 |
-| Phía Mac nhiễu lớn (macOS, không ghim) che mất chênh lệch nhỏ | Cao | đó là thước ADR-0098 chọn; ADR-0200 ghi rõ độ lớn của nó |
+| **Chặn hàng 7 — cáp không có carrier** `[2026-09-24]`: `enp9s0` `NO-CARRIER` kể cả sau khi bật link và sau khi nạp lại module `igb` (khởi tạo lại PHY phía máy bàn) → đầu Mac đang tắt hoặc ngủ | **Chặn** | **chỉ anh**: kiểm Mac (nguồn, ngủ, cáp); đạt khi `cat /sys/class/net/enp9s0/carrier` → `1` (7a.0) |
+| **Chặn hàng 7 — Mac từ chối khoá của máy bàn** `[2026-09-24]`: `192.168.77.2` trả lời ping nhưng ssh báo `Permission denied (publickey,password,keyboard-interactive)`; khoá được đưa ra là `SHA256:70H/+HuFNSlCQtlqXCpf4IR4zyqLiPHojYpgjBeWQvA` (`tmt@tmt-B450-fixbolt-direct`) | **Chặn** | **chỉ anh**: thêm lại khoá công khai đó vào `~/.ssh/authorized_keys` của `thangtran` trên Mac; đạt khi `ssh -o BatchMode=yes thangtran@192.168.77.2 true` thành công (7a.0). Không có generator thì diễn tập 7a.1 và cả boot đều dừng |
+| Mac ngủ giữa đêm | Trung bình | kiểm `pmset` trước reboot; driver dừng khi generator lỗi, không chạy tiếp vô ích |
+| Plan hàng 4 và hàng 5 đòi điều `w2w-baseline.sh` không cho (ví dụ `standard` + `WIRE_NIC`) | Trung bình | 7a.1 dừng và báo; manager đưa về architect của plan đó |
+| Boot dài, hỏng sớm là mất phần còn lại | Trung bình | driver lưu từng khối; dừng ở dòng đỏ đầu tiên |
+| Hàng 4 hoặc 5 chưa merge khi hàng 6 xong | Trung bình | 7a chờ cả hai; hàng 6 không phụ thuộc chúng |
+| `~/src/onload` và gói `gawk`/`libcap-dev`/`libmnl-dev` còn trên máy bàn | Thấp | ngoài repo, không nạp gì; ghi trong `STATUS.md` |
 
 ## Anh cần quyết
 
@@ -476,7 +480,9 @@ chạy song song sau 6.1.
 - Mọi code trong `crates/`; transport AF_XDP riêng; stack TCP riêng; `ef_vi`; DPDK (ADR-0098 §7).
 - Harness conformance tách hai máy qua cáp (Q2 c).
 - `standard` dưới Onload (ADR-0200 quyết định 6).
-- Chứng minh luồng engine không ngủ dưới Onload — chỉ nợ nếu Onload được giữ.
+- Chứng minh luồng engine không ngủ dưới Onload — không còn nợ (Onload bị bỏ).
+- **Sửa 2:** mọi dụng cụ đo riêng cho Onload (6.2–6.5), khối Onload của boot, và thử lại Onload trên
+  kernel ≥ 7.3 — chỉ khi điều kiện mở lại ở *Cách làm* 6.1 xảy ra, bằng một plan mới.
 - Dấu thời gian phần cứng phía máy bàn cho nhánh Onload (không có đường nào trên `igb`).
 - Thiết kế và code `io_uring` (hàng 5); hàng 7 chỉ chạy phép đo của nó.
 - Tắt EEE phía Mac (cần sudo của anh trên Mac; tắt một đầu là đủ cho cả link — bộ nhớ 2026-09-14).
@@ -487,6 +493,16 @@ chạy song song sau 6.1.
   `af_xdp.c:375:28 … kernel_bind … expected ‘struct sockaddr_unsized *’`; không gì được cài hay nạp,
   NIC không đổi; log `target/p4-probe/onload_install.txt` (trên desk, không commit). Sửa 1: ghim
   `174b947d0b` (nhánh `v9_2`, không tag). Chặn mới: Mac từ chối khoá ssh của máy bàn (xem *Rủi ro*).
+
+- `[2026-09-24]` 6.1 lần 2: Onload `174b947d0b` (nhánh `v9_2`) — cổng `merge-base` in
+  `has-sockaddr-unsized-fix`, `onload_install: Install complete.`, module nạp được; đăng ký `enp9s0`
+  hỏng: `` af_xdp_rss_get_support: enp9s0 does not support `get_rxfh_key_size` operation `` / `hardware
+  init failed rc=-95`, y hệt với bộ lọc tắt và `combined 1`; `register` → errno 114, `unregister` →
+  errno 16; module gỡ bằng `onload_tool unload`, `combined 2` trả lại. **G1 FAIL → Onload bỏ** (Q1 của
+  ADR-0098). Output `target/p4-probe/{onload_install-v9_2.txt, probe-v9_2.txt, after-v9_2.txt}`.
+  **Sửa 2**: 6.2–6.5 không dựng, 6.6 thành gỡ Onload + ghi việc bỏ, hàng 7 chỉ đo `io_uring` và cặp
+  store. Còn lại trên máy: `/etc/modprobe.d/onload.conf` (gỡ ở 6.6a). Chặn hàng 7: `enp9s0`
+  `NO-CARRIER` và Mac từ chối khoá ssh.
 
 *(Điền tiếp khi từng hàng đóng: đã dựng gì, ở đâu, gate nào xanh, CI run id, cái chưa làm
 và vì sao. Handoff trước reboot (7a) và sau boot (7b) ghi ở đây và ở `STATUS.md` cùng commit.)*

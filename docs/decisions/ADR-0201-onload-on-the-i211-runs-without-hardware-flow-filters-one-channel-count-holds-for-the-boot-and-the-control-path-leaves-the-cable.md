@@ -5,7 +5,10 @@
   is confirmed or replaced by that plan's step 6.1 probe, whose output is quoted into this ADR's
   *Result* before it is accepted. **Revised in place 2026-09-24**: *Result so far* added — the first
   probe stopped at the build of Onload `v9.0.2`, and Onload is re-pinned to an untagged commit on its
-  `v9_2` release branch; decisions 1–4 are unchanged.
+  `v9_2` release branch; decisions 1–4 are unchanged. **Revised in place 2026-09-24, second time**:
+  the probe at the new pin failed G1 at hardware init; *Result* is filled and records **Onload over
+  AF_XDP as dropped** on this desk. Decisions 1–4 were never exercised and stand only as the design
+  for a reopening; the boot runs at `combined 2` with the generator driven over the cable.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus).
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
@@ -107,8 +110,35 @@ limiting the device to one queue or by NIC filters (<https://docs.kernel.org/net
 
 ## Result
 
-*(To be filled from the step 6.1 probe: the `dmesg` lines at registration with default filters, and
-whether a stack came up with `enable_af_xdp_flow_filters=0` and `combined 1`.)*
+**Dropped, 2026-09-24, at the probe's gate G1 — before any stack existed, so before any decision
+here could be tried.** Per ADR-0098 and its Q1, a dropped item counts as done.
+
+| Attempt | Onload | Stopped at | Line, verbatim |
+|---|---|---|---|
+| 1 | `v9.0.2` (`9f330e7058`) | build | `src/lib/efhw/af_xdp.c:375:28: error: passing argument 2 of ‘kernel_bind’ from incompatible pointer type … expected ‘struct sockaddr_unsized *’` |
+| 2 | `174b947d0b9b7b77439463afbabf8a7e417b3706` (`v9_2`, untagged; `git merge-base --is-ancestor 268f1d4c8a HEAD` true) | registering `enp9s0` | `` [sfc efhw] af_xdp_rss_get_support: enp9s0 does not support `get_rxfh_key_size` operation `` then `[sfc efrm] ?: ERROR: hardware init failed rc=-95` |
+
+Attempt 2 built and installed (`onload_install: Install complete.`) and its modules loaded. The
+registration failed identically with default filters, with `enable_af_xdp_flow_filters=0`, and with
+`ethtool -L enp9s0 combined 1`; afterwards writing `register` returned errno 114 (`EALREADY`) and
+`unregister` errno 16 (`EBUSY`), and `onload_tool unload --onload-only` removed the modules. The
+channel count was restored to 2. Evidence on the desk, not committed:
+`target/p4-probe/{onload_install.txt, onload_install-v9_2.txt, probe-v9_2.txt, after-v9_2.txt}`.
+
+**Why no Onload version fixes it on this kernel.** Onload's `af_xdp_rss_get_support`
+(`src/lib/efhw/af_xdp.c`, present at `v9.0.2`, at the `v9_2` pin and on `master`) returns
+`-EOPNOTSUPP` when the driver lacks `get_rxfh_indir_size` **or** `get_rxfh_key_size`, and
+`af_xdp_nic_init_hardware` returns that error. The desk's `igb` (`7.0.0-31-generic`) has the first and
+not the second — `ethtool -x enp9s0`, read before the probe, already printed `RSS hash key: Operation
+not supported`. Linux added the operation to `igb` in commits `dfaf57ef99cf`, `1ae67b2b28bc` (*"igb:
+expose RSS key via ethtool get_rxfh"*) and `e3c94e9782a7`, first in **`v7.3-rc1`** (not in `v7.2`).
+**Searched Onload's issues for `get_rxfh_key_size` and found nothing**; the nearest reports of
+"hardware init failed" are on virtual NICs (vmxnet3 #257, virtio-net #270).
+
+**What would reopen it:** a measurement NIC whose driver provides both RSS key operations and AF_XDP
+zero-copy — for example `igb` on a kernel ≥ 7.3 — **and** an Onload that builds on that kernel (its
+README lists kernels up to 7.0). The check costs no install: `ethtool -x <nic>` must print an RSS
+key. Reopening needs a new plan; ADR-0200 holds the measurement design it would use.
 
 ## Sources
 
