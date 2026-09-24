@@ -11,7 +11,7 @@ other way.
 
 | Tool | Files | Keeps |
 |---|---|---|
-| `w2w` | `src/main.rs` | Wire-to-wire harness: the two mode checks trace this binary; counts allocations on both threads over the timed window and asserts zero |
+| `w2w` | `src/main.rs` | Wire-to-wire harness: the two mode checks trace this binary; counts allocations on both threads over the timed window and asserts zero. `[2026-09-24]` `--metrics <addr>` spawns a `fixbolt-metrics` exporter on the main thread, before any core is pinned, and prints `metrics: <addr>`; refused by `--connect` (ADR-0170) |
 | | `src/pair.rs` | Pairing a request's hardware RX stamp with its reply's hardware TX stamp — pure, no socket, no clock |
 | `interop` | `src/main.rs` | Both roles against a real `libquickfix` over kernel TCP, `--role initiator` and `--role acceptor`; behind `#[cfg(all(feature = "tls", target_os = "linux"))]`, the `acceptor` role's TLS branch (`into_tls_table` + `load_pem` + `serve_tls_requiring`) and a background thread printing `interop: event <kind>` off `Observer::events` |
 | | `src/desk.rs` | The application behind `--role acceptor`: acknowledges each order as New (`35=8` with `150=0`, `39=0`, `11=` echoed — nothing is filled), answers nothing else — the tool's own handler, not `library`'s example. Also the application behind `--role dial` and behind both QuickFIX/J arms, so a change to it moves three gates at once |
@@ -34,7 +34,12 @@ Each tool is independent; read whichever one a task needs. Within a tool:
 
 - `w2w` — no test crate; it is itself the proof for
   `scripts/check-no-kernel-sleep-by-ctxt.sh` ([ADR-0072](../decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md))
-  and the source of every wire-to-wire figure in `docs/reference/measured-costs.md`
+  and the source of every wire-to-wire figure in `docs/reference/measured-costs.md`.
+  `[2026-09-24]` `--metrics` is loaded, not driven, by `scripts/scrape-loop.sh <addr> <hz>
+  <seconds>` — another process, so its own allocations never enter `w2w`'s count; it paces
+  attempts on a fixed schedule rather than waiting for each answer
+  ([a-synchronous-scrape-waits-for-the-exporters-next-tick](../reference/a-synchronous-scrape-waits-for-the-exporters-next-tick.md)),
+  and both mode scripts run with it and `W2W_EXTRA="--metrics <addr>"` beside them
 - `interop` — driven by `scripts/interop.sh`, which builds the C++ counterparties and reports
   a pass count per role; never built or run by `cargo test`
 - `jrnl` — `tests/cli.rs`, run as the built binary; `crates/engine/tests/journal_reader.rs`
@@ -46,3 +51,17 @@ Each tool is independent; read whichever one a task needs. Within a tool:
   own gate: `scripts/check-no-optional-deps.sh` asks `fixbolt-interop:rustls` and
   `fixbolt-interop:ktls-core` separately, so the `tls` feature this tool's `Cargo.toml` declares
   cannot leak into `cargo test --all --no-default-features` by forwarding silently
+
+## `tools/grafana/` — not a crate, not a binary
+
+`[2026-09-24]` `tools/grafana/fixbolt.json` is the one committed Grafana dashboard, checked in
+because it names no data source of its own (a `datasource`-type template variable instead) and
+so loads unchanged through the import dialog or through file provisioning
+([ADR-0171](../decisions/ADR-0171-a-series-name-is-public-api-promtool-is-the-format-oracle-and-the-dashboard-names-no-data-source.md)
+decision 5). Its panels, rows and what each needs are described where they are decided, not
+repeated here: ADR-0171 and the plan's *Cách làm* §D. Two things guard it, both in the `gates`
+CI job: `scripts/check-grafana-dashboard.py` reads its JSON shape (no `__inputs`, no `${DS_`,
+every panel on the `${datasource}` variable, every target has an `expr`, panel ids unique), and
+`crates/metrics/tests/dashboard.rs::every_series_the_dashboard_queries_is_scraped` scrapes a
+fixture engine and asserts every `fixbolt_*` name the file queries is a series that scrape
+actually produced — a renamed or removed series fails there before it is anyone's broken panel.

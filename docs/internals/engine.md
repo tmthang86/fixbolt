@@ -17,12 +17,12 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `presession.rs` | `Identity`, `PendingSet`, `Registry`, `Table` — who owns a socket before a session exists |
 | `conn.rs` | One connection: socket, receive buffer, state machine, unsent bytes; its `Drop` retires the journal (ADR-0153, `tests/retire.rs`) |
 | `backpressure.rs` | The queue a connection uses when the counterparty stops reading (D10) |
-| `dispatch.rs`, `ring.rs` | `InlineDispatch`, `RingDispatch` over an `AtomicU8` SPSC ring (D4) |
+| `dispatch.rs`, `ring.rs` | `InlineDispatch`, `RingDispatch` over an `AtomicU8` SPSC ring (D4). `[2026-09-24]` `Dispatch::ring_to_app(&self) -> Option<Occupancy>`, a provided method defaulting to `None`; `RingDispatch` answers it from the new `Producer::capacity()` and the existing `Producer::free()`, in bytes |
 | `journal.rs` | `MemJournal`, `FileJournal`, `Reader`, `Store` — the resend store |
 | `recovery.rs` | `Recovery`, `Resumed`, `NoRecovery`, `FromFn` — asked once the counterparty is known |
 | `msglog.rs` | `MessageLog`, `FileLog` — every message seen or sent, both directions, one line each |
 | `redact.rs` | `MASKED`, `mask`, `carries_secret` — what never reaches disk in clear, and the SOH-splitting scan that finds it, called from `msglog.rs` and `journal.rs`. `[2026-09-23]` |
-| `observe.rs` | `Handles`, `Observer`, `Event`, `Admin` — the operator's on-request view |
+| `observe.rs` | `Handles`, `Observer`, `Event`, `Admin` — the operator's on-request view. `[2026-09-24]` `Occupancy { used, capacity }`; `Snapshot::ring_to_app()`/`presession_slots() -> Option<Occupancy>` (`None` means "nothing reported," not zero); `Observer::latest()`, which reads the published cell without raising the request flag — added for `fixbolt-metrics` (ADR-0170) and additive under `cargo-semver-checks` |
 | `origin.rs` | `Sender`, the fixed origination queue — a message an application starts from another thread |
 | `settings.rs` | `Settings`, `Problem` — the QuickFIX-shaped configuration file |
 | `reconnect.rs` | `Policy` — doubling backoff, and `connect_and_serve` |
@@ -67,6 +67,12 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 - `tests/observe.rs`, `tests/events.rs`, `tests/admin.rs`, `tests/originate.rs`,
   `tests/settings.rs`, `tests/settings_roles.rs`, `tests/reconnect.rs`,
   `tests/reconnect_wire.rs`, `tests/shutdown.rs` — operator and config seams
+- `tests/observe_occupancy.rs` — `[2026-09-24]` `Occupancy`, `ring_to_app`, `presession_slots`
+  and `latest`: a `RingDispatch` reports its ring's fullness, `InlineDispatch` reports none, a
+  hand-built engine and one behind `serve*`'s front door differ on `presession_slots`
+  (`Engine::note_presession_slots`, called beside every `note_unframeable`), and `latest()` does
+  not itself raise the request flag. `benches/alloc.rs` case `observe-asked-ring` holds
+  non-negotiable 1 for the `RingDispatch` read
 - `tests/standard.rs`, `tests/hft_wire.rs`, `tests/hft_pinned.rs`, `tests/waker_sigpipe.rs`,
   `tests/listener_cadence.rs` — the mode split, machine-checked also by
   `scripts/check-no-kernel-sleep.sh` and `scripts/check-standard-gives-the-core-back.sh`
