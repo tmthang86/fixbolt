@@ -92,6 +92,14 @@ hai pull request: 7a chuẩn bị mọi thứ trước reboot, 7b là phiên ch�
   generic XDP — <https://github.com/Xilinx-CNS/onload/blob/master/README.md>. Build/cài:
   `scripts/onload_mkdist`, `scripts/onload_mkpackage --install`, cần `gawk`, `libcap-devel`,
   `libmnl-devel`, header kernel — `DEVELOPING.md` cùng repo. Tag mới nhất `v9.0.2`.
+- **`v9.0.2` không build được trên `7.0.0-31`** `[đo 2026-09-24, bước 6.1 lần 1]`:
+  `src/lib/efhw/af_xdp.c:375:28: error: passing argument 2 of ‘kernel_bind’ from incompatible pointer
+  type … expected ‘struct sockaddr_unsized *’` — kernel 6.19 đổi kiểu tham số của `kernel_bind`.
+  Upstream sửa ở commit `268f1d4c8a` *"ON-17217: Add compat for sockaddr_unsized (6.19)"*
+  (2026-02-23); **không có tag nào sau `v9.0.2`** chứa nó. Nhánh phát hành `v9_2` (đầu nhánh
+  `174b947d0b`, 2026-08-18, `versions.env`: `ONLOAD_VERSION=9.2.2`) chứa nó (GitHub compare:
+  `268f1d4c8a...v9_2` ahead 269, behind 0); `master` (`0ba003ed33`, 2026-09-21) đi trước `v9_2` 82
+  commit; README ở `v9_2` ghi kernel 5.11 – 7.0.
 - **Onload chèn bộ lọc luồng TCP qua ethtool n-tuple** (`ETHTOOL_SRXCLSRLINS`), trừ khi tham số
   module `enable_af_xdp_flow_filters=0` — Onload `src/lib/efhw/af_xdp.c`.
 - **`igb` chỉ nhận luật Ethernet** (`ETHER_FLOW`: EtherType, VLAN, MAC), luật TCP trả `-EINVAL` —
@@ -157,10 +165,20 @@ nhận hoặc bác bỏ nó.
 
 ### Hàng 6 — dụng cụ đo (một PR, nhánh `plan/p4-bypass-boot`)
 
-**6.1 Cài Onload và thăm dò, trên dòng grub desktop, không phải số đo.** Cài từ tag `v9.0.2` (ghi
-commit sha) vào `~/src/onload` — **ngoài repo, không gì vào git**: `sudo -n apt-get install -y gawk
-libcap-dev libmnl-dev`, `git clone https://github.com/Xilinx-CNS/onload ~/src/onload`,
-`git -C ~/src/onload checkout v9.0.2`, `sudo -n ~/src/onload/scripts/onload_install --no-sfc`,
+**6.1 Cài Onload và thăm dò, trên dòng grub desktop, không phải số đo.** *Sửa 1, 2026-09-24
+(manager duyệt lại theo uỷ quyền):* lần 1 ghim tag `v9.0.2` và build hỏng (G1, xem *Những gì đã biết
+chắc*). Ghim mới là **commit `174b947d0b9b7b77439463afbabf8a7e417b3706`** — đầu nhánh phát hành `v9_2` của
+Onload, **không có tag** — thay vì đầu `master`: nó chứa bản sửa `268f1d4c8a`, là nhánh AMD dùng để
+ra bản 9.2.x (`versions.env` = 9.2.2), và không mang 82 commit chưa phát hành của `master` (trong đó
+có đổi cách chọn datapath, ON-17442, đúng vùng mã quyết định card nào được tăng tốc). Mọi dòng §9 và
+mọi con số ghi tên phiên bản là *"Onload `174b947d0b` (nhánh `v9_2`, không tag)"*.
+Cài vào `~/src/onload` — **ngoài repo, không gì vào git**: `sudo -n apt-get install -y gawk
+libcap-dev libmnl-dev`, `git clone https://github.com/Xilinx-CNS/onload ~/src/onload` (hoặc
+`git -C ~/src/onload fetch origin`), `git -C ~/src/onload checkout 174b947d0b9b7b77439463afbabf8a7e417b3706`,
+**cổng trước khi build**: `git -C ~/src/onload merge-base --is-ancestor 268f1d4c8a HEAD && echo
+has-sockaddr-unsized-fix` phải in `has-sockaddr-unsized-fix` (không in → dừng), và
+`git -C ~/src/onload rev-parse HEAD` quote nguyên văn; rồi
+`sudo -n ~/src/onload/scripts/onload_install --no-sfc`,
 `sudo -n onload_tool reload --onload-only` (các tham số `--no-sfc`, `--onload-only` theo README của
 Onload). Rồi thăm dò: đăng ký `enp9s0` với
 bộ lọc mặc định, đọc `dmesg`; nếu `igb` từ chối (dự kiến), đặt `enable_af_xdp_flow_filters=0` và
@@ -337,7 +355,7 @@ chạy song song sau 6.1.
 | Bước | Kết quả — file tạo / sửa (và **không** đụng) | Người làm | Gate | Xong khi | Reversal | Phụ thuộc |
 |---|---|---|---|---|---|---|
 | 6.0 | Plan này + ADR-0200/0201/0202 được duyệt; anh trả lời Q1, Q2 (**xong 2026-09-24**: Q1 = A, Q2 = đồng ý cả ba) | anh | — | có câu trả lời | — | phase 3 đóng bằng tag `v0.1.0` (ADR-0161) |
-| 6.1 | **Cài Onload + thăm dò** (dòng desktop). Không file repo nào; output vào `target/p4-probe/` | developer (sonnet) — lệnh viết sẵn trong brief; build hỏng trên kernel 7.0 thì **dừng và báo** | các lệnh ở *Cách làm* 6.1, quote nguyên văn | có output cho G1–G5; manager xếp cổng và điền *Result* của ADR-0201 | — | 6.0 |
+| 6.1 | **Cài Onload + thăm dò** (dòng desktop). Không file repo nào; output vào `target/p4-probe/`. *Sửa 1: lần 1 (`v9.0.2`) hỏng G1 ở build; lần 2 ghim `174b947d0b` (nhánh `v9_2`, không tag)* | developer (sonnet) — lệnh viết sẵn trong brief; build hỏng trên kernel 7.0 thì **dừng và báo** | `git merge-base --is-ancestor 268f1d4c8a HEAD` thoát 0 (in `has-sockaddr-unsized-fix`); `git rev-parse HEAD` = `174b947d0b9b7b77439463afbabf8a7e417b3706`; rồi các lệnh ở *Cách làm* 6.1, quote nguyên văn | có output cho G1–G5; manager xếp cổng và điền *Result* của ADR-0201 | — | 6.0 |
 | 6.2 | `scripts/check-machine.sh` (khối `FIXBOLT_BYPASS`), `scripts/check-machine-verdicts.sh` (ca mới, có output thật của 6.1). **Không đụng** dòng nào đang có | developer (sonnet) | `scripts/check-machine-verdicts.sh`; `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` **không** đặt `FIXBOLT_BYPASS` → danh sách tên dòng giống hệt trước khi sửa (`grep -E '^(PASS\|FAIL\|\? \? \?)' \| cut -c8-30`, so với bản chụp trước) | ca mới xanh; 17 tên dòng cũ không đổi | đổi `xdpdrv` thành `xdpgeneric` trong ca fixture → ca `xdp mode` đỏ, nêu tên ca | 6.1 |
 | 6.3 | `scripts/w2w-baseline.sh` (nhánh `BYPASS=onload`), `scripts/check-w2w-baseline-summary.sh` (ca `zc`, ca bộ đếm), danh sách của `scripts/check-sudo-names-what-root-can-find.sh`. **Không đụng** `tools/w2w` | developer (sonnet) | `scripts/check-w2w-baseline-summary.sh`; `scripts/check-sudo-names-what-root-can-find.sh`; `BYPASS=onload WIRE_NIC=enp9s0 … scripts/w2w-baseline.sh` → bị từ chối trước khi chạy | ca xanh; lời từ chối quote được | ca `ss` có `zc:0` → FAIL đúng tên; ca bộ đếm tăng 22 000 → FAIL | 6.1 |
 | 6.4 | `scripts/bypass-verdict.sh`, `scripts/check-bypass-verdict.sh` (mới) | developer (sonnet) | `scripts/check-bypass-verdict.sh` | sáu ca xanh, gồm ca *C-40* in `DROP (p50 …)` | đổi `0.10` thành `0.01` → ca "bỏ vì p50" đỏ | 6.0 |
@@ -410,8 +428,10 @@ chạy song song sau 6.1.
 | Rủi ro | Mức | Cách xử lý |
 |---|---|---|
 | Onload không qua vạch p50 (phép tính ở trên) | **Rất cao** | đó là kết quả được thiết kế sẵn: ghi cặp số âm, tính là *xong* (Q1 của ADR-0098) |
-| Onload `v9.0.2` không build được trên `7.0.0-31` (README ghi tới 7.0 — sát mép) | Trung bình | 6.1 dừng và báo; thử tag trước một lần; vẫn hỏng → **bỏ** với bằng chứng build |
+| Onload không build được trên `7.0.0-31` — **đã xảy ra với `v9.0.2`** (`kernel_bind`, `sockaddr_unsized`) | Đã xảy ra một lần | ghim `174b947d0b` (nhánh `v9_2`, chứa `268f1d4c8a`); hỏng nữa → thử đầu `master` `0ba003ed33` **một lần**; vẫn hỏng → **bỏ** với hai log build |
+| Bản ghim không có tag — không phải bản phát hành được đặt tên | Thấp–trung bình | ghi sha đầy đủ ở mọi dòng §9 và con số; `git rev-parse HEAD` quote ở 6.1 và ở đầu boot |
 | Module Onload làm treo máy bàn của anh (không phải bản release) | Thấp–trung bình | cài lúc anh biết; `onload_uninstall` sau boot; Secure Boot tắt nên không cần ký |
+| **Chặn hàng 7 — Mac từ chối khoá của máy bàn** `[2026-09-24]`: `192.168.77.2` trả lời ping nhưng ssh báo `Permission denied (publickey,password,keyboard-interactive)`; khoá được đưa ra là `SHA256:70H/+HuFNSlCQtlqXCpf4IR4zyqLiPHojYpgjBeWQvA` (`tmt@tmt-B450-fixbolt-direct`) | **Chặn** | **chỉ anh** làm được: thêm lại khoá công khai đó vào `~/.ssh/authorized_keys` của `thangtran` trên Mac. Không có nó thì không có generator — 6.1 phần chạy `w2w`, 7a.1 diễn tập, 7a bước 4 và cả boot đều dừng. Kiểm lại bằng `ssh -o BatchMode=yes thangtran@192.168.77.2 true` **và** qua địa chỉ không phải cáp (ADR-0201 quyết định 3) |
 | Mac ngủ hoặc mất Tailscale/Wi-Fi giữa đêm | Trung bình | kiểm `pmset` trước reboot; driver dừng khi generator lỗi, không chạy tiếp vô ích |
 | Boot dài 4–6 giờ, hỏng sớm là mất phần còn lại | Trung bình | procedure 2 của Onload chỉ chạy khi procedure 1 đạt; driver lưu từng khối |
 | Hàng 5 chưa xong khi hàng 6 xong | Trung bình | 7a chờ hàng 5 merge; hàng 6 không phụ thuộc hàng 5 |
@@ -463,5 +483,10 @@ chạy song song sau 6.1.
 
 ## Nhật ký giao hàng
 
-*(Chưa có gì — điền khi từng hàng đóng: đã dựng gì, ở đâu, gate nào xanh, CI run id, cái chưa làm
+- `[2026-09-24]` 6.1 lần 1: Onload `v9.0.2` (`9f330e7058`) build hỏng trên `7.0.0-31` —
+  `af_xdp.c:375:28 … kernel_bind … expected ‘struct sockaddr_unsized *’`; không gì được cài hay nạp,
+  NIC không đổi; log `target/p4-probe/onload_install.txt` (trên desk, không commit). Sửa 1: ghim
+  `174b947d0b` (nhánh `v9_2`, không tag). Chặn mới: Mac từ chối khoá ssh của máy bàn (xem *Rủi ro*).
+
+*(Điền tiếp khi từng hàng đóng: đã dựng gì, ở đâu, gate nào xanh, CI run id, cái chưa làm
 và vì sao. Handoff trước reboot (7a) và sau boot (7b) ghi ở đây và ở `STATUS.md` cùng commit.)*

@@ -3,7 +3,9 @@
 - **Status**: Proposed — 2026-09-24, with
   [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md). Decision 1
   is confirmed or replaced by that plan's step 6.1 probe, whose output is quoted into this ADR's
-  *Result* before it is accepted.
+  *Result* before it is accepted. **Revised in place 2026-09-24**: *Result so far* added — the first
+  probe stopped at the build of Onload `v9.0.2`, and Onload is re-pinned to an untagged commit on its
+  `v9_2` release branch; decisions 1–4 are unchanged.
 - **Date**: 2026-09-24
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus).
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
@@ -85,6 +87,23 @@ limiting the device to one queue or by NIC filters (<https://docs.kernel.org/net
 - The control path over Wi-Fi or Tailscale adds that interface's interrupts to the desk during every
   run of both arms — the same in both, on the housekeeping cores.
 - The probe's decision is a fact about Onload at one tag and `igb` at one kernel; either may change.
+
+## Result so far
+
+- `[2026-09-24]` **Probe attempt 1, G1 failed at the build, before any registration.** Onload `v9.0.2`
+  (`9f330e7058`) on `7.0.0-31-generic`:
+  `src/lib/efhw/af_xdp.c:375:28: error: passing argument 2 of ‘kernel_bind’ from incompatible pointer
+  type … expected ‘struct sockaddr_unsized *’`
+  (log `target/p4-probe/onload_install.txt` on the desk, not committed; `onload_install: ERROR: Build
+  failed.  Not installing.`). Nothing was installed or loaded; the NIC was not touched. Decisions 1–4
+  were therefore not exercised.
+- **Re-pin**: upstream fixed the build in `268f1d4c8a` *"ON-17217: Add compat for sockaddr_unsized
+  (6.19)"* (2026-02-23), and no tag after `v9.0.2` exists. Onload is pinned to
+  **`174b947d0b9b7b77439463afbabf8a7e417b3706`**, the head of the `v9_2` release branch (2026-08-18,
+  `versions.env` `ONLOAD_VERSION=9.2.2`), **untagged**. It contains the fix (GitHub compare
+  `268f1d4c8a...v9_2`: ahead 269, behind 0) and not the 82 later `master` commits, which include
+  ON-17442's datapath-selection rework — the code that decides which NIC is accelerated. The probe
+  proves the pin before building: `git merge-base --is-ancestor 268f1d4c8a HEAD`.
 
 ## Result
 
