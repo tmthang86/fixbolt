@@ -1,16 +1,16 @@
 # Contributing to fixbolt
 
-This file is for **developers on the fixbolt project team**. It says how to build the workspace,
-which gates a change must pass, and how a change gets into `main`. The engineering rules
-themselves are in [CLAUDE.md](CLAUDE.md), each in one place; this file points at them by section
-and does not restate them.
+fixbolt is developed by a project team — today, one developer, its owner. This file is for
+**developers on that team**: how to build the workspace, which gates a change must pass, and how
+a change gets into `main`. The engineering rules themselves are in [CLAUDE.md](CLAUDE.md), each
+in one place; this file points at them by section and does not restate them.
 
 ## Who can contribute
 
-Changes come from the project team. **Contributions from outside the team are not accepted
-yet**: a pull request from outside the team is not merged until a licensing ADR decides between
-a contributor licence agreement (CLA) and a Developer Certificate of Origin (DCO). That ADR is due
-before the first outside contribution is accepted
+Changes come from the project team, which today is the owner alone. **Contributions from
+outside the team are not accepted yet**: a pull request from outside the team is not merged
+until a licensing ADR decides between a contributor licence agreement (CLA) and a Developer
+Certificate of Origin (DCO). That ADR is due before the first outside contribution is accepted
 ([ADR-0206](docs/decisions/ADR-0206-the-documentation-is-an-mdbook-over-docs-in-place-split-by-diataxis-and-no-cited-file-moves.md)
 decision 4).
 
@@ -53,47 +53,33 @@ the control is you, before `git add` (CLAUDE.md, preamble).
 
 ## The gates
 
-Which gates a change owes depends on what it touches — the table in **CLAUDE.md §7** decides, and
-widening scope means naming more cases, not running everything. The commands, grouped the way that
-table groups them:
+Which gates a change owes depends on what it touches: the table in **CLAUDE.md §7** decides, and
+widening scope means naming more cases, not running everything. Its first row, run on every
+commit:
 
 ```sh
-# Every change
-cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
-cargo test --all --no-default-features
-scripts/check-no-optional-deps.sh       # the same question per crate: cargo unifies features
-
-# A session-layer change: the 59 acceptance definitions, and the FIXT corpus
-cargo test -p fixbolt-session --test score
-cargo test -p fixbolt-engine --test wire
-for p in fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine; do
-  cargo test -p "$p" --tests --features fix50sp2
-done
-
-# A hot-path change: the Criterion suite and every benches/alloc.rs
-scripts/bench.sh
-
-# A dispatch, transport or engine-thread change: benches/dispatch.rs, then tools/w2w on Linux
-cargo bench -p fixbolt-engine --bench dispatch
-
-# A change to the wait strategy, readiness or the mode split: both modes, on Linux
-scripts/check-no-kernel-sleep.sh
-scripts/check-no-kernel-sleep-by-ctxt.sh
-scripts/check-standard-gives-the-core-back.sh
-
-# A documentation change
-python3 scripts/check-links.py
-python3 scripts/gen-book-summary.py --check
-mdbook build
-python3 scripts/check-links.py --rendered target/book
+cargo test --no-default-features
 ```
 
-The machine check behind each non-negotiable, and what each script cannot see, is the table in
-CLAUDE.md §2 *Machine checks*; read a script's header before trusting its green. CI runs the same
-gates as named jobs (`gates`, `no-default-features`, `bench`, `no-kernel-sleep`,
-`standard-blocks`, `links`, `book`, and others) in `.github/workflows/ci.yml`.
+Every other row — session, hot-path, dispatch, wait-strategy and documentation changes — is in
+CLAUDE.md §7, with the command for each; the machine check behind each non-negotiable, and what
+each script cannot see, is CLAUDE.md §2 *Machine checks*. Read a script's header before trusting
+its green. CI runs them as named jobs in `.github/workflows/ci.yml`; the ones a change most often
+turns red:
+
+| CI job | What a green run proves |
+|---|---|
+| `gates` | fmt, clippy `-D warnings` and `cargo test --all`, with the FIXT corpus behind `fix50sp2` |
+| `no-default-features` | the workspace builds and tests with nothing optional installed, per crate |
+| `lint-config`, `indexing-debt` | the no-panic lints still deny, and the indexing debt only goes down |
+| `bench` | the benchmarks run, every `benches/alloc.rs` reads zero, machine-independent bounds hold |
+| `no-kernel-sleep`, `standard-blocks` | `hft` never sleeps in the kernel; `standard` gives the core back |
+| `links`, `book` | no dead internal link; the book builds without a warning and its rendered links hold |
+
+The job names are the ones a pull request shows; the list of jobs in `ci.yml` is the complete
+one.
 
 Two habits the gates depend on (CLAUDE.md §7, §10): **read the output, not the exit status**, and
 **prove a guard by reversal** — break it, see it red on the assertion you meant, restore it.
