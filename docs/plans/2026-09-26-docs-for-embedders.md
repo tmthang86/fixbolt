@@ -1,6 +1,6 @@
 # Tài liệu cho người nhúng fixbolt, và từ điển tuỳ biến (custom tag / từ điển riêng của sàn)
 
-> **Loại:** Plan · **Ngày:** 2026-09-26 · **Trạng thái:** Chờ duyệt
+> **Loại:** Plan · **Ngày:** 2026-09-26 · **Trạng thái:** Đã duyệt (2026-09-26)
 > **Phạm vi:** hai việc trong một plan, theo quyết định của chủ dự án: (A) viết lại bộ tài liệu để
 > fixbolt đọc như một framework FIX mà lập trình viên công ty khác nhúng vào sản phẩm của họ;
 > (B) tính năng mới — tag tuỳ biến và từ điển riêng của sàn (venue dictionary). Thiết kế ở hai ADR
