@@ -609,5 +609,223 @@ def main():
     return 0
 
 
+# --- --rendered mode -------------------------------------------------------
+#
+# Everything above reads Markdown/Rust source and never fetches a URL. This
+# mode reads mdBook's own rendered HTML output instead (docs/plans/2026-09-26-
+# docs-for-embedders.md step 4) and checks something the source-only mode
+# structurally cannot: that an in-book link's `#anchor` names a heading (or
+# any other `id=`) that actually exists on the page mdBook wrote -- not just
+# that the page itself exists. It is a second, independent mode selected by
+# `--rendered <dir>`; nothing above this comment changes behaviour, and this
+# mode never runs unless `--rendered` is given.
+#
+# scripts/mdbook-repo-links.py (ADR-0206 decision 5) rewrites a link that
+# leaves the book into a `github.com/.../blob/<sha>/...#anchor` URL, written
+# by the *author*, who only ever sees mdBook's own rendering -- so the
+# fragment they wrote is mdBook's heading id, not GitHub's. GitHub renders a
+# `.md` file it serves as a "blob" with its own heading-anchor slugger, which
+# does not always agree with mdBook's (pulldown-cmark's, via mdbook-html):
+# this mode cannot fetch github.com to find out (the same "no network calls"
+# reasoning as the mode above), so instead it measures every heading actually
+# rendered on this tree, computes what GitHub's own slug rule would produce
+# from the same heading text, and prints every place the two disagree. This
+# is printed, not asserted red: it says which existing `#anchor` fragments
+# would 404 if that same page were ever read as a GitHub blob instead of a
+# book page (including, but not limited to, the ones this preprocessor
+# itself rewrites), so a human can judge whether that specific instance
+# matters, rather than the gate assuming every disagreement does.
+from html.parser import HTMLParser  # noqa: E402  (kept beside its one user)
+
+HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+RENDERED_EXTERNAL = ("http://", "https://", "mailto:", "javascript:", "tel:")
+
+
+class _PageParser(HTMLParser):
+    """Collects, from one rendered HTML page: every element `id=`, every
+    `<a href="...">` with the source line it appeared on, and the (id, text)
+    of every heading that carries an id -- mdBook always gives a heading an
+    id when it has one, so a heading without one (`<h1 class="menu-title">`,
+    the sidebar's book title) is simply not a heading anyone can link to.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.ids = set()
+        self.links = []  # [(href, lineno)]
+        self.headings = []  # [(id, text)]
+        self._heading_stack = []  # [[id_or_None, [text_parts]]]
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        hid = attrs.get("id")
+        if hid:
+            self.ids.add(hid)
+        if tag == "a" and attrs.get("href"):
+            self.links.append((attrs["href"], self.getpos()[0]))
+        if tag in HEADING_TAGS:
+            self._heading_stack.append([hid, []])
+
+    def handle_endtag(self, tag):
+        if tag in HEADING_TAGS and self._heading_stack:
+            hid, parts = self._heading_stack.pop()
+            if hid:
+                self.headings.append((hid, "".join(parts).strip()))
+
+    def handle_data(self, data):
+        if self._heading_stack:
+            self._heading_stack[-1][1].append(data)
+
+
+def _parse_page(path):
+    parser = _PageParser()
+    with open(path, encoding="utf-8") as fh:
+        parser.feed(fh.read())
+    return parser
+
+
+def _html_files(root):
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in sorted(filenames):
+            if name.endswith(".html"):
+                yield os.path.join(dirpath, name)
+
+
+def github_heading_slug(text):
+    """GitHub's own Markdown heading-anchor slug (the `github-slugger`
+    algorithm GitHub itself uses): lowercase, drop anything that is not a
+    letter, digit, space, hyphen or underscore, then turn EACH remaining
+    whitespace character into its own hyphen -- a run of whitespace is NOT
+    collapsed to one hyphen, which is why `D1 — The session layer` (a space,
+    an em dash, a space) slugs to `d1--the-session-layer`, two hyphens, not
+    one: the em dash is dropped by the first step, leaving two adjacent
+    spaces, and each becomes its own hyphen.
+
+    `[measured 2026-09-26]` the first version of this collapsed whitespace
+    with `\\s+` -> a single hyphen, matching nothing else's actual behaviour:
+    it turned 1710 of this tree's own headings red as "differs from mdBook"
+    on this repository's very first `--rendered` run, essentially every
+    heading built from an em dash or any other punctuation-only run between
+    two words -- mdBook's own id for `DESIGN.md`'s "fixbolt — Design" is
+    `fixbolt--design` (double hyphen), read directly off the rendered page,
+    not off a written description of the algorithm.
+
+    This function returns the *base* slug only; a heading text repeated on
+    the same page needs GitHub's "-1", "-2", ... de-duplication applied on
+    top, in heading order -- done by the caller (main_rendered), which is
+    the one that knows a page's full heading order. `print.html`, mdBook's
+    single concatenated everything-page, repeats headings like "Related" and
+    "What is not proven" dozens of times and needed exactly this: without
+    per-page dedup, every occurrence after the first on that page reported a
+    false difference (938 of them, `[measured 2026-09-26]`, almost the whole
+    finding).
+    """
+    text = text.strip().lower()
+    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
+    return re.sub(r"\s", "-", text)
+
+
+def main_rendered(root):
+    if not os.path.isdir(root):
+        print(f"FAIL: {root} is not a directory -- run `mdbook build` first", file=sys.stderr)
+        return 1
+
+    pages = {}
+    for path in _html_files(root):
+        rel = os.path.relpath(path, root)
+        pages[rel] = _parse_page(path)
+
+    dead_files = []
+    dead_anchors = []
+    checked = 0
+    skipped_external = 0
+
+    for rel, page in sorted(pages.items()):
+        base_dir = os.path.dirname(rel)
+        for href, lineno in page.links:
+            target, _, anchor = href.partition("#")
+            if not target and not anchor:
+                continue  # a bare `#` with nothing after it links nowhere in particular
+            if target.startswith(RENDERED_EXTERNAL):
+                skipped_external += 1
+                continue
+            if target.startswith("/"):
+                # Site-root-relative (mdBook's own 404.html "go home" link).
+                # Verifying it needs the deployment's base path (a GitHub
+                # Pages project site is not served at "/"), which is a
+                # deploy-configuration fact this mode does not have -- job
+                # `book` (step 6) owns that, not this file.
+                skipped_external += 1
+                continue
+            target_rel = rel if not target else os.path.normpath(os.path.join(base_dir, target))
+            checked += 1
+            if target_rel not in pages:
+                dead_files.append((rel, lineno, href))
+                continue
+            if anchor and anchor not in pages[target_rel].ids:
+                dead_anchors.append((rel, lineno, href, target_rel))
+
+    slug_diffs = []
+    for rel, page in sorted(pages.items()):
+        # A repeated heading's *first* occurrence keeps the bare slug; each
+        # later one is disambiguated by appending "-1", "-2", ... in the
+        # order headings appear on the page -- both GitHub's slugger and
+        # mdBook's own do this, so it has to be replicated per page, not
+        # just per heading, or a page that repeats a heading (`print.html`
+        # concatenates the whole book, so this is common there) reports a
+        # false difference on every occurrence after the first.
+        occurrences = {}
+        seen_ids = set()
+        for hid, text in page.headings:
+            if hid in seen_ids:
+                continue  # the same id can appear twice in one page's markup (e.g. a duplicated anchor link); judge it once
+            seen_ids.add(hid)
+            base_slug = github_heading_slug(text)
+            occurrences[base_slug] = occurrences.get(base_slug, 0) + 1
+            count = occurrences[base_slug]
+            slug = base_slug if count == 1 else f"{base_slug}-{count - 1}"
+            if slug != hid:
+                slug_diffs.append((rel, hid, slug, text))
+
+    print(
+        f"{len(pages)} rendered pages, {checked} internal hrefs checked, "
+        f"{skipped_external} external/site-absolute hrefs skipped, "
+        f"{len(slug_diffs)} heading(s) where GitHub's slug would differ from mdBook's id"
+    )
+    sys.stdout.flush()
+
+    if slug_diffs:
+        print(
+            "\nanchors where GitHub's slug differs from mdBook's id (measured on this tree, "
+            "not a failure by itself -- see the note above main_rendered):"
+        )
+        for rel, hid, slug, text in slug_diffs:
+            print(f'  {rel}#{hid}  ->  GitHub would slug "{text}" as #{slug}')
+
+    if dead_files:
+        print(
+            f"\nFAIL: {len(dead_files)} internal href(s) point at a page this build did not render",
+            file=sys.stderr,
+        )
+        for rel, lineno, href in dead_files:
+            print(f"  {rel}:{lineno}  →  {href}", file=sys.stderr)
+
+    if dead_anchors:
+        print(
+            f"\nFAIL: {len(dead_anchors)} internal href(s) name an anchor missing from the target page",
+            file=sys.stderr,
+        )
+        for rel, lineno, href, target_rel in dead_anchors:
+            print(f"  {rel}:{lineno}  →  {href}  ({target_rel} has no matching id)", file=sys.stderr)
+
+    if dead_files or dead_anchors:
+        return 1
+
+    print("no dead internal hrefs or anchors in the rendered book")
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--rendered":
+        sys.exit(main_rendered(sys.argv[2]))
     sys.exit(main())

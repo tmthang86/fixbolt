@@ -23,3 +23,18 @@ git-repository-url = "https://github.com/tmthang86/fixbolt"
 # hundreds of citations use them. mdBook's chapter numbers would be a second,
 # unrelated numbering beside them, so they are turned off.
 no-section-label = true
+
+[preprocessor.repo-links]
+# ADR-0206 decision 5: a link that leaves docs/, or names a docs/ file
+# docs/SUMMARY.md does not list, is rewritten to a GitHub URL at the commit
+# being built; an in-book link is left as a relative link. Python standard
+# library only, run against `python3` explicitly rather than relying on a
+# `mdbook-repo-links` binary being on PATH.
+command = "python3 scripts/mdbook-repo-links.py"
+
+# Search covers what an embedder looks things up in. The ADRs (133) and the
+# reference pages (139) stay in the sidebar but out of the search index: with
+# them in, the index is ~18 MB, over mdBook's 10 MB warning (ADR-0206).
+[output.html.search.chapter]
+"decisions" = { enable = false }
+"reference" = { enable = false }

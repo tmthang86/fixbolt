@@ -29,8 +29,8 @@ parents =
 ```
 
 The step's own `git log` line proved nothing: `parents` came back empty. The proof that actually
-landed was `actions/checkout`'s own log line above it, `HEAD is now at 2e85121 Merge <head> into
-<base>` — a line the step never asked for.
+landed was `actions/checkout`'s own log line above it, `HEAD is now at 2e85121 Merge <head>
+into <base>` — a line the step never asked for.
 
 ## Why the field was empty
 
