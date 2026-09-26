@@ -477,6 +477,7 @@ decisions 1, 3 and 7).
 | `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
 | `fix50sp2` | `codec`, `dict`, `session`, `engine` | The second dictionary: `dict`'s `build.rs` reads `FIXT11.xml` **and** `FIX50SP2.xml` into one table and emits `Fixt11Fix50Sp2Tables`, and the FIXT tests and bench cases in all four crates compile. Pulls in **no dependency** — it is generated code and build time only, and `codec`'s copy is a dev-dependency pass-through so its benches can name the table. `[measured]` the generated file goes 156 KB to 4.0 MB and a cold `dict` build 0.56 s to 5.25 s: see [a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md) | off |
+| `codegen` | `dict` | `[2026-09-26]` `pub mod codegen`: the dictionary generator as a library, for a `build.rs` of your own ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md) decision 1). Today it offers `fix44_tables` and, with `fix50sp2`, `fixt11_fix50sp2_tables` — the exact text `fixbolt-dict`'s own `build.rs` writes — and `GenError`; `generate`, `Source` and `Paths`, the door for a dictionary of your own, answer `GenError::Unsupported` until the overlay lands. Pulls in `roxmltree` (`=0.20.0`, pure Rust) as a normal dependency — the same crate `fixbolt-dict` always builds with as a build-dependency, so nothing new is compiled; with the feature off it never reaches your binary. Changes no table and no behaviour of `Fix44` | off |
 | `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `connect_and_serve_tls`/`connect_and_serve_tls_with`, `tls::load_pem`/`tls::load_client_pem`, and the seven `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
 | `io-uring` | `engine`, `library`, `tools/w2w` | `[2026-09-24]` `mod transport::uring`: `Uring`, `UringConfig`, `UringTransport`, `UringSpin`/`UringBlock`, `HftArm`, `UringRefused`, `UringReport`, `serve_hft_uring`/`serve_uring`, `ServeError::Uring` — a second `Transport` reaped by the idle strategy, Linux only, kernel ≥ 6.1 ([DESIGN.md D5](DESIGN.md), [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)). Pulls in `io-uring` (pinned `>= 0.7.15`, pure Rust) and the `libc` the crate already carries under `standard`/`affinity`; `HftArm::Sqpoll` exists only with `affinity` on too | off |
 | `sbe` | `library` (`fixbolt`) | The re-export `fixbolt::sbe` (= `fixbolt-sbe`): SBE 1.0 over generated tables, a codec with no session and no `serve*` of its own ([GUIDE.md §3b](GUIDE.md)) | off |
@@ -490,6 +491,8 @@ a feature-gated test compiles to nothing under `cargo test --all`, so the `gates
 four crates that declare it and proves through `scripts/check-feature-gated-tests-ran.sh` that the
 named tests actually executed:
 [a-feature-gated-test-is-a-test-ci-never-runs](reference/a-feature-gated-test-is-a-test-ci-never-runs.md).
+`codegen` is the same shape: its two tests run only in the `gates` job's own `codegen` step, under
+the same proof.
 **`tls` is Linux-only in practice**: `mod tls` itself is
 gated only on the feature, but the handshake, `load_pem` and every `serve_tls*` entry point
 inside it are additionally `#[cfg(target_os = "linux")]`, so a `--features tls` build on another
@@ -517,7 +520,8 @@ toolchain. Setting an override points `build.rs` at a dictionary of your own ins
 customised FIX 4.4 dialect, or a fix for one of the QuickFIX dictionary quirks
 `crates/dict/spec/` ships as-is (see [ADR-0104](decisions/ADR-0104-the-published-dictionary-is-quickfixs-xml-shipped-with-a-notice.md)
 *Consequences*). A path missing at build time fails the build loudly, by design — the
-generator never falls back to an empty table.
+generator never falls back to an empty table. The `codegen` library (§4) reads none of these
+variables: its functions take the dictionary's text from the caller.
 
 ## 6. `fixbolt-store-sqlite`'s settings
 

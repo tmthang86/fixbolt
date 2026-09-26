@@ -30,9 +30,16 @@ include = ["src/**", "build.rs", "spec/**", "NOTICE", "README.md", "LICENSE-MIT"
 # only the manifest).
 [features]
 fix50sp2 = []
+# ADR-0207 decision 1: the dictionary generator as a library, for a user's own
+# `build.rs`. **Off by default**, and it gates `pub mod codegen` in `lib.rs`
+# itself (CLAUDE.md §2 item 6). Its one dependency is the `roxmltree` this
+# crate's `build.rs` already pins, made an optional normal dependency here —
+# no new crate enters the lock file.
+codegen = ["dep:roxmltree"]
 
 [dependencies]
 fixbolt-codec = { version = "=0.1.0", path = "../codec" }
+roxmltree = { version = "=0.20.0", optional = true }
 
 [build-dependencies]
 roxmltree = "=0.20.0"
@@ -44,4 +51,4 @@ workspace = true
 # `all-features`. docs.rs passes `--cfg docsrs` itself, which turns on
 # `feature(doc_cfg)` at the crate root so each gated item shows its feature.
 [package.metadata.docs.rs]
-features = ["fix50sp2"]
+features = ["fix50sp2", "codegen"]
