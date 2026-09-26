@@ -32,9 +32,10 @@
 //! [ADR-0041]: ../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md
 //! [ADR-0051]: ../../../docs/decisions/ADR-0051-item-34-is-a-third-of-the-size-it-was-recorded-at.md
 
+use core::marker::PhantomData;
 use core::ops::Range;
 
-use fixbolt_codec::{FieldIndex, MessageView, Validation, parse_into};
+use fixbolt_codec::{Dictionary, FieldIndex, MessageView, Validation, parse_into};
 use fixbolt_dict::Fix44;
 use fixbolt_session::{Application, Peer};
 
@@ -45,11 +46,16 @@ use crate::reply::{Answer, Reply};
 /// Borrowed into the engine's read buffer — nothing here is owned and nothing
 /// is copied. `N` is how many fields the index holds; the caller picks it, as
 /// `CLAUDE.md` §6 requires, and [`Handler`]'s default is 256.
-pub struct Incoming<'a, const N: usize = 256> {
+///
+/// `D` is the dictionary the message was read by — FIX 4.4 unless the
+/// application names its own ([`crate::dict`], ADR-0207 decision 5) — so a
+/// venue's own repeating group is indexed by that venue's tables.
+pub struct Incoming<'a, const N: usize = 256, D = Fix44> {
     view: MessageView<'a, N>,
+    dict: PhantomData<fn() -> D>,
 }
 
-impl<'a, const N: usize> Incoming<'a, N> {
+impl<'a, const N: usize, D> Incoming<'a, N, D> {
     /// `35` **MsgType**, or empty when the message carries none.
     ///
     /// Empty rather than `Option`: a message with no `MsgType` never reaches an
@@ -111,13 +117,14 @@ impl<'a, const N: usize> Incoming<'a, N> {
 /// The three sizes are the caller's, and the defaults are the ones
 /// `crates/conformance/src/echo.rs` has been running the acceptance corpus with
 /// since 2026-08-28: `N` fields in the inbound index, `P` fields in a reply and
-/// `S` bytes of them.
-pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 1024> {
+/// `S` bytes of them. `D` is the dictionary a message is read and a reply is
+/// written by — FIX 4.4 unless named ([`crate::dict`], ADR-0207 decision 5).
+pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 1024, D = Fix44> {
     /// One application message, and the right to answer it once.
     ///
     /// Return `reply.silent()` to say nothing. The session's outbound sequence
     /// number moves only when a message is actually written.
-    fn on_message(&mut self, msg: &Incoming<'_, N>, reply: Reply<'_, P, S>) -> Answer;
+    fn on_message(&mut self, msg: &Incoming<'_, N, D>, reply: Reply<'_, P, S, D>) -> Answer;
 
     /// The right to **speak first**, once per session.
     ///
@@ -148,7 +155,7 @@ pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 10
     /// [`Self::on_message`] applies to it.
     ///
     /// [ADR-0048]: ../../../docs/decisions/ADR-0048-an-engine-that-can-speak-first-has-two-doors.md
-    fn on_logon(&mut self, _who: Peer<'_>, _nth: u32, reply: Reply<'_, P, S>) -> Answer {
+    fn on_logon(&mut self, _who: Peer<'_>, _nth: u32, reply: Reply<'_, P, S, D>) -> Answer {
         reply.silent()
     }
 }
@@ -156,13 +163,19 @@ pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 10
 /// A [`Handler`] wearing the [`fixbolt_session::Application`] the engine wants.
 ///
 /// Build one with [`app`] and hand it to `crate::serve`.
-pub struct App<H, const N: usize = 256, const P: usize = 64, const S: usize = 1024> {
+///
+/// `D` is the dictionary the message is parsed by and the reply is ordered by
+/// — FIX 4.4 unless named ([`crate::dict`], ADR-0207 decision 5). It must be
+/// the dictionary of the encoding the engine was built with (`serve_over`'s
+/// `E`): the session validates by that one, and this adapter reads by `D`.
+pub struct App<H, const N: usize = 256, const P: usize = 64, const S: usize = 1024, D = Fix44> {
     handler: H,
     /// Reused across messages. Allocating one per message would be
     /// non-negotiable 1 broken on the busiest path this crate has.
     idx: FieldIndex<N>,
     unparsable: u64,
     failed: u64,
+    dict: PhantomData<fn() -> D>,
 }
 
 /// Wrap a handler for `crate::serve`, with [`Handler`]'s default sizes.
@@ -172,10 +185,11 @@ pub fn app<H: Handler>(handler: H) -> App<H> {
         idx: FieldIndex::new(),
         unparsable: 0,
         failed: 0,
+        dict: PhantomData,
     }
 }
 
-impl<H, const N: usize, const P: usize, const S: usize> App<H, N, P, S> {
+impl<H, const N: usize, const P: usize, const S: usize, D> App<H, N, P, S, D> {
     /// Wrap a handler, choosing the sizes yourself.
     pub fn with_sizes(handler: H) -> Self {
         Self {
@@ -183,6 +197,7 @@ impl<H, const N: usize, const P: usize, const S: usize> App<H, N, P, S> {
             idx: FieldIndex::new(),
             unparsable: 0,
             failed: 0,
+            dict: PhantomData,
         }
     }
 
@@ -215,8 +230,8 @@ impl<H, const N: usize, const P: usize, const S: usize> App<H, N, P, S> {
     }
 }
 
-impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Application
-    for App<H, N, P, S>
+impl<H: Handler<N, P, S, D>, const N: usize, const P: usize, const S: usize, D: Dictionary>
+    Application for App<H, N, P, S, D>
 {
     fn on_message(
         &mut self,
@@ -228,7 +243,7 @@ impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Applic
         // accepted, and re-checking a body length here would reject the
         // deliberately-wrong ones the acceptance corpus sends on purpose. Same
         // reason, same words, as `crates/conformance/src/echo.rs`.
-        if parse_into::<Fix44, N>(msg, &mut self.idx, Validation::NONE).is_err() {
+        if parse_into::<D, N>(msg, &mut self.idx, Validation::NONE).is_err() {
             self.unparsable += 1;
             return None;
         }
@@ -252,7 +267,7 @@ impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Applic
         // writes it, not because a handler remembered to — the same guarantee
         // QuickFIX/J and QuickFIX/n give from their own send path.
         // ADR-0056 decision 2.
-        let reply = Reply::<P, S>::new(
+        let reply = Reply::<P, S, D>::new(
             begin_string,
             hdr.seq,
             hdr.stamp,
@@ -261,7 +276,10 @@ impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Applic
             their_sender,
             out,
         );
-        let incoming = Incoming { view };
+        let incoming = Incoming {
+            view,
+            dict: PhantomData,
+        };
 
         let answer = self.handler.on_message(&incoming, reply);
         if matches!(answer, Answer::Failed(_)) {
@@ -274,7 +292,7 @@ impl<H: Handler<N, P, S>, const N: usize, const P: usize, const S: usize> Applic
         // `Reply::originate` rather than `Reply::new`: there is no inbound
         // message here, so there is no number and no stamp to carry, and the
         // session writes both on the way out (ADR-0048 decision 2).
-        let reply = Reply::<P, S>::originate(peer.begin_string, peer.sender, peer.target, out);
+        let reply = Reply::<P, S, D>::originate(peer.begin_string, peer.sender, peer.target, out);
         let answer = self.handler.on_logon(peer, nth, reply);
         if matches!(answer, Answer::Failed(_)) {
             self.failed += 1;

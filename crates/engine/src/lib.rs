@@ -2011,27 +2011,28 @@ pub fn serve_with<
     log: L,
     handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
-    let cfg = default_config(&table)?;
-    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let mut engine: StandardAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
-        cfg,
-        InlineDispatch::new(app),
-        crate::clock::SystemClock,
-        // Sized for the connections, the listener, the waker and the sockets
-        // still waiting to identify themselves.
-        crate::block::Block::new(capacity + limits.pending() + 2),
-        capacity,
-    );
-    // A brand-new engine has no cell of its own, so this cannot refuse.
-    // `with_log` carries the cell across to the engine it returns.
-    let _ = engine.adopt(&handles);
-    pump(
-        acceptor,
-        Some,
-        engine.with_log(log),
+    // [`serve_over`] over FIX 4.4 with nothing to recover: one body for every
+    // standard acceptor door, so the doors cannot drift apart (ADR-0207
+    // decision 5; `tests/serve_over.rs`).
+    serve_over::<
+        N,
+        RX,
+        TX,
+        APP,
+        TagValue<Fix44, N>,
+        A,
+        crate::journal::Store,
+        crate::recovery::NoRecovery,
+        L,
+    >(
+        addr,
         table,
+        app,
+        capacity,
         limits,
         crate::recovery::NoRecovery,
+        log,
+        handles,
     )
 }
 
@@ -2401,7 +2402,53 @@ pub fn connect_and_serve_with<
     log: L,
     handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
-    let mut engine: TcpInitiatorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> =
+    connect_and_serve_over::<N, RX, TX, APP, TagValue<Fix44, N>, A, J, V, L>(
+        addr, cfg, app, policy, recovery, log, handles,
+    )
+}
+
+/// As [`connect_and_serve_with`], over the encoding `E` — the door a
+/// dictionary of the application's own reaches the initiator through
+/// (ADR-0207 decision 5). `E` is named, never inferred:
+/// `connect_and_serve_over::<256, 4096, 8192, 1024, TagValue<Venue, 256>, _, Store, _, _>`.
+///
+/// [`connect_and_serve`] and [`connect_and_serve_with`] are this function with
+/// `E = TagValue<Fix44, N>`.
+///
+/// # Errors
+///
+/// As [`connect_and_serve`].
+#[cfg(all(feature = "standard", unix))]
+pub fn connect_and_serve_over<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    E,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    cfg: Config,
+    app: A,
+    policy: crate::reconnect::Policy,
+    recovery: V,
+    log: L,
+    handles: crate::observe::Handles,
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
+    let mut engine: TcpInitiatorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP, E> =
         Engine::new(
             cfg,
             InlineDispatch::new(app),
@@ -2696,14 +2743,25 @@ fn dial<
     V: crate::recovery::Recovery<J>,
     L: MessageLog,
     F: FnMut(TcpTransport) -> Option<T>,
+    E,
 >(
     addr: &str,
     cfg: Config,
     wrap: F,
-    mut engine: InitiatorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    mut engine: InitiatorEngineOver<T, A, W, J, L, N, RX, TX, APP, E>,
     policy: crate::reconnect::Policy,
     recovery: V,
-) -> Result<Shutdown, ServeError> {
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     let done = dial_loop(addr, cfg, wrap, &mut engine, policy, recovery);
     let grace = engine.stop_grace_ms();
     // Whatever the loop left is retired here, before the wait, not after it.
@@ -2727,14 +2785,25 @@ fn dial_loop<
     V: crate::recovery::Recovery<J>,
     L: MessageLog,
     F: FnMut(TcpTransport) -> Option<T>,
+    E,
 >(
     addr: &str,
     cfg: Config,
     mut wrap: F,
-    engine: &mut InitiatorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    engine: &mut InitiatorEngineOver<T, A, W, J, L, N, RX, TX, APP, E>,
     mut policy: crate::reconnect::Policy,
     mut recovery: V,
-) -> Result<Shutdown, ServeError> {
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     // **A counter, not the event stream.** `Observer::events` *drains* the
     // ring, so this loop reading it would take every `LoggedOn` the caller's own
     // `Observer` is waiting for — two readers on one cell share events rather
@@ -3023,16 +3092,73 @@ pub fn serve_with_recovery_with<
     log: L,
     handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
+    serve_over::<N, RX, TX, APP, TagValue<Fix44, N>, A, J, V, L>(
+        addr, table, app, capacity, limits, recovery, log, handles,
+    )
+}
+
+/// As [`serve_with_recovery_with`], over the encoding `E` — the door a
+/// dictionary of the application's own reaches the standard acceptor through
+/// (ADR-0207 decision 5). `E` is named, never inferred:
+/// `serve_over::<256, 4096, 8192, 1024, TagValue<Venue, 256>, _, Store, _, _>`.
+///
+/// **Every other standard acceptor door on TCP is this function** —
+/// [`serve`], [`serve_with`], [`serve_with_recovery`] and
+/// [`serve_with_recovery_with`] call it with `E = TagValue<Fix44, N>`, so
+/// there is one body and the doors cannot drift apart.
+/// `tests/serve_over.rs::serve_over_with_fix44_answers_like_serve` holds the
+/// two answering alike on the wire.
+///
+/// # Errors
+///
+/// As [`serve_with_recovery`].
+#[cfg(all(feature = "standard", unix))]
+// Eight, as `serve_with_recovery` — ADR-0054's deferred `Serve` builder.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_over<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    E,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    recovery: V,
+    log: L,
+    handles: crate::observe::Handles,
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let mut engine: TcpAcceptorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP> =
+    let mut engine: TcpAcceptorEngine<A, crate::block::Block, J, NoLog, N, RX, TX, APP, E> =
         Engine::new(
             cfg,
             InlineDispatch::new(app),
             crate::clock::SystemClock,
+            // Sized for the connections, the listener, the waker and the sockets
+            // still waiting to identify themselves.
             crate::block::Block::new(capacity + limits.pending() + 2),
             capacity,
         );
+    // A brand-new engine has no cell of its own, so this cannot refuse.
+    // `with_log` carries the cell across to the engine it returns.
     let _ = engine.adopt(&handles);
     pump(
         acceptor,
@@ -3089,23 +3215,27 @@ pub fn serve_hft_with<
     log: L,
     handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
-    let cfg = default_config(&table)?;
-    let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let mut engine: HftAcceptorEngine<A, NoLog, N, RX, TX, APP> = Engine::new(
-        cfg,
-        InlineDispatch::new(app),
-        crate::clock::SystemClock,
-        crate::wait::Spin,
-        capacity,
-    );
-    let _ = engine.adopt(&handles);
-    pump(
-        acceptor,
-        Some,
-        engine.with_log(log),
+    // [`serve_hft_over`] over FIX 4.4 with nothing to recover, as `serve_with`
+    // is `serve_over`'s.
+    serve_hft_over::<
+        N,
+        RX,
+        TX,
+        APP,
+        TagValue<Fix44, N>,
+        A,
+        crate::journal::Store,
+        crate::recovery::NoRecovery,
+        L,
+    >(
+        addr,
         table,
+        app,
+        capacity,
         limits,
         crate::recovery::NoRecovery,
+        log,
+        handles,
     )
 }
 
@@ -3406,15 +3536,66 @@ pub fn serve_hft_with_recovery_with<
     log: L,
     handles: crate::observe::Handles,
 ) -> Result<Shutdown, ServeError> {
+    serve_hft_over::<N, RX, TX, APP, TagValue<Fix44, N>, A, J, V, L>(
+        addr, table, app, capacity, limits, recovery, log, handles,
+    )
+}
+
+/// As [`serve_hft_with_recovery_with`], over the encoding `E` — the `hft`
+/// door a dictionary of the application's own reaches the acceptor through
+/// (ADR-0207 decision 5). **Spins**, as [`serve_hft`] does. `E` is named,
+/// never inferred:
+/// `serve_hft_over::<256, 4096, 8192, 1024, TagValue<Venue, 256>, _, Store, _, _>`.
+///
+/// [`serve_hft`], [`serve_hft_with`], [`serve_hft_with_recovery`] and
+/// [`serve_hft_with_recovery_with`] are this function with
+/// `E = TagValue<Fix44, N>`.
+///
+/// # Errors
+///
+/// As [`serve_hft_with_recovery`].
+// Eight, as `serve_hft_with_recovery` — ADR-0054's deferred `Serve` builder.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_hft_over<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    E,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    recovery: V,
+    log: L,
+    handles: crate::observe::Handles,
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     let cfg = default_config(&table)?;
     let acceptor = Acceptor::bind(addr).map_err(ServeError::Io)?;
-    let mut engine: TcpAcceptorEngine<A, crate::wait::Spin, J, NoLog, N, RX, TX, APP> = Engine::new(
-        cfg,
-        InlineDispatch::new(app),
-        crate::clock::SystemClock,
-        crate::wait::Spin,
-        capacity,
-    );
+    let mut engine: TcpAcceptorEngine<A, crate::wait::Spin, J, NoLog, N, RX, TX, APP, E> =
+        Engine::new(
+            cfg,
+            InlineDispatch::new(app),
+            crate::clock::SystemClock,
+            crate::wait::Spin,
+            capacity,
+        );
     let _ = engine.adopt(&handles);
     pump(
         acceptor,
@@ -3646,14 +3827,25 @@ fn pump<
     V: crate::recovery::Recovery<J>,
     L: MessageLog,
     F: FnMut(TcpTransport) -> Option<T>,
+    E,
 >(
     acceptor: Acceptor,
     wrap: F,
-    mut engine: AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    mut engine: AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP, E>,
     table: presession::Table,
     limits: presession::Limits,
     recovery: V,
-) -> Result<Shutdown, ServeError> {
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     let done = pump_loop(acceptor, wrap, &mut engine, table, limits, recovery);
     let grace = engine.stop_grace_ms();
     // Whatever the loop left is retired here, before the wait, not after it.
@@ -3700,14 +3892,25 @@ fn pump_loop<
     V: crate::recovery::Recovery<J>,
     L: MessageLog,
     F: FnMut(TcpTransport) -> Option<T>,
+    E,
 >(
     acceptor: Acceptor,
     mut wrap: F,
-    engine: &mut AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    engine: &mut AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP, E>,
     table: presession::Table,
     limits: presession::Limits,
     mut recovery: V,
-) -> Result<Shutdown, ServeError> {
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     // `[2026-09-05]` **The pre-session buffer IS the engine's `RX`, and that is
     // now a type rather than a promise.** It used to read
     // `const PRE: usize = 4096;` under a comment saying it matched the engine —
@@ -3820,12 +4023,22 @@ fn admit_settled<
     J: SessionJournal,
     V: crate::recovery::Recovery<J>,
     L: MessageLog,
+    E,
 >(
-    engine: &mut AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP>,
+    engine: &mut AcceptorEngineOver<T, A, W, J, L, N, RX, TX, APP, E>,
     recovery: &mut V,
     pending: presession::Pending<T, RX>,
     cfg: Config,
-) {
+) where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
     // **Where recovery is asked.** The identity is known now and was not a
     // moment ago — before the `Logon` there is nothing to look a journal up by
     // (ADR-0020, ADR-0026).
