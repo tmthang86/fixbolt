@@ -217,7 +217,7 @@ và workflow `pages.yml`.
   (điều quyết định 7 cho phép), không có câu tán thành, huy hiệu tương thích hay so sánh hơn kém.
   Giữ bằng máy: `check-doc-claims.sh` (bước 14) đỏ khi một dòng có tên engine khác (QuickFIX,
   Fix8, Chronicle, OnixS, B2BITS, FerrumFIX, IronFix) cùng một từ so sánh (`faster`, `slower`,
-  `better`, `outperform`, `than`); và bằng tay: senior review bước 16 đọc từng câu có tên engine
+  `better`, `outperform` — bỏ `than` ở bước 14: đo được 8 dòng trúng, 6 là tiếng Anh bình thường như "rather than"; ADR-0206 ghi lần sửa); và bằng tay: senior review bước 16 đọc từng câu có tên engine
   khác.
 - `why-rust.md`: mức cược của micro giây (Aquilina–Budish–O'Neill, QJE 2022 — chỉ cho luận điểm
   này), cái Rust cho dự án (bằng chứng của chính repo: bộ đếm cấp phát, lint cấm `panic`, `unsafe`
@@ -516,4 +516,22 @@ Chủ dự án yêu cầu (2026-09-26): mọi bước viết tài liệu chạy 
   bộ đếm index không thấy thư mục con — đã sửa, số vẫn 176 (đảo ngược: 176 → 177 đỏ).
 - **Chưa chứng minh trên máy này:** clippy toàn workspace `--all-features` (`ktls-core` chỉ
   Linux) — CI chạy.
+- CI xanh cho commit đóng: `7487171`, run 36246973797 (22/22); merge `b3799df`.
+
+### PR 2 — bộ cho người đóng góp (#120, merge `414b640`, run 36254765790 trên `29443cf`, 22/22)
+
+- `ARCHITECTURE.md` 188 dòng, 15 Architecture Invariant, mỗi cái trỏ về mục §2 và máy kiểm.
+- Review: 1 trung bình (CONTRIBUTING chép lệnh gate thay vì link) + 3 nhẹ, đã sửa.
+- **Bất ngờ:** ba subagent viết tài liệu tự dừng vì tưởng chủ dự án từ chối quyền; thực ra là
+  hook GateGuard. Chủ dự án xác nhận không chặn gì.
+- Chủ dự án (2026-09-26): "dự án có team phát triển (hiện tại chỉ mình tôi)".
+
+### PR 3 — trang cho người nhúng (#121, nhánh `docs/embedder-pages`)
+
+- Ba trang giải thích, README mới, TUTORIAL mà code là file ví dụ đã biên dịch (4 marker
+  `sample:`), `check-doc-claims.sh`.
+- **Sửa lỗi cũ tìm ra trên đường:** TUTORIAL gọi `shutdown` ngay sau khi spawn; mẫu wire sai
+  `9=`/`10=`; `standard` "chạy mọi OS" (thật ra chỉ Unix); số ca cấp phát 24/33 đã cũ (đúng là
+  8/17/35); PRD nói chưa từng TLS với engine khác (CI run 35892604235 đã chạy 7/7); DESIGN §1 trích
+  số của fix8 ngoài trang prior-art.
 
