@@ -30,6 +30,7 @@
 // panics in a test is a failing test, which is what a test is for.
 #![allow(clippy::indexing_slicing)]
 
+// region:handler
 use fixbolt::{Answer, Handler, Incoming, Reply};
 
 /// A desk that fills whatever it is sent.
@@ -83,7 +84,9 @@ impl Handler for Desk {
             .send()
     }
 }
+// endregion:handler
 
+// region:exec_id
 /// `EXEC-<n>` into `buf`, with no allocation.
 ///
 /// Ten digits is `u32::MAX` and the prefix is five bytes, so sixteen is always
@@ -106,3 +109,4 @@ fn exec_id(n: u32, buf: &mut [u8; 16]) -> &[u8] {
     buf[5..5 + len].copy_from_slice(&digits[i..]);
     &buf[..5 + len]
 }
+// endregion:exec_id

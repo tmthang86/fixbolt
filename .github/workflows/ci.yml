@@ -217,6 +217,11 @@ jobs:
           git log -1 --format='HEAD    = %H%nsubject = %s%nparents = %P'
       - run: scripts/check-links.py
       - run: scripts/check-adr-numbers.sh
+      # ADR-0206 decision 8 / ADR-0104 decision 7: no banned claim, no
+      # future-licence wording, no marketing comparison against another FIX
+      # engine, held by machine instead of by memory. See the script's own
+      # header for the three rules, the allowlist and what it cannot see.
+      - run: scripts/check-doc-claims.sh
 
   # ADR-0206 decision 7: the documentation site is an mdBook over docs/, and
   # this job is its gate on every pull request. `.github/workflows/pages.yml`

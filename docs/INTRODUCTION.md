@@ -108,6 +108,8 @@ The acceptor is harder to build and to operate for four reasons.
 - **`forgefix`.** Notable for precise protocol terminology and documentation.
 
 The full survey, with licences and trade-offs, is in [reference/prior-art.md](reference/prior-art.md).
+Why this engine is written in Rust at all, and what the language costs it, is
+[Why Rust, and what it costs](explanation/why-rust.md).
 
 ---
 
@@ -127,4 +129,9 @@ a second, labelled row beside a kernel-TCP figure from the same boot
   shared host or in a container. `hft` (opt-in, Linux only) pins one thread per session to an
   isolated core and never sleeps in the kernel on the hot path.
 
-Next: [GETTING-STARTED.md](GETTING-STARTED.md) runs an acceptor in three steps.
+Each of these choices, what it saves on the round trip and what it costs you in return, is
+explained in [Why fixbolt](explanation/why-fixbolt.md), which ends with what fixbolt does not do.
+The ten design decisions behind them, each with its problem and its cost, are
+[The design in ten decisions](explanation/design-rationale.md).
+
+Next: [GETTING-STARTED.md](GETTING-STARTED.md) runs an acceptor in two steps.

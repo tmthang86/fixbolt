@@ -22,6 +22,7 @@
 #[path = "shared/order_handler.rs"]
 mod order_handler;
 
+// region:main
 #[cfg(all(feature = "standard", unix))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fixbolt::{Limits, Settings};
@@ -74,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("stopped: {shutdown:?}");
     Ok(())
 }
+// endregion:main
 
 #[cfg(not(all(feature = "standard", unix)))]
 fn main() {
