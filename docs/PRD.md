@@ -207,7 +207,7 @@ phase that includes it.
 
 | Candidate | Why it is here | Reopens when | Decided by |
 |---|---|---|---|
-| Kernel bypass: Onload over AF_XDP, or native Onload on a Solarflare card | Phase 4 item 2 was dropped at gate G1 on the desk's I211, a drop on that machine, not a result about bypass; the owner kept it for later (2026-09-26) | a named acceptor host, NIC, kernel and peer, with G0 (`ethtool -x <nic>` prints an RSS key) and `ntuple on` quoted from it; the machines that pass, and what a rented VM or bare-metal server can and cannot do, are in [kernel-bypass-needs-a-machine-this-project-does-not-have](reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md) | [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md) (Proposed) |
+| Kernel bypass: Onload over AF_XDP on two rented cloud VMs (GCP `gve` the candidate; AWS `ena`, Azure `mana` excluded); no Solarflare card, no purchase, no Mac as counterparty (owner, 2026-09-26) | Phase 4 item 2 was dropped at gate G1 on the desk's I211, a drop on that machine, not a result about bypass; the owner kept it for later | a named pair of instances, with the gate of ADR-0204 decision 3 quoted from the acceptor (`gve`, flow steering offered, `ntuple on`, an RSS key, half the queues); the drivers that pass and what each use can run on are in [kernel-bypass-needs-a-machine-this-project-does-not-have](reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md); a VM figure is published under [ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md)'s label, never beside the desk's | [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md), [ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md) (both Accepted 2026-09-26) |
 
 ### Phase 1 exit criteria
 
@@ -357,8 +357,8 @@ Out unless a new ADR reverses them:
   TCP stack; `ef_vi` as a second `Transport` only once a Solarflare / X2-class NIC exists here;
   no TCP stack of our own. Bypass is plaintext only; it excludes TLS (D11). STATUS item 14.
   `[2026-09-26]` Phase 4's attempt was dropped at gate G1 on the desk's I211 (ADR-0203); the item is
-  now a later-phase candidate (§2 *Later phases*, [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md)),
-  and this bullet's narrowing stands for it.
+  now a later-phase candidate on rented cloud VMs (§2 *Later phases*, [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md)),
+  and this bullet's narrowing stands for it; `ef_vi` stays out (the owner declined a Solarflare card).
 - **Clustering, HA, replication.**
 - **A web UI of this project's own.** *Narrowed 2026-09-23 by ADR-0098 item 5:* a
   Prometheus-format exporter on its own thread (`fixbolt-metrics`) and a committed Grafana

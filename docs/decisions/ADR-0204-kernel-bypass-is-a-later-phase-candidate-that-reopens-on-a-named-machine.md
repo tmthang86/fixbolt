@@ -1,15 +1,24 @@
 # ADR-0204 — Kernel bypass is a later-phase candidate that reopens only on a named machine
 
-- **Status**: **Proposed — 2026-09-26.** The owner decided on 2026-09-26, in conversation, that
-  kernel bypass is recorded for a later phase rather than left closed by phase 4's drop; this ADR
-  writes down how. It is accepted when the owner approves the text.
+- **Status**: **Accepted — 2026-09-26, by the owner's answers to decision 5** (in conversation,
+  verbatim: *"1. thuê VPS 2. không 3. thuê — chấp nhận con số đo ở VPS, nếu cần thì viết lại ADR"*).
+  **Revised in place 2026-09-26, while Proposed** (`CLAUDE.md` §5; ADR-0002 shows the shape): the
+  first text left decision 5's three questions to the owner; the owner answered them the same day —
+  (1) a commodity NIC over AF_XDP on a **rented cloud VM**, not a Solarflare card; (2) the counterparty
+  is **not the Mac mini**; (3) **rent, do not buy**, and a figure measured on a VM is accepted as
+  publishable. Decisions 2, 4 and 5 are rewritten to carry those answers, and the acceptance of VM
+  figures, which reverses a sentence of `DESIGN.md` §9, is decided separately in
+  [ADR-0205](ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md).
+  The first text's decision 4 (*"A figure is published only from a host that is not a guest"*) is
+  withdrawn by that answer.
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang. Written by the architect (Opus).
 - **Related**: [ADR-0098](ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)
-  item 2, Q3, Q5; [ADR-0099](ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md);
-  [ADR-0200](ADR-0200-a-bypass-arm-is-judged-from-the-counterparty-against-a-same-boot-kernel-twin-and-its-kill-line-is-arithmetic-written-first.md)
-  decision 4; [ADR-0201](ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md)
+  item 2, Q1, Q3, Q5; [ADR-0099](ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md);
+  [ADR-0200](ADR-0200-a-bypass-arm-is-judged-from-the-counterparty-against-a-same-boot-kernel-twin-and-its-kill-line-is-arithmetic-written-first.md);
+  [ADR-0201](ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md)
   *Result*; [ADR-0203](ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md);
+  [ADR-0205](ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md);
   [ADR-0141](ADR-0141-fixp-is-built-only-in-the-venues-current-dialect-in-a-role-that-dialect-has-a-referee-for-and-not-before-phase-5.md)
   (phase 5 is not scoped); `PRD.md` §2 *Later phases*, §5 *Kernel bypass*; `DESIGN.md` §9;
   [kernel-bypass-needs-a-machine-this-project-does-not-have](../reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md).
@@ -22,20 +31,20 @@ ADR-0203 made that drop count as done for phase 4, and nothing in phase 4 change
 
 A drop on a machine is not a finding about bypass: no arm ran, and ADR-0200 decision 4's prediction
 was never tested. The owner wants the item kept for later. What stops it is hardware, so the record
-must say which hardware, and whether renting instead of buying is enough. The research is on the
-reference page named above; its conclusions:
+must say which hardware, and whether renting is enough. The research is on the reference page named
+above; its conclusions:
 
 - Onload's AF_XDP path needs both RSS size operations, n-tuple steering and zero-copy in the driver.
   `ixgbe`, `i40e`, `ice` and `mlx5` have them on every kernel Onload supports (6.1 – 7.0); `igb` and
   `igc` gain the missing key operation only in `v7.3-rc1`, past Onload's range.
 - AWS `ena` (`.metal` included) lacks n-tuple steering, and Onload fails on it (issues #62, #337);
-  Azure `mana` lacks it too. GCP `gve` and `idpf` have every operation, and one contributor reported
-  Onload working on both (#337, 2026-09-21), not reproduced here.
-- `DESIGN.md` §9 already rules that a guest cannot measure. A dedicated bare-metal host can, within
-  the §9 rows, but its path to the peer is a provider's switch fabric, not a cable.
+  Azure `mana` lacks it too. GCP `gve` has every operation in the driver, and is the only VM driver
+  with a report of Onload working (#337, 2026-09-21, an AF_XDP-code contributor, not reproduced
+  here). On `gve`, n-tuple steering and the RSS key are **offered by the virtual device per platform**,
+  so the driver having the operations is not enough.
 - With the Mac mini as the counterparty (~232 µs p50 against a 27–29 µs acceptor window), a 10 %
-  counterparty-side gain is arithmetically near-impossible (ADR-0200 decision 4). A peer is part of
-  the machine requirement, not only the acceptor's NIC.
+  counterparty-side gain is arithmetically near-impossible (ADR-0200 decision 4). The owner's answer
+  (2) removes the Mac from the item.
 
 Phase 5 is not scoped (ADR-0141 *Consequences*), so this item cannot be assigned to a numbered phase.
 
@@ -44,48 +53,50 @@ Phase 5 is not scoped (ADR-0141 *Consequences*), so this item cannot be assigned
 1. **Kernel bypass is a candidate for a phase after 4, not a phase-4 item.** It is listed in
    `PRD.md` §2 *Later phases*, with no phase number until the owner scopes a phase that includes it.
    Phase 4's exit criterion 3 stays met by ADR-0203's record.
-2. **It reopens only on a named machine.** A reopening plan starts by naming the acceptor host, its
-   NIC and driver, its kernel, and its peer, and by quoting G0 on that machine (`ethtool -x <nic>`
-   prints an RSS hash key) and `ethtool -K <nic> ntuple on` succeeding. Without that quote there is
-   nothing to plan. The reference page's *Minimum* and *Recommended* configurations are the
-   candidates; the page, not this ADR, holds the hardware facts.
-3. **What it reopens as is unchanged**: ADR-0099 (kernel TCP stays the headline; a bypass figure is a
+2. **The platform is two rented cloud VMs, and the candidate is GCP with `gve` (gVNIC).** One VM runs
+   the acceptor, the other the counterparty, in one zone. AWS (`ena`) and Azure (`mana`) are excluded
+   by the reference page's table. Nothing is bought (owner's answer 3); no Solarflare card
+   (answer 1 — ADR-0098 Q5's *no `ef_vi` card* carries over to this item).
+3. **It reopens only on a named pair of instances that passed the gate.** Before anything is cloned
+   or built, the reopening plan quotes, from the acceptor instance: the machine type and zone;
+   `uname -r` inside Onload's supported range; `ethtool -i <nic>` naming `gve`; the driver's boot log
+   line `FLOW STEERING device option enabled with max rule limit of N` with N > 0; `ethtool -K <nic>
+   ntuple on` succeeding; `ethtool -x <nic>` printing an RSS hash key (G0); and `ethtool -L` set to at
+   most half the maximum queue count, which `gve` requires before an XDP program attaches. After
+   registration, `ss --xdp` must read `zc:1`. A machine type whose device does not offer flow
+   steering fails the gate; the plan may try another series, and the series that passed is part of
+   every figure's label.
+4. **What it reopens as is unchanged**: ADR-0099 (kernel TCP stays the headline; a bypass figure is a
    second, labelled row beside a same-boot kernel twin), ADR-0098 Q3 (Onload only, no TCP stack of
-   this project's own), `hft` only, plaintext only. ADR-0200 and ADR-0201, deprecated, are the
-   measurement design a reopening starts from, not a design it is bound to.
-4. **Rented machines, by use.** Development and functional testing may run on a rented machine
-   whose NIC driver passes the reference page's table, a VM included. CI needs no Onload job,
-   because the item carries no engine code. A figure is published only from a host that is not a
-   guest and passes `scripts/check-machine.sh`, and its row names the path to the peer.
-5. **Not decided here, left to the reopening plan and the owner**: whether to buy a native
-   Solarflare card (ADR-0098 Q5 said no for phase 4 only); whether the counterparty stays the Mac
-   mini, and with it ADR-0200's instrument and kill line; which machine is bought or rented.
+   this project's own), `hft` only, plaintext only. Figures are measured from the counterparty VM
+   and published under ADR-0205. ADR-0200 (Deprecated) is the design a reopening starts from; its
+   decision 1 (the Mac as counterparty) and decision 4 (the desk's arithmetic) do not carry over, and
+   the reopening plan writes its own kill line before the first run (ADR-0098 Q1's rule).
+5. **Rented machines, by use.** Development, functional testing and the published measurement all
+   run on the same kind of rented pair. CI gets no Onload job: the item carries no engine code, and
+   a self-hosted runner on a rented VM is a secret-bearing machine outside this repository.
 
 ## Consequences
 
 **Good**
 
-- The item has an owner-visible home and one test that says it can start: a quoted G0 on a named
-  machine. Nobody reopens it by trying Onload again on the I211 and kernel `7.0`.
-- The hardware facts live on one page that can be re-read when prices or drivers change, without
-  editing an ADR.
-- Renting for development is allowed early, so work can start before a purchase, while §9 keeps the
-  rented VM out of any published number.
+- The item has an owner-visible home and one test that says it can start: a quoted gate on a named
+  pair of instances. Nobody reopens it by trying Onload again on the I211 and kernel `7.0`.
+- No purchase, and no dependence on the kernel and Onload both moving for the desk's `igb`.
+- The Mac's 232 µs round trip no longer sits in the instrument.
+- The hardware facts live on one page that can be re-read when drivers change, without editing an
+  ADR.
 
 **Bad — and accepted**
 
-- **No date and no phase number.** A candidate with no phase can stay a candidate for good; the
-  record says so rather than inventing a phase.
-- **The cheapest path is outside this project's control.** The desk's `igb` works once both the
-  kernel (≥ 7.3) and Onload (> 7.0 support) move, and neither has a date.
-- **The reference page rests partly on others' reports**: GCP support is one contributor's comment,
-  and Onload's AF_XDP path is *not at release quality* by its own README. A reopening re-checks, and
-  can still end at a gate.
-- **A peer is part of the cost.** The recommended shape is two hosts with matching NICs, so the
-  purchase is two cards, not one; the minimum shape keeps the Mac and inherits a DROP prediction.
-- **Decision 4 lets a figure come from a bare-metal rental** whose path to the peer passes a shared
-  switch fabric; such a figure is a different instrument from the desk's C-40 and is labelled as such,
-  not compared with it.
+- **No date and no phase number.** A candidate with no phase can stay a candidate for good.
+- **The platform rests on one report.** GCP support for Onload is one contributor's comment; Onload's
+  AF_XDP path is *not at release quality* by its own README; flow steering on `gve` depends on the
+  machine series. The gate can fail on every series tried, and then the item has no platform again.
+- **A VM figure carries everything ADR-0205 accepts**: not comparable with the desk, neighbours
+  measured rather than removed, several §9 rows absent, no NIC timestamps on `gve`.
+- **Rented time costs money while it runs**, and a recreated instance is a new machine whose
+  figures are re-measured, not reused.
 
 ## Sources
 
@@ -94,4 +105,7 @@ The reference page's *Sources* (read 2026-09-26), and in particular Onload `src/
 [#62](https://github.com/Xilinx-CNS/onload/issues/62),
 [#83](https://github.com/Xilinx-CNS/onload/issues/83),
 [#337](https://github.com/Xilinx-CNS/onload/issues/337); Linux commits `1ae67b2b28bc` (`igb`) and
-`f243be8edeab` (`igc`), both first in `v7.3-rc1`; `DESIGN.md` §9 first row; ADR-0200 decision 4.
+`f243be8edeab` (`igc`), both first in `v7.3-rc1`; Linux `drivers/net/ethernet/google/gve/gve_adminq.c`
+(flow steering and RSS as device options); the `gve` driver
+[README](https://github.com/GoogleCloudPlatform/compute-virtual-ethernet-linux) (*Receive Flow
+Steering*, *XDP*); `DESIGN.md` §9 first row; ADR-0200 decision 4.

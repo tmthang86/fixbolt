@@ -6,7 +6,9 @@ gate G1 because the desk's Intel I211 (`igb`, `7.0.0-31-generic`) lacks `get_rxf
 the trap itself is
 [onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks](onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md)).
 [ADR-0204](../decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md)
-records it as a candidate for a phase after 4. **This page is the one authored copy of the hardware
+records it as a candidate for a phase after 4, on rented cloud VMs, and
+[ADR-0205](../decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md)
+decides how a figure from them is published. **This page is the one authored copy of the hardware
 facts**: which NIC and which peer make the item runnable, and whether a rented VPS, cloud VM or
 bare-metal server can stand in for them. Prices are deliberately not here: they go stale, and they
 are not what decides the item.
@@ -64,33 +66,55 @@ ADR-0099 decision 2 publishes a bypass figure only beside a kernel-TCP figure fr
 non-negotiable 10 needs the committed benchmark, the machine and the §9 settings; ADR-0200 judges
 both arms from the counterparty.
 
-1. **The acceptor host is not a guest** (`DESIGN.md` §9, first row: *"Development may move to a
-   cloud VM; measurement cannot"*; `check-machine.sh` FAILs a guest). It needs root, the grub line
-   (`isolcpus`, `rcu_nocbs`, `processor.max_cstate=1`), the governor and C-state controls, IRQ
+1. **An acceptor whose §9 rows can be set, or printed as absent.** On bare metal: root, the grub
+   line (`isolcpus`, `rcu_nocbs`, `processor.max_cstate=1`), governor and C-state controls, IRQ
    affinity and `ethtool -C rx-usecs 0` on the bypass NIC — the knobs the Onload maintainer points
-   at first (#83: *"`ethtool -C <intf> tx-usecs 0 rx-usecs 0` … adjusting interrupt affinity"*).
+   at first (#83: *"`ethtool -C <intf> tx-usecs 0 rx-usecs 0` … adjusting interrupt affinity"*). On
+   a VM, the rows that cannot be set are printed as absent, row by row (`DESIGN.md` §9 *A figure
+   from a cloud VM*, ADR-0205).
 2. **A counterparty on a separate machine** (`DESIGN.md` §8, *a load generator on a separate
-   machine*), on a **direct cable, no switch**: a switch adds a hop, a queue and a second device's
-   jitter to the only instrument ADR-0200 trusts. A second port on the same host shares cores,
+   machine*). On hardware, a direct cable with no switch; on a cloud, a second VM in the same zone,
+   whose path to the acceptor is the provider's fabric. A second port on the same host shares cores,
    caches and the quiet-machine row, so it is not a peer.
 3. **A peer that does not drown the signal.** The Mac mini's counterparty p50 is **~232 µs** against
    the acceptor's 27–29 µs wire window (C-40); a 10 % counterparty-side gain is ~23 µs, 80–86 % of
    everything the acceptor does (ADR-0200 decision 4, which predicted DROP on that arithmetic). A
-   Linux peer with the same class of NIC, pinned and busy-polling, is what gives the pair
-   resolution. Changing the instrument is the reopening plan's decision, not this page's.
+   Linux peer pinned and busy-polling is what gives the pair resolution.
 
-**Minimum** (runs the item, keeps ADR-0200's design as written): the desk, on its §9 line, plus one
-PCIe NIC from the passing rows (`ixgbe`, `i40e`, `ice` or `mlx5`) on a kernel inside Onload's range,
-G0 green, `ntuple on`; the Mac mini on a direct cable at a speed both ends speak. It inherits
-ADR-0200's DROP prediction. Unverified: whether the desk's mini-ITX board has its one PCIe slot free.
+## The chosen platform — 2026-09-26
 
-**Recommended** (gives the pair resolution and a hardware stamp under Onload): two Linux hosts on
-bare metal, each with the same passing NIC — `mlx5` (ConnectX-5/6) or `ice` (E810), the two rows
-with an RX stamp — on one direct cable (DAC for SFP ports), both on the §9 line, the peer running the
-generator busy-polling.
+The owner chose **two rented cloud VMs, a commodity NIC over AF_XDP, no purchase, no Mac**, and
+accepted a VM figure as publishable (ADR-0204 decisions 2–5, ADR-0205). By the driver table, the
+candidate is **GCP with `gve`**; AWS `ena` and Azure `mana` are out.
 
-**Native alternative**: a pair of Solarflare cards (X2522 or later) in the same two-host shape; needs
-the owner to reverse ADR-0098 Q5 for that phase.
+What `gve` adds to the table, read from its source and Google's driver
+[README](https://github.com/GoogleCloudPlatform/compute-virtual-ethernet-linux):
+
+- **n-tuple and the RSS key are device options, per platform.** `gve_adminq.c` sets `NETIF_F_NTUPLE`
+  only when the virtual device reports `max_flow_rules > 0` (and logs `FLOW STEERING device option
+  enabled with max rule limit of N`), and takes `rss_key_size` from the device's RSS option. The
+  README: *"Support for flow steering varies by VM platform, so it is best to check for support
+  before attempting to use the feature."* The gate (ADR-0204 decision 3) is therefore per machine
+  series.
+- **XDP needs half the queues**: *"the number of RX and TX queues must be no more than half their
+  maximum values"* before an XDP program attaches — `ethtool -L` before Onload registers.
+- **Zero-copy** is advertised on both queue formats, GQI-QPL and DQO-RDA
+  (`gve_set_netdev_xdp_features`). The RX metadata timestamp (`gve_xdp_rx_timestamp`) is in the
+  DQO path; **transmit hardware timestamps are refused** (`HWTSTAMP_TX_OFF` only), so the acceptor
+  has no NIC-stamped wire window and the pair is the counterparty's round trip only.
+- **Placement**: a compact placement policy *"places compute instances close to each other in a
+  zone, which reduces network latency"* (C3, C4, N2 and others); sole-tenant nodes remove other
+  tenants from the host but *"you can't apply placement policies to sole-tenant instances"*;
+  threads per core = 1 disables SMT on most series
+  ([placement](https://docs.cloud.google.com/compute/docs/instances/placement-policies-overview),
+  [sole-tenancy](https://docs.cloud.google.com/compute/docs/nodes/sole-tenant-nodes),
+  [threads per core](https://docs.cloud.google.com/compute/docs/instances/set-threads-per-core)).
+
+**Other shapes, not chosen, kept for the record.** *Hardware minimum*: the desk plus one PCIe NIC
+from the passing rows (`ixgbe`, `i40e`, `ice`, `mlx5`), with the Mac on a cable — inherits ADR-0200's
+DROP prediction. *Hardware recommended*: two bare-metal hosts with `mlx5` (ConnectX-5/6) or `ice`
+(E810), the rows with an RX stamp, on one DAC cable. *Native*: a pair of Solarflare cards (X2522 or
+later), which ADR-0098 Q5 and the owner's answer 1 rule out.
 
 ## Can a rented VPS, cloud VM or bare-metal server do it?
 
@@ -98,9 +122,9 @@ Three uses, three verdicts.
 
 | Use | Verdict | Why |
 |---|---|---|
-| **(i) Develop and functionally test** — install Onload, register a NIC, run the 59-definition corpus under `onload` (ADR-0200 decision 5), prove `zc:1` and the segment-counter check | **Yes on a machine with a passing driver, which rules out most VMs.** GCP (gVNIC VMs, IDPF bare metal) is the candidate, on one contributor's word (#337, 2026-09-21) — reproduce before relying on it. A rented bare-metal server with an `ixgbe`/`i40e`/`ice`/`mlx5` NIC works by the table; the NIC model varies per offer, so `ethtool -i` and G0 are read before committing. **AWS: no, `.metal` included** — the NIC is `ena`, which has no n-tuple (#62, #337). **Azure: `mana`, no**; the `mlx5` VF registered once in 2021 (#37), unconfirmed since. Generic VPS (`virtio_net`, `vmxnet3`): no |
-| **(ii) CI** | **No Onload in CI; none is needed.** GitHub-hosted runners are VMs whose NIC nobody here chooses and whose loopback/`veth` Onload cannot register (no RSS ops). The item is *no engine code* (ADR-0098 item 2), so what CI must hold is the pure parts — a verdict script's fixture test, the machine-check verdict functions — which run anywhere. An Onload job would need a self-hosted runner on hardware from use (i), and a runner on a rented box is a secret-bearing machine outside this repository's control |
-| **(iii) A publishable figure** under ADR-0099, non-negotiable 10, `DESIGN.md` §9 | **Never from a VM**: a guest is a §9 FAIL, a virtualised NIC is not the NIC the row names, steal time and noisy neighbours are not controllable. **A dedicated bare-metal rental is not excluded by the rules** if `check-machine.sh` passes on it, both arms run on one boot, and the row names the machine, the NIC and driver, the Onload version, the XDP mode read back, and the path to the peer. Its limits: the peer sits behind the provider's switch fabric, not a direct cable, and that path is shared with other tenants; a figure from it is a different instrument from the desk's C-40 and is not comparable to it. AWS `.metal` still fails at the NIC |
+| **(i) Develop and functionally test** — install Onload, register a NIC, run the 59-definition corpus under `onload` (ADR-0200 decision 5), prove `zc:1` and the segment-counter check | **Yes, on a GCP `gve` pair that passes ADR-0204's gate**; on a rented bare-metal server with an `ixgbe`/`i40e`/`ice`/`mlx5` NIC too. GCP rests on one contributor's report (#337, 2026-09-21), so the gate decides. **AWS: no, `.metal` included** — `ena` has no n-tuple (#62, #337). **Azure: no** — `mana` has no n-tuple; the `mlx5` VF registered once in 2021 (#37), unconfirmed since. Generic VPS (`virtio_net`, `vmxnet3`): no |
+| **(ii) CI** | **No Onload in CI; none is needed.** GitHub-hosted runners are VMs whose NIC nobody here chooses and whose loopback/`veth` Onload cannot register (no RSS ops). The item is *no engine code* (ADR-0098 item 2), so what CI must hold is the pure parts — a verdict script's fixture test, the machine-check verdict functions — which run anywhere. A self-hosted runner on a rented VM would be a secret-bearing machine outside this repository's control |
+| **(iii) A publishable figure** under ADR-0099, non-negotiable 10, `DESIGN.md` §9 | **Yes, from the rented pair, under ADR-0205** (accepted by the owner 2026-09-26): its own table, a kernel-TCP twin from the same VM boot beside the bypass row, both arms from the counterparty VM, arms alternating run by run, and a label naming both instances, the driver, the Onload commit, `check-machine.sh` verbatim (its `GUEST` FAIL included) and every §9 row as applied / applied at vCPU level / absent / not applicable. **Never compared with the desk** (C-40, §8) or with another instance. What it cannot remove: host neighbours and fabric noise (measured by steal only), several §9 rows absent or not applicable, no NIC timestamps on `gve` |
 
 ## Sources
 
@@ -122,6 +146,10 @@ and `drivers/net/{veth,virtio_net}.c` at `master`, `v7.0`, `v6.18`, `v6.8` (and 
 [bare-metal instances](https://docs.cloud.google.com/compute/docs/instances/bare-metal-instances);
 [Azure accelerated networking](https://learn.microsoft.com/en-us/azure/virtual-network/accelerated-networking-how-it-works);
 [AWS user-provided kernels](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/UserProvidedKernels.html);
-Amazon [ENA release notes](https://github.com/amzn/amzn-drivers/blob/master/kernel/linux/ena/RELEASENOTES.md).
-**Searched, not verified:** which NIC a given Hetzner or OVH dedicated offer carries; any published
+Amazon [ENA release notes](https://github.com/amzn/amzn-drivers/blob/master/kernel/linux/ena/RELEASENOTES.md); Linux `drivers/net/ethernet/google/gve/{gve_adminq.c, gve_ethtool.c, gve_main.c, gve_rx_dqo.c}`
+at `master`; the `gve` driver [README](https://github.com/GoogleCloudPlatform/compute-virtual-ethernet-linux);
+Google Cloud [placement policies](https://docs.cloud.google.com/compute/docs/instances/placement-policies-overview),
+[sole-tenancy](https://docs.cloud.google.com/compute/docs/nodes/sole-tenant-nodes),
+[threads per core](https://docs.cloud.google.com/compute/docs/instances/set-threads-per-core).
+**Searched, not verified:** which GCP machine series' `gve` device offers flow steering (Google names none); which NIC a given Hetzner or OVH dedicated offer carries; any published
 Onload-on-gVNIC or -IDPF latency figure; whether Azure's `mlx5` VF still registers today.
