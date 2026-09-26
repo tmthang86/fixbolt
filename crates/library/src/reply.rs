@@ -30,7 +30,7 @@
 use core::marker::PhantomData;
 use core::ops::Range;
 
-use fixbolt_codec::{EncodeError, GroupData, TemplateBuilder};
+use fixbolt_codec::{Dictionary, EncodeError, GroupData, TemplateBuilder};
 use fixbolt_dict::Fix44;
 
 /// Fields written from the session, never from the handler.
@@ -129,10 +129,12 @@ impl Answer {
 /// is the decision this table belongs to; `crates/library/benches/cost.rs` is
 /// the committed benchmark.
 ///
-/// `D` is the dictionary the reply is ordered and encoded by, [`Fix44`] unless
-/// named (ADR-0207 decision 5). **Not yet used** — plan
-/// `2026-09-26-docs-for-embedders` step 26 carries it into [`Message`]; until
-/// then every reply is ordered by [`Fix44`].
+/// `D` is the dictionary the reply is ordered and encoded by — FIX 4.4 unless
+/// the application names its own ([`crate::dict`], ADR-0207 decision 5). It is
+/// carried into [`Message`], whose `send` lays the fields and groups out by
+/// `D`'s tables: a venue's own repeating group is written in the order that
+/// venue's dictionary declares, keyed by `(MsgType, counter)` —
+/// `tests/dictionary_param.rs::a_reply_over_a_dialect_orders_its_custom_group_by_the_dialect`.
 pub struct Reply<'a, const P: usize = 64, const S: usize = 1024, D = Fix44> {
     begin_string: &'a [u8],
     /// `None` when this is an **origination** rather than a reply.
@@ -266,7 +268,7 @@ impl<'a, const P: usize, const S: usize, D> Reply<'a, P, S, D> {
         ref_msg_type: &[u8],
         reason: u32,
         text: &[u8],
-    ) -> Message<'a, P, S> {
+    ) -> Message<'a, P, S, D> {
         // One ten-byte stack buffer, no allocation — `benches/alloc.rs` case
         // `reject` is what says so.
         let mut reason_digits = [0u8; 10];
@@ -293,7 +295,7 @@ impl<'a, const P: usize, const S: usize, D> Reply<'a, P, S, D> {
     /// anything — so a handler cannot forget one, and cannot get the `49`/`56`
     /// reversal wrong, because neither is reachable from the API it is given.
     #[must_use]
-    pub fn message(self, msg_type: &[u8]) -> Message<'a, P, S> {
+    pub fn message(self, msg_type: &[u8]) -> Message<'a, P, S, D> {
         let mut digits = [0u8; 10];
         let mut b = TemplateBuilder::<P, S>::new(self.begin_string);
         b.field(35, msg_type)
@@ -323,13 +325,17 @@ impl<'a, const P: usize, const S: usize, D> Reply<'a, P, S, D> {
             out: self.out,
             b,
             err: None,
+            dict: PhantomData,
         }
     }
 }
 
 /// A reply being written. Name body fields; the header is already accounted
 /// for.
-pub struct Message<'a, const P: usize, const S: usize> {
+///
+/// `D` is the dictionary [`Self::send`] orders and encodes by, the [`Reply`]'s
+/// own.
+pub struct Message<'a, const P: usize, const S: usize, D = Fix44> {
     out: &'a mut [u8],
     /// Held by value, **not** behind an `Option`.
     ///
@@ -343,9 +349,10 @@ pub struct Message<'a, const P: usize, const S: usize> {
     /// The first failure, kept so that a chain of `.field()` calls does not
     /// need a `?` on every line. Reported once by [`Self::send`].
     err: Option<ReplyError>,
+    dict: PhantomData<fn() -> D>,
 }
 
-impl<const P: usize, const S: usize> Message<'_, P, S> {
+impl<const P: usize, const S: usize, D> Message<'_, P, S, D> {
     /// Add a field. Order does not matter — the dictionary decides it.
     ///
     /// A tag the session owns (`34`, `49`, `52`, `56`) is **ignored**: the
@@ -368,7 +375,10 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
         self.b.group(counter);
         self
     }
+}
 
+/// Writing it out needs the dictionary; naming fields does not.
+impl<const P: usize, const S: usize, D: Dictionary> Message<'_, P, S, D> {
     /// Write the message. The answer is what [`crate::Handler`] returns.
     #[must_use]
     pub fn send(&mut self) -> Answer {
@@ -385,8 +395,8 @@ impl<const P: usize, const S: usize> Message<'_, P, S> {
         if let Some(e) = self.err {
             return Answer::Failed(e);
         }
-        match self.b.build::<Fix44>() {
-            Ok(t) => match t.encode_with::<Fix44>(&mut self.out[..], &[], groups) {
+        match self.b.build::<D>() {
+            Ok(t) => match t.encode_with::<D>(&mut self.out[..], &[], groups) {
                 Ok(r) => Answer::Sent(r),
                 Err(e) => Answer::Failed(ReplyError::Encode(e)),
             },

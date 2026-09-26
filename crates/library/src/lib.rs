@@ -67,14 +67,21 @@ pub use fixbolt_dict::NOTICE;
 
 /// The dictionary a message is read and written by (ADR-0207 decision 5).
 ///
-/// [`dict::Fix44`] is the default everywhere a dictionary is a type parameter
-/// — [`App`], [`Handler`], [`Reply`], [`Incoming`] — and a dictionary of the
-/// application's own is any type implementing [`dict::Dictionary`] and
-/// [`dict::Tables`]. **The parameter is not yet used**: plan
-/// `2026-09-26-docs-for-embedders` step 26 makes it the dictionary the parse
-/// and the reply go through.
+/// FIX 4.4 is the default everywhere a dictionary is a type parameter —
+/// [`App`], [`Handler`], [`Reply`], [`Message`], [`Incoming`] — and a
+/// dictionary of the application's own is any type implementing
+/// [`dict::Dictionary`] and [`dict::Tables`], usually one
+/// `fixbolt_dict::codegen::generate` wrote in the application's `build.rs`.
+/// The engine is given the same dictionary through the encoding
+/// `dict::TagValue<D, N>` and one of the `_over` doors — `serve_over`,
+/// `serve_hft_over`, `connect_and_serve_over`.
+///
+/// `codegen_format` is not API: it is what a generated file checks its format
+/// version against at compile time, through this path (ADR-0207 decision 4).
 pub mod dict {
     pub use fixbolt_codec::{Dictionary, TagValue};
+    #[doc(hidden)]
+    pub use fixbolt_dict::codegen_format;
     pub use fixbolt_dict::{FieldType, Fix44, Tables};
 }
 
@@ -98,6 +105,15 @@ pub use fixbolt_engine::serve_hft_with;
 #[cfg(all(feature = "standard", unix))]
 pub use fixbolt_engine::{serve, serve_with, serve_with_recovery, serve_with_recovery_with};
 
+/// The doors a dictionary of the application's own goes through (ADR-0207
+/// decision 5): the same serving loops, over the encoding
+/// [`dict::TagValue`]`<D, N>` the caller names. Every door above is one of
+/// these over FIX 4.4. **The `App`'s `D` must be the encoding's dictionary** —
+/// the session validates by the one, the handler reads by the other, and
+/// nothing in the types ties them.
+#[cfg(all(feature = "standard", unix))]
+pub use fixbolt_engine::{connect_and_serve_over, serve_over};
+
 /// Dialling out, and the rule for coming back.
 ///
 /// `[added 2026-09-05]` `Settings::into_initiator` hands back a
@@ -113,7 +129,7 @@ pub use fixbolt_engine::reconnect;
 
 /// `hft` has no `standard` to depend on, so its recovery entry point is always
 /// present.
-pub use fixbolt_engine::{serve_hft_with_recovery, serve_hft_with_recovery_with};
+pub use fixbolt_engine::{serve_hft_over, serve_hft_with_recovery, serve_hft_with_recovery_with};
 
 /// Which counterparty a connection is, decided before a session exists.
 pub use fixbolt_engine::presession::{Entry, Identity, LimitError, Limits, Registry, Table};

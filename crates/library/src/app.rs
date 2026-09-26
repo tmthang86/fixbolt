@@ -35,7 +35,7 @@
 use core::marker::PhantomData;
 use core::ops::Range;
 
-use fixbolt_codec::{FieldIndex, MessageView, Validation, parse_into};
+use fixbolt_codec::{Dictionary, FieldIndex, MessageView, Validation, parse_into};
 use fixbolt_dict::Fix44;
 use fixbolt_session::{Application, Peer};
 
@@ -47,10 +47,9 @@ use crate::reply::{Answer, Reply};
 /// is copied. `N` is how many fields the index holds; the caller picks it, as
 /// `CLAUDE.md` §6 requires, and [`Handler`]'s default is 256.
 ///
-/// `D` is the dictionary the message was read by, [`Fix44`] unless the
-/// application names its own (ADR-0207 decision 5). **Not yet used** — plan
-/// `2026-09-26-docs-for-embedders` step 26 makes it the parse's dictionary;
-/// until then every message is read by [`Fix44`].
+/// `D` is the dictionary the message was read by — FIX 4.4 unless the
+/// application names its own ([`crate::dict`], ADR-0207 decision 5) — so a
+/// venue's own repeating group is indexed by that venue's tables.
 pub struct Incoming<'a, const N: usize = 256, D = Fix44> {
     view: MessageView<'a, N>,
     dict: PhantomData<fn() -> D>,
@@ -118,8 +117,8 @@ impl<'a, const N: usize, D> Incoming<'a, N, D> {
 /// The three sizes are the caller's, and the defaults are the ones
 /// `crates/conformance/src/echo.rs` has been running the acceptance corpus with
 /// since 2026-08-28: `N` fields in the inbound index, `P` fields in a reply and
-/// `S` bytes of them. `D` is the dictionary, [`Fix44`] unless named (ADR-0207
-/// decision 5; not yet used — plan step 26).
+/// `S` bytes of them. `D` is the dictionary a message is read and a reply is
+/// written by — FIX 4.4 unless named ([`crate::dict`], ADR-0207 decision 5).
 pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 1024, D = Fix44> {
     /// One application message, and the right to answer it once.
     ///
@@ -165,9 +164,10 @@ pub trait Handler<const N: usize = 256, const P: usize = 64, const S: usize = 10
 ///
 /// Build one with [`app`] and hand it to `crate::serve`.
 ///
-/// `D` is the dictionary, [`Fix44`] unless named (ADR-0207 decision 5). **Not
-/// yet used** — plan step 26 makes it the dictionary the message is parsed by
-/// and the reply is ordered by.
+/// `D` is the dictionary the message is parsed by and the reply is ordered by
+/// — FIX 4.4 unless named ([`crate::dict`], ADR-0207 decision 5). It must be
+/// the dictionary of the encoding the engine was built with (`serve_over`'s
+/// `E`): the session validates by that one, and this adapter reads by `D`.
 pub struct App<H, const N: usize = 256, const P: usize = 64, const S: usize = 1024, D = Fix44> {
     handler: H,
     /// Reused across messages. Allocating one per message would be
@@ -230,8 +230,8 @@ impl<H, const N: usize, const P: usize, const S: usize, D> App<H, N, P, S, D> {
     }
 }
 
-impl<H: Handler<N, P, S, D>, const N: usize, const P: usize, const S: usize, D> Application
-    for App<H, N, P, S, D>
+impl<H: Handler<N, P, S, D>, const N: usize, const P: usize, const S: usize, D: Dictionary>
+    Application for App<H, N, P, S, D>
 {
     fn on_message(
         &mut self,
@@ -243,7 +243,7 @@ impl<H: Handler<N, P, S, D>, const N: usize, const P: usize, const S: usize, D> 
         // accepted, and re-checking a body length here would reject the
         // deliberately-wrong ones the acceptance corpus sends on purpose. Same
         // reason, same words, as `crates/conformance/src/echo.rs`.
-        if parse_into::<Fix44, N>(msg, &mut self.idx, Validation::NONE).is_err() {
+        if parse_into::<D, N>(msg, &mut self.idx, Validation::NONE).is_err() {
             self.unparsable += 1;
             return None;
         }
