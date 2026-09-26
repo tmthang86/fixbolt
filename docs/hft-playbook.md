@@ -87,6 +87,8 @@ indirection-table query but not the RSS key query, and Onload's AF_XDP path need
 trying it on any NIC, run `ethtool -x <nic> | grep -A1 'RSS hash key'`; `Operation not supported`
 means stop there. Full trap, evidence and reopen condition:
 [onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks](reference/onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md).
+Which NICs and drivers pass, and what a rented VM or bare-metal server can do:
+[kernel-bypass-needs-a-machine-this-project-does-not-have](reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md).
 
 ## 5. Application configuration and the build
 

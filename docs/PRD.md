@@ -199,6 +199,16 @@ with a CI run id; the measured rows quote `scripts/check-machine.sh` from the de
 | 6 | The exporter stays off the hot path | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |
 | — | Phases 1–3 hold | 59 / 59, FIXT 179 / 180, interop 7 / 7 with both peers, `cargo semver-checks` |
 
+### Later phases: candidates, not scoped
+
+No phase after 4 is scoped (ADR-0141 *Consequences*). An item listed here has a reason to come
+back and a named condition for coming back; it gets a phase number only when the owner scopes a
+phase that includes it.
+
+| Candidate | Why it is here | Reopens when | Decided by |
+|---|---|---|---|
+| Kernel bypass: Onload over AF_XDP, or native Onload on a Solarflare card | Phase 4 item 2 was dropped at gate G1 on the desk's I211, a drop on that machine, not a result about bypass; the owner kept it for later (2026-09-26) | a named acceptor host, NIC, kernel and peer, with G0 (`ethtool -x <nic>` prints an RSS key) and `ntuple on` quoted from it; the machines that pass, and what a rented VM or bare-metal server can and cannot do, are in [kernel-bypass-needs-a-machine-this-project-does-not-have](reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md) | [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md) (Proposed) |
+
 ### Phase 1 exit criteria
 
 Every criterion is a command that passes or fails. **All seven are met.**
@@ -346,6 +356,9 @@ Out unless a new ADR reverses them:
   and removed if it misses its kill line. The rest stays out: DPDK never, because it ships no
   TCP stack; `ef_vi` as a second `Transport` only once a Solarflare / X2-class NIC exists here;
   no TCP stack of our own. Bypass is plaintext only; it excludes TLS (D11). STATUS item 14.
+  `[2026-09-26]` Phase 4's attempt was dropped at gate G1 on the desk's I211 (ADR-0203); the item is
+  now a later-phase candidate (§2 *Later phases*, [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md)),
+  and this bullet's narrowing stands for it.
 - **Clustering, HA, replication.**
 - **A web UI of this project's own.** *Narrowed 2026-09-23 by ADR-0098 item 5:* a
   Prometheus-format exporter on its own thread (`fixbolt-metrics`) and a committed Grafana
