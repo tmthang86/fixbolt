@@ -24,11 +24,40 @@ against that tag rather than a published baseline.
   decision 1). `codegen::fix44_tables(&str)` and, with `fix50sp2`,
   `codegen::fixt11_fix50sp2_tables(&str, &str)` return the Rust source `fixbolt-dict`'s own build
   writes; `codegen::GenError` (`Xml`, `Dictionary`, `Unsupported`; `#[non_exhaustive]`) is what
-  they return instead of stopping the build. `codegen::generate`, `Source` and `Paths` are the
-  shape of the custom-dictionary door and return `GenError::Unsupported` for now. The feature
-  makes `roxmltree` an optional normal dependency. **No behaviour change**: `build.rs` now calls
-  this module, and the generated `fix44.rs` and `fixt11_fix50sp2.rs` hash identical to the
-  commit before the move.
+  they return instead of stopping the build. The feature makes `roxmltree` an optional normal
+  dependency. **No behaviour change**: `build.rs` now calls this module, and the generated
+  `fix44.rs` and `fixt11_fix50sp2.rs` hash identical to the commit before the move.
+- **`fixbolt-dict`, under `codegen`: a FIX 4.4 dictionary of your own, as your own type**
+  ([ADR-0207](docs/decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+  decisions 3, 4 and 8). `codegen::generate(Source, type_name, Paths) -> Result<String, GenError>`
+  writes one Rust file for a `build.rs` to put in `$OUT_DIR` and a module to `include!`. The file
+  holds the tables, a unit struct named `type_name`, and its `impl Dictionary` and `impl Tables`.
+  - `Source::Fix44Overlay(&str)` merges the additions onto the shipped `spec/FIX44.xml`: fields,
+    enum values, groups, components, messages, required fields, header fields and header groups.
+    An overlay never removes or retypes. A number, name, type, `msgtype` or `msgcat` that disagrees
+    with FIX 4.4 fails naming both sides, and so do a `<trailer>`, a misspelt section, one field
+    twice at one level, and a value list on a field FIX 4.4 leaves open. Refused in an overlay
+    or a whole file alike: a tag in two of header, trailer and message bodies (a valid message
+    would be answered 373=14), a DATA group member whose length field is not declared
+    immediately in front of it, a field numbered 0, and per-tag bitsets over 64 MiB. An empty overlay writes
+    `Fix44`'s tables byte for byte. `Source::Fix44Whole(&str)` reads a complete file as written.
+    `Source` is `#[non_exhaustive]`.
+  - `Paths::facade()` (the default) makes the file name `::fixbolt::dict::…`, whose re-exports
+    arrive with the facade's dictionary parameter. `Paths::direct()` names `::fixbolt_dict` and
+    `::fixbolt_codec`.
+  - `codegen::merged_model(Source) -> Result<Model, GenError>` is the same merge without the
+    writing. `Model` answers every question the generated type will (`enum_allows`, `allows`,
+    `group_members`, …).
+  - **The size report.** `Model::table_size() -> TableSize` gives the highest tag, the words per
+    bitset, the message types and the bitset bytes, with a `Display` sentence for a
+    `cargo:warning`. The same sentence opens every generated file.
+  - **The format check.** `codegen::FORMAT_VERSION` (`1`). Every generated file opens with
+    `const _: () = assert!(…codegen_format::FORMAT_VERSION == N, "…")`, so a build-dependency at
+    another fixbolt version fails to compile with a sentence (`E0080`). It is not silently
+    misread. The constant the file reads is the hidden `fixbolt_dict::codegen_format`, compiled
+    with or without `codegen`.
+  - Additive only. Nothing in `fixbolt` accepts the generated type yet: the doors that take a
+    dictionary type are the next pull request of `docs/plans/2026-09-26-docs-for-embedders.md`.
 - **`fixbolt-engine`** — additive observability surface for phase 4's metrics exporter
   ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)):
   `observe::Occupancy { used, capacity }`; `Snapshot::ring_to_app() -> Option<Occupancy>`, read

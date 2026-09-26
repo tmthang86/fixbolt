@@ -1,0 +1,72 @@
+<!--
+  INVENTED FOR TESTS. This is not any venue's specification, rules of
+  engagement or dialect, and no field, value or message in it is taken from
+  one. Every name, number and value below was made up in this repository to
+  exercise crates/dict/tests/overlay.rs (ADR-0207 decision 3).
+
+  An overlay onto the shipped crates/dict/spec/FIX44.xml. What each part is for:
+
+    <header>      VenueSessionTag(5002) becomes a header field.
+    <messages>    NewOrderSingle(D), which exists, gains VenueClientID(5001)
+                  as required='Y' and the component VenueFeeGrp.
+                  VenueFeeReport(U1), which does not exist, is added as an
+                  application message, carrying the high tag 20000 and its
+                  own NoVenueFees group, declared in a different order from
+                  VenueFeeGrp's: the same counter, two delimiters, keyed by
+                  (msg_type, counter).
+    <components>  VenueFeeGrp is added, holding NoVenueFees(5003), so D
+                  reaches that group only through a component.
+    <fields>      OrdType(40), which exists, gains the value 'Z'; 5001-5007
+                  and 20000 are added, including a DATA field and its
+                  {name}Len length field.
+
+  Tag 5000 is deliberately unused: 14a_BadField.def sends 5000=HI and expects
+  it refused as undefined, so the 59 QuickFIX definitions are never run
+  against a dictionary built from this file.
+-->
+<fix type='FIX' major='4' minor='4' servicepack='0'>
+ <header>
+  <field name='VenueSessionTag' required='N' />
+ </header>
+ <messages>
+  <message name='NewOrderSingle' msgtype='D' msgcat='app'>
+   <field name='VenueClientID' required='Y' />
+   <component name='VenueFeeGrp' required='N' />
+  </message>
+  <message name='VenueFeeReport' msgtype='U1' msgcat='app'>
+   <field name='ClOrdID' required='Y' />
+   <field name='VenueTrace' required='N' />
+   <field name='VenueBlobLen' required='N' />
+   <field name='VenueBlob' required='N' />
+   <group name='NoVenueFees' required='N'>
+    <field name='VenueFeeAmt' required='N' />
+    <field name='VenueFeeType' required='N' />
+    <field name='Currency' required='N' />
+   </group>
+  </message>
+ </messages>
+ <components>
+  <component name='VenueFeeGrp'>
+   <group name='NoVenueFees' required='N'>
+    <field name='VenueFeeType' required='N' />
+    <field name='VenueFeeAmt' required='N' />
+   </group>
+  </component>
+ </components>
+ <fields>
+  <field number='40' name='OrdType' type='CHAR'>
+   <value enum='Z' description='INVENTED_VENUE_PEG' />
+  </field>
+  <field number='5001' name='VenueClientID' type='STRING' />
+  <field number='5002' name='VenueSessionTag' type='STRING' />
+  <field number='5003' name='NoVenueFees' type='NUMINGROUP' />
+  <field number='5004' name='VenueFeeType' type='CHAR'>
+   <value enum='1' description='INVENTED_FEE' />
+   <value enum='2' description='INVENTED_REBATE' />
+  </field>
+  <field number='5005' name='VenueFeeAmt' type='AMT' />
+  <field number='5006' name='VenueBlobLen' type='LENGTH' />
+  <field number='5007' name='VenueBlob' type='DATA' />
+  <field number='20000' name='VenueTrace' type='STRING' />
+ </fields>
+</fix>

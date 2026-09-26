@@ -477,7 +477,7 @@ decisions 1, 3 and 7).
 | `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
 | `fix50sp2` | `codec`, `dict`, `session`, `engine` | The second dictionary: `dict`'s `build.rs` reads `FIXT11.xml` **and** `FIX50SP2.xml` into one table and emits `Fixt11Fix50Sp2Tables`, and the FIXT tests and bench cases in all four crates compile. Pulls in **no dependency** — it is generated code and build time only, and `codec`'s copy is a dev-dependency pass-through so its benches can name the table. `[measured]` the generated file goes 156 KB to 4.0 MB and a cold `dict` build 0.56 s to 5.25 s: see [a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md) | off |
-| `codegen` | `dict` | `[2026-09-26]` `pub mod codegen`: the dictionary generator as a library, for a `build.rs` of your own ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md) decision 1). Today it offers `fix44_tables` and, with `fix50sp2`, `fixt11_fix50sp2_tables` — the exact text `fixbolt-dict`'s own `build.rs` writes — and `GenError`; `generate`, `Source` and `Paths`, the door for a dictionary of your own, answer `GenError::Unsupported` until the overlay lands. Pulls in `roxmltree` (`=0.20.0`, pure Rust) as a normal dependency — the same crate `fixbolt-dict` always builds with as a build-dependency, so nothing new is compiled; with the feature off it never reaches your binary. Changes no table and no behaviour of `Fix44` | off |
+| `codegen` | `dict` | `[2026-09-26]` `pub mod codegen`: the dictionary generator as a library, for a `build.rs` of your own ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md) decision 1). It offers `fix44_tables` and, with `fix50sp2`, `fixt11_fix50sp2_tables`, which return the exact text `fixbolt-dict`'s own `build.rs` writes, and `GenError`. `[2026-09-26]` It also offers the door for a dictionary of your own. `generate(Source, type_name, Paths)` writes one Rust file holding your own type, from an overlay onto the shipped FIX 4.4 (`Source::Fix44Overlay`) or a whole FIX 4.4 file (`Source::Fix44Whole`). `merged_model(Source)` returns the merged `Model` and its `table_size()` without writing anything (§5, ADR-0207 decisions 3, 4 and 8). Pulls in `roxmltree` (`=0.20.0`, pure Rust) as a normal dependency — the same crate `fixbolt-dict` always builds with as a build-dependency, so nothing new is compiled; with the feature off it never reaches your binary. Changes no table and no behaviour of `Fix44` | off |
 | `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `connect_and_serve_tls`/`connect_and_serve_tls_with`, `tls::load_pem`/`tls::load_client_pem`, and the seven `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
 | `io-uring` | `engine`, `library`, `tools/w2w` | `[2026-09-24]` `mod transport::uring`: `Uring`, `UringConfig`, `UringTransport`, `UringSpin`/`UringBlock`, `HftArm`, `UringRefused`, `UringReport`, `serve_hft_uring`/`serve_uring`, `ServeError::Uring` — a second `Transport` reaped by the idle strategy, Linux only, kernel ≥ 6.1 ([DESIGN.md D5](DESIGN.md), [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)). Pulls in `io-uring` (pinned `>= 0.7.15`, pure Rust) and the `libc` the crate already carries under `standard`/`affinity`; `HftArm::Sqpoll` exists only with `affinity` on too | off |
 | `sbe` | `library` (`fixbolt`) | The re-export `fixbolt::sbe` (= `fixbolt-sbe`): SBE 1.0 over generated tables, a codec with no session and no `serve*` of its own ([GUIDE.md §3b](GUIDE.md)) | off |
@@ -491,8 +491,8 @@ a feature-gated test compiles to nothing under `cargo test --all`, so the `gates
 four crates that declare it and proves through `scripts/check-feature-gated-tests-ran.sh` that the
 named tests actually executed:
 [a-feature-gated-test-is-a-test-ci-never-runs](reference/a-feature-gated-test-is-a-test-ci-never-runs.md).
-`codegen` is the same shape: its two tests run only in the `gates` job's own `codegen` step, under
-the same proof.
+`codegen` is the same shape: its tests (`gen_matches_build.rs`, `overlay.rs`, and the library half
+of `generated_is_pinned.rs`) run only in the `gates` job's own `codegen` step, under the same proof.
 **`tls` is Linux-only in practice**: `mod tls` itself is
 gated only on the feature, but the handshake, `load_pem` and every `serve_tls*` entry point
 inside it are additionally `#[cfg(target_os = "linux")]`, so a `--features tls` build on another
@@ -522,6 +522,24 @@ customised FIX 4.4 dialect, or a fix for one of the QuickFIX dictionary quirks
 *Consequences*). A path missing at build time fails the build loudly, by design — the
 generator never falls back to an empty table. The `codegen` library (§4) reads none of these
 variables: its functions take the dictionary's text from the caller.
+
+**An override is not the way to a dictionary of your own. The way is `codegen::generate`.** The two
+differ in what they change:
+
+| | `NANOFIX_FIX44_XML` override | `codegen::generate`, overlay or whole file |
+|---|---|---|
+| Changes | `fixbolt-dict`'s own `Fix44`: the file its `build.rs` reads in place of `spec/FIX44.xml` | Nothing of `fixbolt-dict`'s. It writes a **new type**, named by you, into a file your own `build.rs` puts in `$OUT_DIR` |
+| Reach | Every crate in the build that names `Fix44`, `fixbolt`'s default included: a build-time, process-wide replacement, set in the environment of whoever runs `cargo` | Only the code that names your type. `Fix44` stays FIX 4.4, and one process can hold both |
+| Input | A whole FIX 4.4 file | Either an overlay (`Source::Fix44Overlay`: only the additions, merged onto the shipped `spec/FIX44.xml`, refused naming both sides if it disagrees with it) or a whole file (`Source::Fix44Whole`, read as written, retypes included) |
+| Declared in | The environment (a `cargo:rerun-if-env-changed` rebuilds on change) | Your `Cargo.toml` (`fixbolt-dict` with `features = ["codegen"]` as a build-dependency) and your `build.rs` |
+| Checked | The generator's refusals. `fixbolt-dict`'s own byte-identity tests (`gen_matches_build.rs`, `generated_is_pinned.rs`, and `overlay.rs`'s empty-overlay test) compare against the shipped file, so under an override they go red or compare the wrong input | The same refusals, and the overlay's own. The file checks at compile time that it was generated at the format the linked `fixbolt-dict` reads. A high custom tag's cost is reported by `merged_model(..)?.table_size()` and in the file's opening comment ([a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md)) |
+
+`[2026-09-26]` What exists is the generator. **Nothing in `fixbolt` accepts your type yet.** The
+facade's `fixbolt::dict` re-exports, which `Paths::facade()` (the default) names, and the
+`serve_over` family of doors that take a dictionary type arrive with the next pull request of
+[the plan](plans/2026-09-26-docs-for-embedders.md) (PR 6). Until then, a generated file names the
+crates directly (`Paths::direct()`: `::fixbolt_dict`, `::fixbolt_codec`). No committed crate
+compiles a generated file yet, and plan step 27 is the first.
 
 ## 6. `fixbolt-store-sqlite`'s settings
 

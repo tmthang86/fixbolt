@@ -5,6 +5,11 @@
   *Revised again 2026-09-26, at plan step 17*: the module and the feature are `codegen`, not
   `gen` — `gen` is a reserved keyword in Rust edition 2024, so `pub mod gen` does not compile and
   `r#gen` would leak into every user's `build.rs`.
+  *Revised again 2026-09-26, at the senior review of PR 5*: decision 3 gains two refusals. A tag
+  has one place, the header, the trailer or message bodies, and a tag in two of them is refused
+  ([a-tag-in-the-header-and-a-body-makes-a-valid-message-a-373-14](../reference/a-tag-in-the-header-and-a-body-makes-a-valid-message-a-373-14.md)).
+  The per-tag bitsets have a 64 MiB ceiling, so a tag near `u32::MAX` is refused naming the tag
+  and the size, where it used to size each bitset at 512 MiB.
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);
