@@ -1,7 +1,8 @@
 //! The FIX dictionary generator, as a library (ADR-0207).
 //!
-//! [`generate`] still returns [`GenError::Unsupported`]: the overlay is a later
-//! step of plan `docs/plans/2026-09-26-docs-for-embedders.md`.
+//! What works today: [`fix44_tables`] and, with `fix50sp2`,
+//! `fixt11_fix50sp2_tables`. [`generate`] — a dictionary of your own — returns
+//! [`GenError::Unsupported`] until the overlay lands.
 //!
 //! One generator, three callers (ADR-0207 decision 1). It is loaded twice, the
 //! way `fixbolt-sbe-gen` is (ADR-0081): by this crate's `build.rs` through
@@ -37,8 +38,8 @@ use parse::{child, collect_components, collect_fields, refuse_empty_components};
 /// What a user's dictionary is made from (ADR-0207 decision 3).
 ///
 /// Both shapes are QuickFIX-format XML text. The first version is FIX 4.4 only
-/// (decision 8); `#[non_exhaustive]` so a later plan can add overlays onto the
-/// FIXT 1.1 + FIX 5.0 SP2 pair without a breaking change.
+/// (decision 8); `#[non_exhaustive]` so overlays onto the FIXT 1.1 + FIX 5.0
+/// SP2 pair can be added later without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Source<'a> {
@@ -90,7 +91,10 @@ impl Paths {
 ///
 /// # Errors
 ///
-/// [`GenError::Unsupported`], for every input, until step 18 of the plan.
+/// [`GenError::Unsupported`], for every input: the overlay onto the shipped FIX
+/// 4.4 and the whole-file dictionary are not generated yet. The tables this
+/// crate ships are generated today, by [`fix44_tables`] and, with `fix50sp2`,
+/// `fixt11_fix50sp2_tables`.
 pub fn generate(source: Source<'_>, type_name: &str, paths: Paths) -> Result<String, GenError> {
     let _ = (source, type_name, paths.root);
     Err(GenError::Unsupported)

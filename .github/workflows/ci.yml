@@ -498,6 +498,54 @@ jobs:
           cargo test -p fixbolt-engine --features affinity
           cargo test -p fixbolt-engine --no-default-features --features affinity
 
+      # ADR-0207 decision 1: the generator as a library, behind the
+      # off-by-default `codegen` feature of fixbolt-dict. `cargo test --all`
+      # never enables it, so the `codegen`-gated tests — gen_matches_build's
+      # two and generated_is_pinned's library half — run only here, and
+      # check-feature-gated-tests-ran.sh proves they did. fixbolt-dict has no
+      # default features, so `--no-default-features --features codegen` and
+      # `--features codegen` are one build; the flag is spelled out because
+      # that is the combination plan row 19 names. Clippy for both sets also
+      # runs in `feature-sets` (cargo hack's powerset now contains them); it
+      # is repeated here so this step is the whole answer for the feature.
+      # Failure handling is the fix50sp2 step's, below, for its reasons: the
+      # test status is caught rather than allowed to abort, so the script reads
+      # a red run's log too, and the step fails afterwards naming which.
+      - name: The codegen tests, and proof they were the ones that ran
+        run: |
+          set -o pipefail
+          cargo clippy -p fixbolt-dict --all-targets --no-default-features --features codegen -- -D warnings
+          cargo clippy -p fixbolt-dict --all-targets --features codegen,fix50sp2 -- -D warnings
+          tests_failed=""
+          checks_failed=""
+          for f in codegen codegen,fix50sp2; do
+            echo "=== fixbolt-dict --no-default-features --features ${f} ==="
+            status=0
+            cargo test -p fixbolt-dict --tests --no-default-features --features "${f}" --no-fail-fast --locked \
+              2>&1 | tee "/tmp/dict-${f}.log" || status=$?
+            if ! scripts/check-feature-gated-tests-ran.sh fixbolt-dict "${f}" "/tmp/dict-${f}.log"; then
+              checks_failed="${checks_failed} ${f}"
+            fi
+            if [ "$status" -ne 0 ]; then
+              tests_failed="${tests_failed} ${f}"
+            fi
+          done
+
+          for f in ${tests_failed}; do
+            echo "::group::fixbolt-dict --features ${f} — the failing tests"
+            sed -n '/^failures:$/,/^test result: FAILED/p' "/tmp/dict-${f}.log" || true
+            echo "::endgroup::"
+          done
+
+          if [ -n "${checks_failed}" ]; then
+            echo "::error title=A codegen test did not run::Not accounted for in:${checks_failed}. scripts/check-feature-gated-tests-ran.sh could not account for every test the fixbolt-dict build lists under that feature set. Read its FAIL lines above: R1 a listed test with no run status, R2 a built binary with no Running line, R3 a test that was ignored. See docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md."
+            exit 1
+          fi
+          if [ -n "${tests_failed}" ]; then
+            echo "::error title=A codegen test failed::Failing feature sets:${tests_failed}. These tests do not run under \`cargo test --all\`, which does not enable the feature, so a failure here is a codegen-only failure. The grouped output above names each one."
+            exit 1
+          fi
+
       # `[measured 2026-09-19]` THIS CLOSES THE GAP IN
       # docs/reference/a-feature-gated-test-is-a-test-ci-never-runs.md: until
       # this step existed, `grep -n fix50sp2 .github/workflows/ci.yml` matched
@@ -555,28 +603,6 @@ jobs:
       # break a feature-gated test on purpose and watch CI go red. Until that
       # has been observed, this step is a claim, not a measurement — CLAUDE.md
       # §10, and the whole reason the reference page above exists.
-      # ADR-0207 decision 1: the generator as a library, behind the
-      # off-by-default `codegen` feature of fixbolt-dict. `cargo test --all`
-      # never enables it, so gen_matches_build's two tests — the proof the
-      # library writes build.rs's bytes — run only here, and
-      # check-feature-gated-tests-ran.sh proves they did. fixbolt-dict has no
-      # default features, so `--no-default-features --features codegen` and
-      # `--features codegen` are one build; the flag is spelled out because
-      # that is the combination plan row 19 names. Clippy for both sets also
-      # runs in `feature-sets` (cargo hack's powerset now contains them); it
-      # is repeated here so this step is the whole answer for the feature.
-      - name: The codegen tests, and proof they were the ones that ran
-        run: |
-          set -o pipefail
-          cargo clippy -p fixbolt-dict --all-targets --no-default-features --features codegen -- -D warnings
-          cargo clippy -p fixbolt-dict --all-targets --features codegen,fix50sp2 -- -D warnings
-          for f in codegen codegen,fix50sp2; do
-            echo "=== fixbolt-dict --no-default-features --features ${f} ==="
-            cargo test -p fixbolt-dict --tests --no-default-features --features "${f}" --no-fail-fast --locked \
-              2>&1 | tee "/tmp/dict-${f}.log"
-            scripts/check-feature-gated-tests-ran.sh fixbolt-dict "${f}" "/tmp/dict-${f}.log"
-          done
-
       - name: The fix50sp2 tests, and proof they were the ones that ran
         run: |
           set -o pipefail

@@ -1,10 +1,19 @@
-//! The library generator writes what `build.rs` writes, byte for byte.
+//! The public `codegen` door writes what `build.rs` writes, byte for byte.
 //!
-//! ADR-0207 decision 2: the generator's move from `build.rs` into
-//! `src/codegen/` is proven to change nothing before any overlay code exists.
-//! `build.rs` emits `$OUT_DIR/fix44.rs` (and, behind `fix50sp2`,
-//! `$OUT_DIR/fixt11_fix50sp2.rs`); these tests run the `codegen` module over the
-//! same shipped XML and compare.
+//! **What this proves:** the two paths into one generator agree —
+//! `codegen::fix44_tables(&str)` and `codegen::fixt11_fix50sp2_tables`, which
+//! parse the text themselves, against `build.rs`, which reads the file, honours
+//! the `NANOFIX_*_XML` overrides, parses, and calls the crate-internal
+//! `fix44_from_document` / `pair_from_documents`. A difference in what either
+//! path adds around the generator — the parsing, the order of the pair, a
+//! warning that became output — turns this red.
+//!
+//! **What it does not prove:** that the generator's output is unchanged.
+//! `build.rs` loads the same `src/codegen/` by `#[path]`, so a change to what
+//! the generator emits moves both sides at once and this stays green
+//! (`[measured 2026-09-26]` in review of PR #119: editing the `@generated`
+//! header in `emit.rs` left this green while `fix44.rs`'s sha256 moved).
+//! `tests/generated_is_pinned.rs` pins the output itself.
 //!
 //! The XML read here is the shipped `spec/` copy. A build run with
 //! `NANOFIX_FIX44_XML` (or the FIXT overrides) set generates from another

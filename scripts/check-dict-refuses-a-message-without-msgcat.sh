@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# CLAUDE.md §10 — a guard is proven by reversal. `crates/dict/build.rs` dies
-# when a `<message>` in the FIX XML carries no `msgcat` attribute
-# (`None => die(...)` at build.rs:809-815), and that path has never once
+# CLAUDE.md §10 — a guard is proven by reversal. The dictionary generator
+# refuses a `<message>` in the FIX XML that carries no `msgcat` attribute
+# (`None => return refuse(...)` at crates/dict/src/codegen/emit.rs:238-246;
+# `crates/dict/build.rs` turns the refusal into a failed build through
+# `or_die`), and that path has never once
 # been observed to fire: nothing in this repository ever hands the
 # generator a dictionary missing the attribute, so the guard existed as
 # code, not as a reproduced red. This script is that reversal, run every
@@ -10,8 +12,9 @@
 # `Not proven (b)`.
 #
 # It also proves the two die arms sitting in the same `match` (the
-# unknown-category arm at build.rs:805-808, and the admin_types-empty arm
-# at build.rs:1214-1220) fire with the message they claim, and that the
+# unknown-category arm at src/codegen/emit.rs:232-237, and the
+# admin_types-empty arm at src/codegen/emit.rs:645-651) fire with the
+# message they claim, and that the
 # generator does NOT die on an untouched copy of the same file — a script
 # that only ever produces red would pass just as well with `die()` wired to
 # fire unconditionally.
@@ -21,12 +24,12 @@
 # ADR-0001):
 #   0  the untouched copy — must BUILD.
 #   1  Heartbeat's `msgcat='admin'` removed entirely — must refuse, the
-#      message naming "has no msgcat attribute" (build.rs:809-815).
+#      message naming "has no msgcat attribute" (src/codegen/emit.rs:238-246).
 #   2  Heartbeat's `msgcat='admin'` changed to `msgcat='other'` — must
-#      refuse, the message naming `has msgcat="other"` (build.rs:805-808).
+#      refuse, the message naming `has msgcat="other"` (src/codegen/emit.rs:232-237).
 #   3  every `msgcat='admin'` in the file changed to `msgcat='app'`,
 #      leaving no administrative message at all — must refuse, the message
-#      naming "not one <message> carries msgcat='admin'" (build.rs:1214).
+#      naming "not one <message> carries msgcat='admin'" (src/codegen/emit.rs:645).
 #
 # The fixture directory is target/check-msgcat/, never /tmp: /tmp is tmpfs
 # on the desk (project memory) and scripts/check-scratch-fixtures.sh watches
@@ -93,7 +96,7 @@ if grep -q "msgcat='admin'" "$WORK/arm3.xml"; then
 fi
 
 # NANOFIX_FIX44_XML, when it names a relative path, is read relative to
-# crates/dict (build.rs:44-45, DEFAULT is "spec/FIX44.xml" — the copy shipped
+# crates/dict (build.rs:45-46, DEFAULT is "spec/FIX44.xml" — the copy shipped
 # inside the crate under NOTICE, ADR-0104). Absolute paths sidestep that
 # entirely, so $WORK (already absolute) is used as-is.
 run_arm() {
