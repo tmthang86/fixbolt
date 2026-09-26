@@ -15,6 +15,19 @@ mod tables;
 #[cfg(feature = "codegen")]
 pub mod codegen;
 
+/// The format version a generated dictionary checks at compile time (ADR-0207
+/// decision 4). Not API: it exists for the file `codegen::generate` writes, and
+/// is compiled without the `codegen` feature because that file runs against
+/// the copy of this crate built without it. One source file either way, loaded
+/// once per build — clippy's `duplicate_mod` refuses two loads.
+#[cfg(not(feature = "codegen"))]
+#[doc(hidden)]
+#[path = "codegen/format.rs"]
+pub mod codegen_format;
+#[cfg(feature = "codegen")]
+#[doc(hidden)]
+pub use codegen::format as codegen_format;
+
 pub use field_type::FieldType;
 pub use tables::Tables;
 

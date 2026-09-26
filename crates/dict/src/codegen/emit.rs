@@ -1,4 +1,4 @@
-//! Writing a [`Spec`] out as Rust source: the text `build.rs` writes to
+//! Writing a [`Model`] out as Rust source: the text `build.rs` writes to
 //! `$OUT_DIR`, byte for byte what it wrote before the generator moved here
 //! (ADR-0207 decision 2).
 
@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use super::error::{GenError, refuse};
-use super::model::{Spec, collect_allowed, collect_groups, collect_header, collect_required};
+use super::model::{Message, Model, group_lists, number, screaming};
 use crate::field_type::FieldType;
 
 /// Sets bit `tag` of a bitset. Every caller sizes the bitset from the highest
@@ -22,16 +22,6 @@ fn set_bit(bits: &mut [u64], tag: u32) -> Result<(), GenError> {
         None => refuse(format!(
             "tag {tag} is past the end of a {words}-word bitset; the generator sized it wrong"
         )),
-    }
-}
-
-/// The number of a field this table has a type or an enumeration for. Every
-/// such field was numbered by `collect_fields`, so `None` is this generator's
-/// own bug.
-fn number(number_of: &BTreeMap<&str, u32>, name: &str) -> Result<u32, GenError> {
-    match number_of.get(name) {
-        Some(&t) => Ok(t),
-        None => refuse(format!("field {name} has a type but no number")),
     }
 }
 
@@ -113,230 +103,38 @@ pub(super) fn emit_transport_layer(tags: &[u32], msg_types: &[&str]) -> Result<S
     Ok(o)
 }
 
-pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
-    let number_of = &spec.number_of;
-    let type_of = &spec.type_of;
-    let enum_of = &spec.enum_of;
-    let components = &spec.components;
-    let header_el = spec.header;
-    let dialect = spec.dialect;
-
-    // ---- header tags -------------------------------------------------------
-    // Descends into <group>. The FIX 4.4 header holds one — NoHops(627) with
-    // HopCompID(628), HopSendingTime(629), HopRefID(630) — and all four are
-    // header fields. Taking only direct <field> children yields 26 instead of
-    // 30, and the four missing ones would sort into the BODY when writing,
-    // which is non-negotiable 5's exact failure mode. No acceptance definition
-    // carries a hop, so nothing in the 59 would ever notice. FIXT 1.1's header
-    // is the same shape: 29 direct fields and the same group.
-    let mut header: BTreeSet<u32> = BTreeSet::new();
-    collect_header(header_el, number_of, &mut header)?;
-
-    // ---- DATA -> LENGTH, matched by NAME, never by tag-1 -------------------
-    // `XMLDATA` is the same variant as `DATA` (ADR-0083 decision 1), so it is
-    // paired by the same rule — all 8 of FIX 5.0 SP2's pair by name, measured.
-    let mut data_len: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut exception_used = vec![false; spec.length_exceptions.len()];
-    for (&name, &ty) in type_of {
-        if ty != FieldType::Data {
-            continue;
-        }
-        let tag = number(number_of, name)?;
-        let candidate = [format!("{name}Len"), format!("{name}Length")]
-            .into_iter()
-            .find_map(|c| number_of.get(c.as_str()).copied());
-        if let Some(len_tag) = candidate {
-            data_len.insert(tag, len_tag);
-            continue;
-        }
-        // The name rule found nothing. Only now is the exception table
-        // consulted, and it is checked in both directions — ADR-0083
-        // decision 5.
-        match spec
-            .length_exceptions
-            .iter()
-            .enumerate()
-            .find(|(_, (data_tag, _, _, _))| *data_tag == tag)
-        {
-            Some((i, &(data_tag, length_tag, data_name, length_name))) => {
-                if data_name != name {
-                    return refuse(format!(
-                        "length exception for tag {data_tag} names field {data_name},\n\
-                         but the dictionary calls tag {tag} {name}."
-                    ));
-                }
-                if number_of.get(length_name) != Some(&length_tag) {
-                    return refuse(format!(
-                        "length exception for {data_name} names {length_name} as tag\n\
-                         {length_tag}, which this dictionary does not carry under that\n\
-                         number. An exception the XML does not support is a wrong pairing."
-                    ));
-                }
-                if let Some(used) = exception_used.get_mut(i) {
-                    *used = true;
-                }
-                data_len.insert(data_tag, length_tag);
-            }
-            // Not a warning. A DATA field with no length field cannot be parsed
-            // at all — the parser would scan for 0x01 inside binary content.
-            None => {
-                return refuse(format!(
-                    "DATA field {name} has no matching {name}Len or {name}Length field.\n\
-                 A DATA field whose length is unknown cannot be parsed: its value may\n\
-                 contain 0x01. Refusing to generate a table that would parse it wrongly."
-                ));
-            }
-        }
-    }
-    for ((data_tag, _, data_name, _), used) in spec.length_exceptions.iter().zip(&exception_used) {
-        if !*used {
-            return refuse(format!(
-                "length exception {data_name}({data_tag}) went unused.\n\
-                 Either the field is not in this dictionary, or the {{name}}Len /\n\
-                 {{name}}Length rule found its length field without help. An exception\n\
-                 nobody needs is a rule nobody checked — delete the row. ADR-0083\n\
-                 decision 5."
-            ));
-        }
-    }
-
-    // ---- required fields, per message, descending into components ---------
-    // A `required='Y'` component contributes its own `required='Y'` fields, and
-    // nothing else: Instrument is required in NewOrderSingle while every field
-    // inside it, Symbol(55) included, is optional. "The message requires an
-    // Instrument" and "the message requires a Symbol" are different statements.
-    let mut required: Vec<(String, Vec<u32>)> = Vec::new();
-    let mut msg_consts: Vec<(String, String)> = Vec::new();
-    let mut msg_types: BTreeSet<String> = BTreeSet::new();
-    let mut admin_types: BTreeSet<String> = BTreeSet::new();
-    let mut allowed: Vec<(String, BTreeSet<u32>)> = Vec::new();
-    for &m in &spec.messages {
-        let (Some(name), Some(mt)) = (m.attribute("name"), m.attribute("msgtype")) else {
-            return refuse("<message> without name or msgtype");
-        };
-        msg_consts.push((screaming(name), mt.to_string()));
-        if !msg_types.insert(mt.to_string()) {
-            return refuse(format!("two messages share msgtype {mt}"));
-        }
-
-        // `msgcat` is the dictionary's own answer to "is this administrative".
-        // A `<message>` without it stops the build, exactly as a missing `name`
-        // or `msgtype` does above: a default would be this generator inventing
-        // the answer, and the one place it must not be invented is the place
-        // `DESIGN.md` D3 points at.
-        match m.attribute("msgcat") {
-            Some("admin") => {
-                admin_types.insert(mt.to_string());
-            }
-            Some("app") => {}
-            Some(other) => {
-                return refuse(format!(
-                    "message {name} ({mt}) has msgcat={other:?}; the only categories\n\
-                 this generator knows are 'admin' and 'app'."
-                ));
-            }
-            None => {
-                return refuse(format!(
-                    "message {name} ({mt}) has no msgcat attribute.\n\
-                 `is_admin` is generated from it, so a message without one has no\n\
-                 answer — and guessing a default here is the hand-written list\n\
-                 beside a call site that DESIGN.md D3 forbids, only hidden in a\n\
-                 build script."
-                ));
-            }
-        }
-
-        let mut set = BTreeSet::new();
-        collect_required(m, components, number_of, name, &mut set, &mut Vec::new())?;
-        let mut tags: Vec<u32> = set.into_iter().collect();
-        tags.sort_unstable();
-        if !tags.is_empty() {
-            required.push((mt.to_string(), tags));
-        }
-
-        let mut body = BTreeSet::new();
-        collect_allowed(m, components, number_of, name, &mut body, &mut Vec::new())?;
-        allowed.push((mt.to_string(), body));
-    }
-
-    // ---- repeating groups, per message -------------------------------------
-    // Keyed by (msg_type, counter). Never by counter alone: NoMDEntries(268)
-    // takes MDEntryType(269) in a snapshot and MDUpdateAction(279) in an
-    // incremental refresh, and an incremental refresh is the highest-volume
-    // message there is. Three more counters behave the same way.
-    let mut groups: BTreeMap<(String, u32), Vec<u32>> = BTreeMap::new();
-    let mut positions: usize = 0usize;
-    for &m in &spec.messages {
-        let Some(mt) = m.attribute("msgtype") else {
-            return refuse("<message> without msgtype");
-        };
-        collect_groups(
-            m,
-            components,
-            number_of,
-            mt,
-            &mut groups,
-            &mut positions,
-            &mut Vec::new(),
-        )?;
-    }
-    // The header's one group, NoHops(627), can appear in ANY message, so it is
-    // keyed under the empty message type and emitted without a msg_type arm.
-    collect_groups(
-        header_el,
-        components,
-        number_of,
-        "",
-        &mut groups,
-        &mut positions,
-        &mut Vec::new(),
-    )?;
-
-    // Distinct member lists, deduplicated: many messages share a group verbatim.
-    let mut lists: Vec<Vec<u32>> = Vec::new();
-    let mut list_id: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
-    let mut by_counter: BTreeMap<u32, BTreeMap<usize, Vec<String>>> = BTreeMap::new();
-    for ((mt, counter), members) in &groups {
-        let id = *list_id.entry(members.clone()).or_insert_with(|| {
-            lists.push(members.clone());
-            lists.len() - 1
-        });
-        by_counter
-            .entry(*counter)
-            .or_default()
-            .entry(id)
-            .or_default()
-            .push(mt.clone());
-    }
-    for (counter, per) in &by_counter {
-        let owners: Vec<&String> = per.values().flatten().collect();
-        if owners.iter().any(|m| m.is_empty()) && owners.len() > 1 {
-            return refuse(format!(
-                "counter {counter} is declared in <header> and in a message.\n\
-                 A header group applies to every message, so it cannot also be\n\
-                 keyed per message. Refusing to emit a table that answers one\n\
-                 of the two wrongly."
-            ));
-        }
-    }
+/// Writes `model` out as Rust source.
+///
+/// With [`Labels::crate_fix44`] this is the text `build.rs` writes to
+/// `$OUT_DIR/fix44.rs`; `tests/generated_is_pinned.rs` holds it to its hash.
+/// Every refusal about the dictionary was made by [`Model::compute`]; what can
+/// still fail here is this generator's own arithmetic.
+#[allow(clippy::too_many_lines)]
+pub(super) fn write(model: &Model, labels: &Labels<'_>) -> Result<String, GenError> {
+    let number_of = &model.number_of;
+    let type_of = &model.type_of;
+    let enum_of = &model.enum_of;
+    let dialect = labels.dialect;
+    let field_type = labels.field_type;
+    let header = &model.header;
+    let msg_types: BTreeSet<&str> = model.messages.iter().map(|m| m.msg_type.as_str()).collect();
+    let admin_types: BTreeSet<&str> = model
+        .messages
+        .iter()
+        .filter(|m| m.admin)
+        .map(|m| m.msg_type.as_str())
+        .collect();
+    let groups = &model.groups;
+    let positions = model.positions;
+    let (lists, by_counter) = group_lists(groups);
 
     // ---- emit --------------------------------------------------------------
     let mut o = String::with_capacity(96 * 1024);
-    let _ = writeln!(
-        o,
-        "// @generated by crates/dict/build.rs from {}.",
-        spec.source
-    );
-    o.push_str("// Do not edit. Regenerate by touching the XML or the build script.\n\n");
+    o.push_str(labels.banner);
 
     o.push_str("/// Field tag numbers, by name.\npub mod tag {\n");
-    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
     for (name, num) in number_of {
-        let c = screaming(name);
-        if let Some(prev) = seen.insert(c.clone(), name) {
-            return refuse(format!("fields {prev} and {name} both become tag::{c}"));
-        }
-        let _ = writeln!(o, "    pub const {c}: u32 = {num};");
+        let _ = writeln!(o, "    pub const {}: u32 = {num};", screaming(name));
     }
     o.push_str("}\n\n");
 
@@ -344,12 +142,13 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
         "/// Message type values, by name. Multi-byte: this dialect uses values\n\
          /// of more than one character.\npub mod msg_type {\n",
     );
-    let mut seen2: BTreeSet<String> = BTreeSet::new();
-    for (c, mt) in &msg_consts {
-        if !seen2.insert(c.clone()) {
-            return refuse(format!("two messages both become msg_type::{c}"));
-        }
-        let _ = writeln!(o, "    pub const {c}: &[u8] = b\"{mt}\";");
+    for m in &model.messages {
+        let _ = writeln!(
+            o,
+            "    pub const {}: &[u8] = b\"{}\";",
+            screaming(&m.name),
+            m.msg_type
+        );
     }
     o.push_str("}\n\n");
 
@@ -367,24 +166,13 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
 
     // One bit per tag over 0..=max_tag. Shared by `ALLOWED` and `DEFINED_TAGS`
     // so the two tables cannot end up different widths.
-    let max_tag = number_of.values().copied().max().unwrap_or(0);
-    let words = (max_tag as usize / 64) + 1;
+    let (max_tag, words) = model.width();
     // ---- required_header ---------------------------------------------------
     // `required()` answers for a message BODY, and its own doc comment says so.
     // `14b_RequiredFieldMissing.def` sends a Heartbeat with no TargetCompID and
     // expects `373=1` with `371=56` — a header field, which `required(b"0")`
     // does not and should not mention.
-    let mut header_required: BTreeSet<u32> = BTreeSet::new();
-    for c in header_el.children() {
-        if c.attribute("required") != Some("Y") {
-            continue;
-        }
-        if let Some(name) = c.attribute("name")
-            && let Some(&t) = number_of.get(name)
-        {
-            header_required.insert(t);
-        }
-    }
+    let header_required = &model.header_required;
     let _ = writeln!(
         o,
         "/// Header fields every message must carry, whatever its type.\n\
@@ -410,16 +198,16 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
     // no acceptance definition would notice.
     //
     // Value lists are deduplicated — the Y/N pair alone appears 30 times.
-    let mut enum_lists: Vec<Vec<&str>> = Vec::new();
+    let mut enum_lists: Vec<&Vec<String>> = Vec::new();
     let mut enum_index: BTreeMap<u32, usize> = BTreeMap::new();
     let mut enum_values = 0usize;
-    for (&name, values) in enum_of {
+    for (name, values) in enum_of {
         enum_values += values.len();
         let at = enum_lists
             .iter()
-            .position(|v| v == values)
+            .position(|v| *v == values)
             .unwrap_or_else(|| {
-                enum_lists.push(values.clone());
+                enum_lists.push(values);
                 enum_lists.len() - 1
             });
         enum_index.insert(number(number_of, name)?, at);
@@ -460,13 +248,13 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
     // QuickFIX/J (`DataDictionary` line 526) both do. Emitted only for a
     // table built to that rule, which since ADR-0084 decision 2's row is both
     // of them.
-    let multi: Vec<u32> = if spec.per_token_enums {
+    let multi: Vec<u32> = if model.per_token_enums {
         enum_index
             .keys()
             .copied()
             .filter(|tag| {
                 type_of.iter().any(|(name, ty)| {
-                    number_of.get(name) == Some(tag)
+                    number_of.get(name.as_str()) == Some(tag)
                         && matches!(
                             ty,
                             FieldType::MultipleValueString | FieldType::MultipleCharValue
@@ -498,11 +286,15 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
     // 300 tags, and the session asks once per field of every message it
     // validates. Header and trailer are folded in at generation time so the
     // call site asks one question instead of three.
-    let mut trailer: BTreeSet<u32> = BTreeSet::new();
-    collect_header(spec.trailer, number_of, &mut trailer)?;
+    let trailer = &model.trailer;
     let mut allow_bits: Vec<(String, Vec<u64>)> = Vec::new();
     let mut body_pairs = 0usize;
-    for (mt, body) in &allowed {
+    for Message {
+        msg_type: mt,
+        allowed: body,
+        ..
+    } in &model.messages
+    {
         body_pairs += body.len();
         let mut bits = vec![0u64; words];
         for t in body.iter().chain(header.iter()).chain(trailer.iter()) {
@@ -562,7 +354,7 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
     // each type accepts is `src/field_type.rs`, included above rather than
     // restated here.
     let mut typed: BTreeMap<u32, &'static str> = BTreeMap::new();
-    for (&name, &ty) in type_of {
+    for (name, &ty) in type_of {
         typed.insert(number(number_of, name)?, ty.as_rust());
     }
     let _ = writeln!(
@@ -572,8 +364,8 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
          /// {} fields across {} types.\n\
          #[inline]\n\
          #[must_use]\n\
-         pub const fn field_type(tag: u32) -> Option<crate::FieldType> {{\n\
-         \x20   use crate::FieldType::*;\n\
+         pub const fn field_type(tag: u32) -> Option<{field_type}> {{\n\
+         \x20   use {field_type}::*;\n\
          \x20   Some(match tag {{",
         typed.len(),
         typed.values().collect::<BTreeSet<_>>().len(),
@@ -642,13 +434,6 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
     );
 
     // ---- is_admin ----------------------------------------------------------
-    if admin_types.is_empty() {
-        return refuse(format!(
-            "{dialect}: not one <message> carries msgcat='admin'.\n\
-             A dictionary with no administrative message would make `is_admin`\n\
-             answer `false` for Logon itself. Refusing to emit it."
-        ));
-    }
     let _ = writeln!(
         o,
         "/// Whether the dictionary files this table is built from call this\n\
@@ -683,7 +468,7 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
          /// arithmetic rule while that one silently would not.\n\
          #[inline]\npub const fn data_length_tag(tag: u32) -> Option<u32> {\n    match tag {\n",
     );
-    for (d, l) in &data_len {
+    for (d, l) in &model.data_len {
         let _ = writeln!(o, "        {d} => Some({l}),");
     }
     o.push_str("        _ => None,\n    }\n}\n\n");
@@ -702,7 +487,12 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
          /// one with no required fields; both give `&[]`.\n\
          #[inline]\npub fn required(msg_type: &[u8]) -> &'static [u32] {\n    match msg_type {\n",
     );
-    for (mt, tags) in &required {
+    for Message {
+        msg_type: mt,
+        required: tags,
+        ..
+    } in model.messages.iter().filter(|m| !m.required.is_empty())
+    {
         let list = tags
             .iter()
             .map(u32::to_string)
@@ -726,7 +516,7 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
          /// header. Larger than the `<group>` declaration count because a component\n\
          /// holding a group is referenced from many messages.\n\
          pub const GROUP_POSITIONS: usize = {positions};\n",
-        spec.messages.len()
+        model.messages.len()
     );
     for (i, l) in lists.iter().enumerate() {
         let items = l.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
@@ -783,26 +573,33 @@ pub(super) fn emit(spec: &Spec<'_, '_>) -> Result<String, GenError> {
     Ok(o)
 }
 
-/// `ClOrdID` -> `CL_ORD_ID`, `NoMDEntries` -> `NO_MD_ENTRIES`.
-///
-/// A `_` goes before an uppercase letter that follows a lowercase or digit, and
-/// before the last uppercase of an acronym run when a lowercase follows it.
-fn screaming(name: &str) -> String {
-    let ch: Vec<char> = name.chars().collect();
-    let mut out = String::with_capacity(name.len() + 8);
-    let mut prev: Option<char> = None;
-    for (i, &c) in ch.iter().enumerate() {
-        if let Some(p) = prev
-            && c.is_ascii_uppercase()
-        {
-            let prev_lower = p.is_ascii_lowercase() || p.is_ascii_digit();
-            let next_lower = ch.get(i + 1).is_some_and(char::is_ascii_lowercase);
-            if prev_lower || (p.is_ascii_uppercase() && next_lower) {
-                out.push('_');
-            }
+/// What the written text says about itself: the dialect named in its doc
+/// comments, the banner at its top, and the path its `field_type` names.
+pub(super) struct Labels<'a> {
+    pub(super) dialect: &'a str,
+    pub(super) banner: &'a str,
+    pub(super) field_type: &'a str,
+}
+
+impl Labels<'static> {
+    /// This crate's own FIX 4.4 table, `include!`d into `lib.rs`.
+    pub(super) const fn crate_fix44() -> Self {
+        Self {
+            dialect: "FIX 4.4",
+            banner: "// @generated by crates/dict/build.rs from the QuickFIX FIX 4.4 XML.\n\
+                     // Do not edit. Regenerate by touching the XML or the build script.\n\n",
+            field_type: "crate::FieldType",
         }
-        out.push(c.to_ascii_uppercase());
-        prev = Some(c);
     }
-    out
+
+    /// This crate's own FIXT 1.1 / FIX 5.0 SP2 table.
+    #[cfg(feature = "fix50sp2")]
+    pub(super) const fn crate_pair() -> Self {
+        Self {
+            dialect: "FIXT 1.1 / FIX 5.0 SP2",
+            banner: "// @generated by crates/dict/build.rs from the QuickFIX FIXT11.xml and FIX50SP2.xml pair.\n\
+                     // Do not edit. Regenerate by touching the XML or the build script.\n\n",
+            field_type: "crate::FieldType",
+        }
+    }
 }

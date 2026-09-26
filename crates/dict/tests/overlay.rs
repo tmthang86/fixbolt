@@ -400,3 +400,244 @@ fn a_high_tag_reports_the_table_size() {
     let said = size.to_string();
     assert_names(&said, &["20000", "313", "237880"]);
 }
+
+/// An overlay holding the sections given, verbatim.
+fn overlay(sections: &str) -> String {
+    format!("<fix type='FIX' major='4' minor='4' servicepack='0'>{sections}</fix>")
+}
+
+#[test]
+fn an_existing_message_repeated_with_another_msgtype_fails_naming_both() {
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='U9' msgcat='app'>\
+         <field name='Text' required='N' /></message></messages>",
+    ));
+    assert_names(&msg, &["NewOrderSingle", "D", "U9"]);
+    // The other way round: a new name on a msgtype FIX 4.4 already uses.
+    let msg = refusal(&overlay(
+        "<messages><message name='VenueOrder' msgtype='D' msgcat='app'>\
+         <field name='Text' required='N' /></message></messages>",
+    ));
+    assert_names(&msg, &["NewOrderSingle", "VenueOrder", "D"]);
+}
+
+#[test]
+fn an_existing_message_repeated_with_another_msgcat_fails_naming_both() {
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='D' msgcat='admin'>\
+         <field name='Text' required='N' /></message></messages>",
+    ));
+    assert_names(&msg, &["NewOrderSingle", "app", "admin"]);
+}
+
+#[test]
+fn an_unknown_field_referenced_by_the_overlay_fails_naming_it() {
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='D' msgcat='app'>\
+         <field name='VenueNowhere' required='N' /></message></messages>",
+    ));
+    assert_names(&msg, &["NewOrderSingle", "VenueNowhere"]);
+    let msg = refusal(&overlay(
+        "<header><field name='VenueNowhere' required='N' /></header>",
+    ));
+    assert_names(&msg, &["header", "VenueNowhere"]);
+}
+
+#[test]
+fn a_field_added_twice_to_one_message_fails_naming_both() {
+    // Twice in the overlay itself.
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='D' msgcat='app'>\
+         <field name='VenueClientID' required='N' />\
+         <field name='VenueClientID' required='Y' /></message></messages>\
+         <fields><field number='5001' name='VenueClientID' type='STRING' /></fields>",
+    ));
+    assert_names(&msg, &["NewOrderSingle", "VenueClientID"]);
+    // Once in the overlay, once already in FIX 4.4's NewOrderSingle.
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='D' msgcat='app'>\
+         <field name='ClOrdID' required='N' /></message></messages>",
+    ));
+    assert_names(&msg, &["NewOrderSingle", "ClOrdID"]);
+    // Already there through a component: Symbol(55) is in Instrument.
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='D' msgcat='app'>\
+         <field name='Symbol' required='Y' /></message></messages>",
+    ));
+    assert_names(&msg, &["NewOrderSingle", "Symbol", "Instrument"]);
+}
+
+#[test]
+fn an_overlay_trailer_fails() {
+    let msg = refusal(&overlay(
+        "<trailer><field name='Text' required='N' /></trailer>",
+    ));
+    assert_names(&msg, &["trailer"]);
+}
+
+#[test]
+fn an_unknown_overlay_section_fails_rather_than_being_ignored() {
+    // A misspelt section would otherwise drop every addition in it silently.
+    let msg = refusal(&overlay(
+        "<feilds><field number='5001' name='VenueClientID' type='STRING' /></feilds>",
+    ));
+    assert_names(&msg, &["feilds"]);
+}
+
+#[test]
+fn an_added_header_group_and_its_members_are_header_fields() {
+    // The header already holds a group, NoHops(627) — trap 3 — and a header
+    // group is keyed for every message type.
+    let m = model(Source::Fix44Overlay(&overlay(
+        "<header><group name='NoVenueRoutes' required='N'>\
+         <field name='VenueRouteID' required='N' />\
+         <field name='VenueRouteTime' required='N' /></group></header>\
+         <fields><field number='5008' name='NoVenueRoutes' type='NUMINGROUP' />\
+         <field number='5009' name='VenueRouteID' type='STRING' />\
+         <field number='5010' name='VenueRouteTime' type='UTCTIMESTAMP' /></fields>",
+    )));
+    for tag in [5008, 5009, 5010, 627] {
+        assert!(m.is_header(tag), "{tag} is not a header field");
+    }
+    for mt in [&b"D"[..], b"A", b"8"] {
+        assert_eq!(m.group_delimiter(mt, 5008), Some(5009));
+        assert_eq!(m.group_members(mt, 5008), &[5009, 5010]);
+        assert!(m.allows(mt, 5008), "a header group is allowed everywhere");
+    }
+}
+
+#[test]
+fn a_value_already_listed_with_another_description_is_accepted_because_descriptions_are_not_on_the_wire()
+ {
+    let m = model(Source::Fix44Overlay(&overlay(
+        "<fields><field number='40' name='OrdType' type='CHAR'>\
+         <value enum='1' description='VENUE_MARKET' /></field></fields>",
+    )));
+    assert_eq!(m.enum_allows(40, b"1"), Some(true));
+    assert_eq!(
+        m,
+        model(Source::Fix44Whole(SHIPPED_FIX44)),
+        "a repeated value changed the model"
+    );
+}
+
+#[test]
+fn a_value_list_on_a_field_fix44_leaves_open_fails() {
+    // Symbol(55) takes any value in FIX 4.4. A value list would turn every
+    // other symbol into 373=5: that narrows the field, it does not add to it.
+    let msg = refusal(&fields_overlay(
+        "<field number='55' name='Symbol' type='STRING'>\
+         <value enum='VENUE' description='INVENTED' /></field>",
+    ));
+    assert_names(&msg, &["Symbol", "55"]);
+}
+
+#[test]
+fn the_trailer_gap_is_still_open_after_the_merge() {
+    // fix44-dictionary-traps.md, trap 3 "Still open": the trailer's three tags
+    // are classified as neither header nor body. The merge must not move them.
+    let m = venue();
+    for tag in [89, 93, 10] {
+        assert!(!m.is_header(tag), "{tag} became a header field");
+        assert!(m.allows(b"D", tag), "{tag} is folded into every message");
+    }
+}
+
+#[test]
+fn an_added_value_on_a_multi_value_field_is_checked_per_token() {
+    // ExecInst(18) is MULTIPLEVALUESTRING: `18=2 A` is two values, each checked.
+    let m = model(Source::Fix44Overlay(&overlay(
+        "<fields><field number='18' name='ExecInst' type='MULTIPLEVALUESTRING'>\
+         <value enum='f' description='INVENTED_VENUE_INST' /></field></fields>",
+    )));
+    assert_eq!(m.enum_allows(18, b"f"), Some(true));
+    assert_eq!(m.enum_allows(18, b"2 f"), Some(true));
+    assert_eq!(m.enum_allows(18, b"2 A"), Some(true), "FIX 4.4's own pair");
+    assert_eq!(
+        m.enum_allows(18, b"f g"),
+        Some(false),
+        "g is in neither list"
+    );
+}
+
+fn venue_file(paths: Paths) -> String {
+    match codegen::generate(Source::Fix44Overlay(OVERLAY), "Venue", paths) {
+        Ok(text) => text,
+        Err(e) => panic!("generate returned Err({e:?}) — \"{e}\""),
+    }
+}
+
+#[test]
+fn the_generated_file_opens_with_its_format_check() {
+    // The doctests in src/codegen/mod.rs compile this line at the current
+    // format and fail it (E0080) at another; this holds the emitted line to
+    // their text.
+    let v = codegen::FORMAT_VERSION;
+    for (paths, constant) in [
+        (
+            Paths::direct(),
+            "::fixbolt_dict::codegen_format::FORMAT_VERSION",
+        ),
+        (
+            Paths::facade(),
+            "::fixbolt::dict::codegen_format::FORMAT_VERSION",
+        ),
+    ] {
+        let check = format!(
+            "const _: () = assert!(\n    {constant} == {v},\n    \"Venue was generated by \
+             fixbolt-dict's codegen at format {v}, and the fixbolt-dict it is compiled against \
+             reads another format: give the build-dependency and the dependency the same \
+             fixbolt version\"\n);\n"
+        );
+        assert!(
+            venue_file(paths).contains(&check),
+            "{paths:?}: no format check of the expected text"
+        );
+    }
+    // One number, read by the generator and by the runtime crate.
+    assert_eq!(v, fixbolt_dict::codegen_format::FORMAT_VERSION);
+    assert_eq!(
+        v, 1,
+        "the format moved: move the two doctests in src/codegen/mod.rs with it"
+    );
+}
+
+#[test]
+fn generate_names_the_facade_or_the_crates_by_paths() {
+    let facade = venue_file(Paths::facade());
+    for wanted in [
+        "impl ::fixbolt::dict::Dictionary for Venue",
+        "impl ::fixbolt::dict::Tables for Venue",
+        "Option<::fixbolt::dict::FieldType>",
+    ] {
+        assert!(facade.contains(wanted), "facade: no {wanted:?}");
+    }
+    for unwanted in ["::fixbolt_dict", "::fixbolt_codec", "crate::"] {
+        assert!(!facade.contains(unwanted), "facade names {unwanted:?}");
+    }
+    let direct = venue_file(Paths::direct());
+    for wanted in [
+        "impl ::fixbolt_codec::Dictionary for Venue",
+        "impl ::fixbolt_dict::Tables for Venue",
+        "Option<::fixbolt_dict::FieldType>",
+    ] {
+        assert!(direct.contains(wanted), "direct: no {wanted:?}");
+    }
+    for unwanted in ["::fixbolt::", "crate::"] {
+        assert!(!direct.contains(unwanted), "direct names {unwanted:?}");
+    }
+    assert_eq!(Paths::default(), Paths::facade());
+}
+
+#[test]
+fn a_type_name_that_cannot_name_a_struct_fails() {
+    for bad in ["", "9Venue", "Ven ue", "Venue::X", "tables", "_"] {
+        match codegen::generate(Source::Fix44Overlay(OVERLAY), bad, Paths::direct()) {
+            Err(GenError::Dictionary(msg)) => assert!(msg.contains("type name"), "{bad:?}: {msg}"),
+            other => panic!(
+                "{bad:?}: expected a refusal, got {:?}",
+                other.map(|t| t.len())
+            ),
+        }
+    }
+}
