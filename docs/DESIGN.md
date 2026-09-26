@@ -39,10 +39,14 @@ OS checklist.
 
 ## 1. The finding this architecture is built around
 
-A mature C++ FIX engine (fix8, 68% faster than QuickFIX) encodes a NewOrderSingle in
-**2.1 µs** on production hardware, and says that **1.4 µs** of that remains with the framework
-stripped out. A Rust flyweight parser on an Apple M5 parsed the same message shape in
-**139 ns** on 2026-08-27.
+A mature C++ FIX engine, fix8, publishes its own encode and decode latencies, and its own
+figure for how much of them remains once its framework is stripped out. Those are fix8's
+claims, recorded with their source and conditions in
+[prior-art-for-embedders §1](reference/prior-art-for-embedders.md#1-engines), and not
+reproduced here. A Rust flyweight parser — another project's, not fixbolt — parsed a
+`NewOrderSingle` in **139 ns** under a hand-written harness; the harness, the machine and the
+date are recorded in
+[measured-costs §1](reference/measured-costs.md#1-a-512-entry-inline-field-array-costs-6-the-parse-time).
 
 The gap is not the bytes. It is the framework: object models, dictionary lookups at runtime,
 virtual dispatch, mandatory validation. `hffix` confirms it from the other side: it deletes
@@ -560,7 +564,7 @@ Mode-scoped, and `standard` is the default
 | Idle behaviour | blocks on readiness with a timeout, and gives the core back | spins on non-blocking sockets, never enters the kernel |
 | Cost of a wakeup | `epoll`-class: **`[measured 2026-09-18]` 4 960 ns p50 (`epoll_wait`), 4 819 ns (`poll`)**, p99 ≈ 7.9 µs, p99.9 ≈ 8.9 µs — `crates/engine/benches/wakeup.rs`, two isolated §9 cores, 20 runs × 20 000, [ADR-0025](decisions/ADR-0025-hft-has-a-hard-session-ceiling-and-the-engine-advises-rather-than-applies.md) *Measured* (the literature said 2–5 µs; this desk reads the top of it) | `[measured 2026-08-31]` one turn at **449 ns per session** on a §9 core; the arithmetic crossover with the measured wakeup is N ≈ 11, and the `hft` ceiling stays 4 until the busy turn at N > 1 is measured |
 | Pinning | none | `serve_sharded_hft` and `serve_hft_pinned` validate the core and pin from inside; `serve_hft` pins nothing and says so |
-| Runs on | any OS, any hardware, a container, a laptop | a machine that satisfies §9 |
+| Runs on | any Unix (Linux and macOS; `serve` is `cfg(unix)`), any hardware, a container, a laptop | a machine that satisfies §9 |
 | Rule 4 says | it **must** block | it must **not** sleep |
 
 **Why `hft` spins.** An `epoll` wakeup costs 2–5 µs and brings scheduler jitter with it. On a

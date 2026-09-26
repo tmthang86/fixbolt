@@ -211,7 +211,7 @@ core forever. An engine that burns a core out of the box looks broken to most pe
 and one that blocks gives up the largest cost it controls.
 
 **The decision.** Two named modes. `standard` is the default: the engine thread blocks on readiness
-with a timeout and gives the core back, and it runs anywhere. `hft` is opt-in and Linux-only: the
+with a timeout and gives the core back, and it runs on any Unix (Linux and macOS). `hft` is opt-in and Linux-only: the
 engine thread polls non-blocking sockets and never sleeps in the kernel while serving, on a core
 you isolate and pin. Both halves are rules, and both are machine-checked: a `standard` engine that
 spins is as much a defect as an `hft` engine that sleeps. In `hft` the shape the budget is built

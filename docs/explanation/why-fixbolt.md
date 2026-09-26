@@ -82,8 +82,10 @@ contention between threads that allocate. These show up in the tail, not the med
 the timed loop and asserts zero, and each case asserts that its own path actually ran. The guard is
 proven by breaking it: adding one allocation to the counted loop turns the count from zero into one
 per message. The `tools/w2w` harness counts allocations on both of its threads across its timed
-window and asserts zero there too
-([CONFORMANCE.md §4](../CONFORMANCE.md#4-zero-allocation-on-the-hot-path)).
+window and asserts zero there too (the module comment *The allocation count travels with the
+figures* in [`tools/w2w/src/main.rs`](../../tools/w2w/src/main.rs), and the rule 1 row of
+[`CLAUDE.md`](../../CLAUDE.md) §2 *Machine checks*); the per-crate results are in
+[CONFORMANCE.md §4](../CONFORMANCE.md#4-zero-allocation-on-the-hot-path).
 
 ## 3. The dictionary is compiled, not consulted
 

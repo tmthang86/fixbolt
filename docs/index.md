@@ -58,7 +58,8 @@ where the project stands against QuickFIX capability by capability, is [PRD.md �
   [CHANGELOG.md](../CHANGELOG.md), under *Conditions to reach `1.0`*.
 - **Its production track record is zero.** No amount of testing substitutes for counterparties
   having found an engine's bugs ([PRD.md §3](PRD.md)).
-- **It is a single-owner project.** Issues are read, but there is no SLA and no on-call
+- **fixbolt has a development team; today that team is one developer, its owner.** Issues are
+  read, but there is no SLA and no on-call
   ([README.md](../README.md), *Support level*).
 - **Logon admits by identity only.** A configured comp-ID pair is admitted; there is no credential
   check behind the hook today ([PRD.md §3](PRD.md)).

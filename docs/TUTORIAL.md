@@ -309,27 +309,37 @@ to stop it; it prints the `stopped:` line and exits.
 
 ## Step 4: what happens on the wire
 
-[`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs) runs this
-exchange through a real socket. `|` stands for the `0x01` separator.
+The bytes below were captured on 2026-09-26 from the example above, started with the command
+in *Run it* and driven by a small client that sent a Logon and then an order;
+[`crates/library/tests/end_to_end.rs`](../crates/library/tests/end_to_end.rs)
+(`an_order_through_a_real_socket_comes_back_filled`) runs the same exchange through a real socket
+in CI. `|` stands for the `0x01` separator. `52=` carries the sender's clock at the time of the
+run: a `52=` too far from the engine's clock is dropped as `SendingTimeOutOfRange`
+([SESSION-BEHAVIOUR.md](SESSION-BEHAVIOUR.md)), so a client copying these bytes must stamp its
+own time, and recompute `9=` and `10=` to match.
 
 **1. The client logs on (`35=A`).**
 
 ```text
-8=FIX.4.4|9=59|35=A|34=1|49=TW44|52=20260903-12:00:00.000|56=ISLD|98=0|108=30|10=123|
+8=FIX.4.4|9=63|35=A|34=1|49=TW44|52=20260926-16:31:10.918|56=ISLD|98=0|108=30|10=071|
 ```
 
 The engine answers with its own Logon. Your handler is not involved.
 
+```text
+8=FIX.4.4|9=63|35=A|34=1|49=ISLD|52=20260926-16:31:10.919|56=TW44|98=0|108=30|10=072|
+```
+
 **2. The client sends an order (`35=D`).**
 
 ```text
-8=FIX.4.4|9=112|35=D|34=2|49=TW44|52=20260903-12:00:01.000|56=ISLD|11=ORD-1|21=1|38=100|40=2|44=42|54=1|55=IBM|59=0|60=20260903-12:00:01.000|10=234|
+8=FIX.4.4|9=125|35=D|34=2|49=TW44|52=20260926-16:31:10.919|56=ISLD|11=ORD-1|21=1|38=100|40=2|44=42|54=1|55=IBM|59=0|60=20260926-16:31:10.919|10=066|
 ```
 
 **3. The acceptor replies with an ExecutionReport (`35=8`).**
 
 ```text
-8=FIX.4.4|9=138|35=8|34=2|49=ISLD|52=20260903-12:00:01.001|56=TW44|6=42|11=ORD-1|14=100|17=EXEC-1|31=42|32=100|37=EXEC-1|38=100|39=2|54=1|55=IBM|150=F|151=0|10=045|
+8=FIX.4.4|9=141|35=8|34=2|49=ISLD|52=20260926-16:31:10.919|56=TW44|6=42|11=ORD-1|14=100|17=EXEC-1|31=42|32=100|37=EXEC-1|38=100|39=2|54=1|55=IBM|150=F|151=0|10=098|
 ```
 
 Three things to notice: `49` and `56` are swapped relative to the order, because your sender

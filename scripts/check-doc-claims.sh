@@ -46,12 +46,11 @@
 # sounds" (CONFIGURATION.md), "is stricter than the QuickFIX run" (twice,
 # CONFORMANCE.md and DESIGN.md), "rather than a registered session" and
 # "rather than its documentation" (both prior-art.md). Dropping "than" alone
-# took 8 hits to 2 — both the same sourced fact quoted in two places
-# (DESIGN.md §1 and measured-costs.md §4): "fix8, 68% faster than QuickFIX",
-# each time labelled "the vendor's or project's own claim" and never a
-# fixbolt number. That fact is still a hit, allow-listed below by its exact
-# text rather than by exempting either file, so a NEW comparison added to
-# either file is still caught.
+# took 8 hits to 2 — both the same vendor claim quoted in two places
+# (DESIGN.md §1 and measured-costs.md §4): "fix8, 68% faster than QuickFIX".
+# Both were true hits: ADR-0206 decision 8 allows another engine's figure
+# only on the prior-art page, so the claim moved there (the fix8 row of
+# prior-art-for-embedders.md §1) and rule (c) has no allowlist entry.
 #
 # ALLOWLIST is exact substrings, each verified legitimate by hand on
 # 2026-09-26 and named here with the reason. It stays short on purpose: a
@@ -65,12 +64,15 @@
 #   (b) "licensing models or pricing" — PRD.md's *Not in phase 5* list: an
 #                                        explicit deferral, the opposite of a
 #                                        promise.
-#   (c) "68% faster than QuickFIX"    — see above.
 #
 # WHAT IT CANNOT SEE:
 #   - a banned claim or comparison split across two lines, or paraphrased
 #     instead of quoted verbatim — this is same-line substring matching
 #     only, the shape ADR-0206 decision 8's own examples are stated in.
+#   - a comparison built on a comparative that is not in COMPARATIVE:
+#     "fixbolt answers sooner than QuickFIX" passes, because "than" is
+#     dropped (above) and "sooner" is not listed. The hand read in the
+#     senior review (ADR-0206 decision 8) is what covers it.
 #   - a banned name or phrase inside a URL or a code span reads the same as
 #     one in prose; a link to a vendor's own pricing page still trips (b)
 #     and needs a human to read it, same as any other hit.
@@ -105,17 +107,17 @@ ALLOWLIST_B=(
   'pricing the'
   'licensing models or pricing'
 )
-ALLOWLIST_C=(
-  '68% faster than QuickFIX'
-)
+ALLOWLIST_C=()
 
 # is_allowlisted <content> <allowlist-array-name>
 is_allowlisted() {
   local content="$1"
   local arr_name="$2"
   local item
-  eval "local arr=(\"\${${arr_name}[@]}\")"
-  for item in "${arr[@]}"; do
+  # `${a[@]+"${a[@]}"}` expands an empty array to nothing: bash 3.2 (macOS)
+  # under `set -u` calls a plain empty "${a[@]}" an unbound variable.
+  eval "local arr=(\${${arr_name}[@]+\"\${${arr_name}[@]}\"})"
+  for item in ${arr[@]+"${arr[@]}"}; do
     case "${content}" in
       *"${item}"*) return 0 ;;
     esac

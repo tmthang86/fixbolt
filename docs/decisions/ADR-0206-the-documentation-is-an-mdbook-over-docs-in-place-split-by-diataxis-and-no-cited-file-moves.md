@@ -7,6 +7,12 @@
   `decisions/` and `reference/` (`[output.html.search.chapter]` in `book.toml`). With all 282
   generated pages in, mdBook's index measured 18,075,679 bytes, over its 10 MB warning; without the
   ADRs alone, 10,518,029; without both, 4,004,202. Those pages stay in the sidebar and in links.
+  *Revised in place 2026-09-26, at plan step 14, while Proposed*: decision 8's machine word list
+  drops `than`. `[measured 2026-09-26]` with `than` in the list, `scripts/check-doc-claims.sh` hit 8
+  lines on the tree; 6 of them were plain English with no engine comparison ("rather than", "worth
+  more than", "stricter than the QuickFIX run"). The known blind spot this leaves — a comparison
+  whose comparative is not listed, such as "sooner than QuickFIX" — is covered by the hand read
+  below, and is listed in the script's header under what it cannot see.
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);
@@ -112,8 +118,11 @@ What constrains any restructuring, `[measured 2026-09-26]` with `grep -rl` over 
    - **This keeps the page inside ADR-0104 decision 7**: "QuickFIX" appears as a sourced fact, which
      decision 7 allows, and never as an endorsement, a compatibility badge or a comparison. Held by
      machine — `scripts/check-doc-claims.sh` fails a line that names another engine together with a
-     comparative (`faster`, `slower`, `better`, `outperform`, `than`), the prior-art reference page
-     exempted because it quotes vendors — and by hand, in the senior review of that pull request.
+     comparative (`faster`, `slower`, `quicker`, `better`, `worse`, `beats`, `outperform`,
+     `superior`, `inferior`; not `than`, which measured 6 false hits in 8, see the revision above),
+     the prior-art reference page exempted because it quotes vendors — and by hand, in the senior
+     review of that pull request, which also catches a comparison built on an unlisted word
+     ("sooner than QuickFIX").
 9. **This work is phase 5** (owner, 2026-09-26): a new phase in `PRD.md` §2 after phase 4 and before
    the kernel-bypass candidate. No accepted ADR needs superseding. ADR-0204 gave the bypass item
    "no phase number until the owner scopes a phase that includes it", which stays true — the
