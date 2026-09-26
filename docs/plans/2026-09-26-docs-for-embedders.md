@@ -502,5 +502,18 @@ Chủ dự án yêu cầu (2026-09-26): mọi bước viết tài liệu chạy 
   (vẫn trong sidebar) còn 4 MB. Ghi vào ADR-0206.
 - **Chưa chứng minh:** anchor của link đã viết lại thành URL GitHub không được kiểm (ghi trong
   phần "cannot see" của hai script). Pages cần chủ dự án đặt nguồn "GitHub Actions".
-- CI xanh cho commit đóng: *(điền khi merge)*.
+- CI xanh cho commit đóng: `b6512e7`, run 36245351372 (22/22); merge `b840f9d`.
+
+### PR 4 — bộ sinh thành thư viện (#119, nhánh `dict/generator-library`)
+
+- Bước 17–19 xong; senior review (bước 20) ra 1 lỗi trung bình + 4 nhẹ, sửa ở `e7dc2b2`.
+- **Đổi tên:** feature/module là `codegen` (xem PR 0).
+- **Byte identity:** `fix44.rs` `323eafd4…`, `fixt11_fix50sp2.rs` `deeb5016…` trước và sau; nay được
+  ghim bằng `tests/generated_is_pinned.rs` (review phát hiện `gen_matches_build` so bộ sinh với
+  chính nó sau khi `build.rs` nạp cùng code qua `#[path]`).
+- **Bẫy mới, mỗi cái có test canh:** script cần bash 4 báo ok khi chạy bằng bash 3.2 mà không
+  kiểm gì (`check-old-bash-is-refused.sh`); `gen` là từ khoá của edition 2024 (trình biên dịch);
+  bộ đếm index không thấy thư mục con — đã sửa, số vẫn 176 (đảo ngược: 176 → 177 đỏ).
+- **Chưa chứng minh trên máy này:** clippy toàn workspace `--all-features` (`ktls-core` chỉ
+  Linux) — CI chạy.
 
