@@ -1653,3 +1653,49 @@ TargetCompID=ISLD
         .into_table()
         .expect("into_table takes a plain acceptor file");
 }
+
+/// **QuickFIX's four dictionary keys are refused by name** (ADR-0207 decision
+/// 7; plan `2026-09-26-docs-for-embedders` step 25).
+///
+/// A file copied from a QuickFIX deployment carries them, and *unknown key*
+/// sends its operator looking for a typo that is not there. The dictionary is
+/// a type compiled into the application, so the refusal says so, names the
+/// key and the line, and points at the how-to — in `[DEFAULT]` and in a
+/// `[SESSION]` alike, because QuickFIX reads them in both.
+#[test]
+fn a_data_dictionary_key_is_refused_by_name() {
+    const KEYS: [(&str, &str); 4] = [
+        ("UseDataDictionary", "Y"),
+        ("DataDictionary", "spec/FIX44.xml"),
+        ("TransportDataDictionary", "spec/FIXT11.xml"),
+        ("AppDataDictionary", "spec/FIX50SP2.xml"),
+    ];
+    for (key, value) in KEYS {
+        let in_default = format!(
+            "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n{key}={value}\n\
+             [SESSION]\nTargetCompID=TW44\n"
+        );
+        let in_session = format!(
+            "[DEFAULT]\nBeginString=FIX.4.4\nSenderCompID=ISLD\n\
+             [SESSION]\nTargetCompID=TW44\n{key}={value}\n"
+        );
+        for (where_, text, line) in [("[DEFAULT]", in_default, 4), ("[SESSION]", in_session, 6)] {
+            let e = refused(&text);
+            assert_eq!(
+                *e.problem(),
+                Problem::DictionaryIsBuildTime,
+                "{key} in {where_} is not refused as build-time, left: {e}"
+            );
+            assert_eq!(e.line(), line, "{key} in {where_}: the wrong line: {e}");
+            let said = e.to_string();
+            assert!(
+                said.contains(key),
+                "{key} in {where_}: the refusal does not name the key: {said}"
+            );
+            assert!(
+                said.contains("docs/how-to/use-a-venue-dictionary.md"),
+                "{key} in {where_}: the refusal does not point at the how-to: {said}"
+            );
+        }
+    }
+}

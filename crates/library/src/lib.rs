@@ -65,6 +65,19 @@ pub use fixbolt_engine::{ServeError, Shutdown, serve_hft};
 /// clause. See `docs/GUIDE.md` for the rest of what a distributor owes.
 pub use fixbolt_dict::NOTICE;
 
+/// The dictionary a message is read and written by (ADR-0207 decision 5).
+///
+/// [`dict::Fix44`] is the default everywhere a dictionary is a type parameter
+/// — [`App`], [`Handler`], [`Reply`], [`Incoming`] — and a dictionary of the
+/// application's own is any type implementing [`dict::Dictionary`] and
+/// [`dict::Tables`]. **The parameter is not yet used**: plan
+/// `2026-09-26-docs-for-embedders` step 26 makes it the dictionary the parse
+/// and the reply go through.
+pub mod dict {
+    pub use fixbolt_codec::{Dictionary, TagValue};
+    pub use fixbolt_dict::{FieldType, Fix44, Tables};
+}
+
 /// The `*_with` forms, for a deployment that must name `N`, `RX` and `TX`.
 ///
 /// `[2026-09-05]` **`docs/CONFIGURATION.md` used to tell a reader to

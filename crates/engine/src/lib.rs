@@ -3044,6 +3044,58 @@ pub fn serve_with_recovery_with<
     )
 }
 
+/// As [`serve_with_recovery_with`], over the encoding `E` — the door a
+/// dictionary of the application's own reaches the standard acceptor through
+/// (ADR-0207 decision 5). `E` is named, never inferred:
+/// `serve_over::<256, 4096, 8192, 1024, TagValue<Venue, 256>, _, _, _, _>`.
+///
+/// **Not built yet.** Plan `2026-09-26-docs-for-embedders` step 25 adds the
+/// signature so its test compiles; until step 26 this returns
+/// [`ServeError::Io`] with [`std::io::ErrorKind::Unsupported`] and binds
+/// nothing.
+///
+/// # Errors
+///
+/// Today, always the one above. From step 26, as [`serve_with_recovery`].
+#[cfg(all(feature = "standard", unix))]
+// Eight, as `serve_with_recovery` — ADR-0054's deferred `Serve` builder.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_over<
+    const N: usize,
+    const RX: usize,
+    const TX: usize,
+    const APP: usize,
+    E,
+    A: Application,
+    J: SessionJournal,
+    V: crate::recovery::Recovery<J>,
+    L: MessageLog,
+>(
+    addr: &str,
+    table: presession::Table,
+    app: A,
+    capacity: usize,
+    limits: presession::Limits,
+    recovery: V,
+    log: L,
+    handles: crate::observe::Handles,
+) -> Result<Shutdown, ServeError>
+where
+    E: for<'a> Encoding<
+            View<'a> = MessageView<'a, N>,
+            Scratch = FieldIndex<N>,
+            Template<24, 320> = Template<24, 320>,
+            Field = u32,
+            ParseError = ParseError,
+        >,
+    E::Dict: Tables,
+{
+    let _ = (addr, table, app, capacity, limits, recovery, log, handles);
+    Err(ServeError::Io(std::io::Error::from(
+        std::io::ErrorKind::Unsupported,
+    )))
+}
+
 /// As `serve`, in `hft` mode: **spins, and burns a core for as long as the
 /// process lives.**
 ///

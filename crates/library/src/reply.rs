@@ -27,6 +27,7 @@
 // item 55.
 #![allow(clippy::indexing_slicing)]
 
+use core::marker::PhantomData;
 use core::ops::Range;
 
 use fixbolt_codec::{EncodeError, GroupData, TemplateBuilder};
@@ -127,7 +128,12 @@ impl Answer {
 /// [ADR-0041](../../../docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)
 /// is the decision this table belongs to; `crates/library/benches/cost.rs` is
 /// the committed benchmark.
-pub struct Reply<'a, const P: usize = 64, const S: usize = 1024> {
+///
+/// `D` is the dictionary the reply is ordered and encoded by, [`Fix44`] unless
+/// named (ADR-0207 decision 5). **Not yet used** — plan
+/// `2026-09-26-docs-for-embedders` step 26 carries it into [`Message`]; until
+/// then every reply is ordered by [`Fix44`].
+pub struct Reply<'a, const P: usize = 64, const S: usize = 1024, D = Fix44> {
     begin_string: &'a [u8],
     /// `None` when this is an **origination** rather than a reply.
     ///
@@ -148,9 +154,10 @@ pub struct Reply<'a, const P: usize = 64, const S: usize = 1024> {
     sender: &'a [u8],
     target: &'a [u8],
     out: &'a mut [u8],
+    dict: PhantomData<fn() -> D>,
 }
 
-impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
+impl<'a, const P: usize, const S: usize, D> Reply<'a, P, S, D> {
     /// Everything the session knows and the application does not.
     ///
     /// `sender` and `target` are **this side's**, already reversed — a caller
@@ -176,6 +183,7 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
             sender,
             target,
             out,
+            dict: PhantomData,
         }
     }
 
@@ -207,6 +215,7 @@ impl<'a, const P: usize, const S: usize> Reply<'a, P, S> {
             sender,
             target,
             out,
+            dict: PhantomData,
         }
     }
 

@@ -421,6 +421,19 @@ pub enum Problem {
     /// [`presession::LimitError::NoListenerCadence`](crate::presession::LimitError::NoListenerCadence)
     /// refuses on the builder this key feeds.
     NoListenerCadence,
+    /// `UseDataDictionary`, `DataDictionary`, `TransportDataDictionary` or
+    /// `AppDataDictionary` — QuickFIX's run-time dictionary keys.
+    ///
+    /// **Refused by name, not as an unknown key** (ADR-0207 decision 7): this
+    /// engine's dictionary is a type compiled into the application, so a file
+    /// cannot choose one, and an operator who copied these lines from a
+    /// QuickFIX configuration needs to be told where the dictionary went —
+    /// `docs/how-to/use-a-venue-dictionary.md`.
+    ///
+    /// **Not yet produced**: plan `2026-09-26-docs-for-embedders` step 25 adds
+    /// the variant so its test compiles; until step 26 the four keys are still
+    /// [`Problem::UnknownKey`].
+    DictionaryIsBuildTime,
 }
 
 impl fmt::Display for Problem {
@@ -469,6 +482,9 @@ impl fmt::Display for Problem {
             }
             Self::NoListenerCadence => {
                 "a cadence of zero never polls the listener — no connection would ever be accepted"
+            }
+            Self::DictionaryIsBuildTime => {
+                "the dictionary is chosen when the application is built, not in this file — see docs/how-to/use-a-venue-dictionary.md"
             }
         };
         f.write_str(s)
