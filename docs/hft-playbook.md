@@ -259,6 +259,72 @@ No price appears below — prices go stale and this repository is public; use
 [GCP's pricing calculator](https://cloud.google.com/products/calculator) for a current estimate
 before renting.
 
+### Two gVNICs per VM, and why
+
+Every VM this section creates — the gate VM and both measurement-pair VMs — gets **two** gVNICs:
+`nic0` on the `default` VPC (SSH, outbound internet, external IP) and `nic1` on a new custom VPC
+`bypass-data` (subnet `bypass-data-sub`, `10.10.0.0/24`, MTU 1460, `no-address`), carrying only the
+pair's FIX traffic. The ADR-0204 gate (8.6) runs `ethtool -L` (queue count at or below half the
+maximum) and Onload attaches an XDP program to the interface it accelerates; either can reset the
+link it touches. On a single-NIC VM that NIC also carries SSH — including a Claude Code or VS Code
+Remote-SSH session — so the gate or the measurement can cut the operator off mid-run. Two NICs
+confine the gate and Onload's XDP program to `nic1`; `nic0` and the SSH session on it are never
+touched by either.
+
+A few Google-documented facts this shape depends on:
+
+- **Additional network interfaces (vNICs) can only be defined at instance creation**, not added to
+  a running VM afterward: *"you can define additional vNICs only when you create a instance"*
+  ([Update the network interfaces for an
+  instance](https://docs.cloud.google.com/compute/docs/networking/update-network-interfaces)). Both
+  interfaces are named in the single `create` command (8.5, below); there is no later step that adds
+  `nic1`.
+- **The simplest configuration puts each interface in its own VPC network** — Google's own
+  multi-interface guide's examples each attach one interface per VPC ([Create VMs with multiple
+  network interfaces](https://docs.cloud.google.com/vpc/docs/create-use-multiple-interfaces));
+  sharing one VPC network across interfaces is possible only when `nic0` is also attached to that
+  same network ([Multiple network
+  interfaces](https://docs.cloud.google.com/vpc/docs/multiple-interfaces-concepts)), which does not
+  apply here. `bypass-data` is `nic1`'s own network, separate from `default`.
+- **A custom-mode VPC starts with no firewall rules of its own beyond the implied deny**: *"every
+  network has an implied deny firewall rule for ingress traffic"* ([VPC firewall rules
+  overview](https://docs.cloud.google.com/firewall/docs/firewalls)). Only the auto-mode `default`
+  network is pre-populated with `default-allow-internal`, `default-allow-ssh`, `default-allow-rdp`
+  and `default-allow-icmp` ([VPC firewall
+  rules](https://docs.cloud.google.com/vpc/docs/firewalls)); `bypass-data`, being custom-mode, gets
+  none of these, so it needs its own allow rule (below) before the pair can reach each other over
+  `nic1`.
+- **Google Cloud's default VPC MTU is 1,460 bytes**, and a network's MTU can be raised as far as
+  8,896 bytes ([Maximum transmission unit](https://docs.cloud.google.com/vpc/docs/mtu)).
+  `bypass-data` is created at the default 1460 and stays there — not needed for FIX message sizes,
+  and raising it is not free on `gve`: the driver checks the interface MTU against its RX packet
+  buffer size before letting XDP attach — `max_xdp_mtu = priv->rx_cfg.packet_buffer_size -
+  sizeof(struct ethhdr)` (minus `GVE_RX_PAD` in one queue format), and refuses with `"XDP is not
+  supported for mtu %d."` when the MTU is over that ceiling
+  ([gve_main.c](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/google/gve/gve_main.c),
+  the XDP-verify path, around lines 1780–1786). A jumbo MTU (8896) risks the gate's own `ss --xdp`
+  step failing for a reason that has nothing to do with flow steering or RSS.
+
+`bypass-data` and `bypass-data-sub` are created once, shared by the gate VM and the measurement
+pair, and deleted in 8.7 when nothing needs the pair:
+```
+gcloud compute networks create bypass-data --subnet-mode=custom --mtu=1460
+
+gcloud compute networks subnets create bypass-data-sub \
+  --network=bypass-data --region=asia-southeast1 --range=10.10.0.0/24
+
+gcloud compute firewall-rules create bypass-data-internal \
+  --network=bypass-data --direction=INGRESS --action=ALLOW \
+  --rules=tcp,udp,icmp --source-ranges=10.10.0.0/24
+```
+The existing SSH rule (8.5, `bypass-pair-ssh`, on `default`) is unchanged and keeps protecting
+`nic0`. Separately, the `default` network's own pre-populated `default-allow-ssh` opens port 22 to
+`0.0.0.0/0` — wider than `bypass-pair-ssh`'s `OWNER_IP/32` — and is redundant once the tagged rule
+is in place:
+```
+gcloud compute firewall-rules update default-allow-ssh --disabled
+```
+
 ### 8.1 Account and billing
 
 1. Sign in with a Google account and create a project: `gcloud projects create PROJECT_ID`, or
@@ -402,21 +468,25 @@ decision 3 requires quoting anyway. **Ubuntu 22.04's GA kernel is 5.15, outside 
 HWE kernel moves later but is not the image default, so prefer 24.04 over relying on an HWE
 upgrade after boot.
 
-**Networking, outbound and inbound.** Both VMs need outbound internet to fetch the Onload
-source, kernel headers and build tooling. The simplest arrangement for a solo owner is an
-**external IP on each VM**, with the firewall doing the restricting (below); the alternative —
-`no-address` plus [Cloud NAT](https://docs.cloud.google.com/nat/docs/overview) for outbound and
+**Networking, outbound and inbound.** All of this is about `nic0` — `nic1` (`bypass-data`, above)
+is created `no-address` unconditionally, in both shapes below, and carries no SSH and no outbound
+internet traffic; it exists only for the pair's FIX traffic. Both VMs need outbound internet on
+`nic0` to fetch the Onload source, kernel headers and build tooling. The simplest arrangement for a
+solo owner is an **external IP on `nic0`**, with the firewall doing the restricting (below); the
+alternative — `no-address` on `nic0` too, plus
+[Cloud NAT](https://docs.cloud.google.com/nat/docs/overview) for outbound and
 [IAP TCP forwarding](https://docs.cloud.google.com/iap/docs/using-tcp-forwarding) for inbound SSH
 — gives up no traffic capability but adds a Cloud Router and a NAT gateway to create, keep track
-of and eventually delete alongside the VMs (8.7). This procedure uses the external-IP shape;
-commands for the no-address alternative follow it.
+of and eventually delete alongside the VMs (8.7). This procedure uses the external-IP shape for
+`nic0`; commands for the no-address alternative (also `nic0` only) follow it.
 
 ```
 # gate VM — cheap, disposable, run only the ADR-0204 gate (8.6) on it
 gcloud compute instances create bypass-gate \
   --zone=asia-southeast1-b --machine-type=c3-standard-4 \
   --image-family=debian-12 --image-project=debian-cloud \
-  --network-interface=nic-type=GVNIC \
+  --network-interface=nic-type=GVNIC,network=default \
+  --network-interface=nic-type=GVNIC,network=bypass-data,subnet=bypass-data-sub,no-address \
   --threads-per-core=1 \
   --tags=bypass-pair
 
@@ -424,7 +494,8 @@ gcloud compute instances create bypass-gate \
 gcloud compute instances create bypass-acceptor \
   --zone=asia-southeast1-b --machine-type=MACHINE_TYPE \
   --image-family=debian-12 --image-project=debian-cloud \
-  --network-interface=nic-type=GVNIC \
+  --network-interface=nic-type=GVNIC,network=default \
+  --network-interface=nic-type=GVNIC,network=bypass-data,subnet=bypass-data-sub,no-address \
   --threads-per-core=1 \
   --tags=bypass-pair \
   [--resource-policies=bypass-pair-policy | --node-group=bypass-node-group]
@@ -432,7 +503,8 @@ gcloud compute instances create bypass-acceptor \
 gcloud compute instances create bypass-counterparty \
   --zone=asia-southeast1-b --machine-type=MACHINE_TYPE \
   --image-family=debian-12 --image-project=debian-cloud \
-  --network-interface=nic-type=GVNIC \
+  --network-interface=nic-type=GVNIC,network=default \
+  --network-interface=nic-type=GVNIC,network=bypass-data,subnet=bypass-data-sub,no-address \
   --threads-per-core=1 \
   --tags=bypass-pair \
   [--resource-policies=bypass-pair-policy | --node-group=bypass-node-group]
@@ -451,8 +523,9 @@ gcloud compute firewall-rules create bypass-pair-ssh \
   --rules=tcp:22 --source-ranges=OWNER_IP/32 --target-tags=bypass-pair
 ```
 
-**The `no-address` alternative**, if public IPs on the VMs themselves are unwanted. Add
-`no-address` to each `--network-interface` above, then:
+**The `no-address` alternative**, if a public IP on `nic0` is unwanted. `nic1` already has
+`no-address` unconditionally above; add `no-address` to each VM's `nic0` `--network-interface`
+too, then:
 ```
 # outbound: a Cloud Router and NAT gateway in the same region
 gcloud compute routers create bypass-nat-router --network=default --region=asia-southeast1
@@ -475,10 +548,30 @@ owner running a short-lived measurement pair, external IP plus the restrictive f
 above is the simpler choice and what the rest of this section assumes; switch to `no-address`
 plus Cloud NAT and IAP if the exposure of a public IP, however firewalled, is unacceptable.
 
+**Find each NIC's interface name, and confirm the pair reaches each other over `nic1`.** Do not
+assume a name — GCP's interface naming can vary by image and by how many NICs a VM has:
+```
+ip -br addr
+```
+On a Debian 12 image, `nic0` is commonly `ens4` and `nic1` commonly `ens5`, but read this
+command's own output rather than trust that pattern. List each VM's `nic1` address:
+```
+gcloud compute instances list --filter="tags.items=bypass-pair" \
+  --format="table(name,networkInterfaces[1].networkIP)"
+```
+Then from one VM, ping the other over `nic1` specifically — not the default route, which is
+`nic0`:
+```
+ping -I <nic1> <peer's nic1 IP from the listing above>
+```
+A reply confirms `bypass-data-sub` routes between the pair before the gate below or a measurement
+run relies on it.
+
 ### 8.6 Run the ADR-0204 gate on the gate VM
 
 Run on `bypass-gate` (8.5), not on the measurement pair — the pair is not created until this
-gate passes. Every line below is ADR-0204 decision 3, in order. A pass on every line is what
+gate passes. Every line below is ADR-0204 decision 3, in order, run against `nic1` (the interface
+found above) — never `nic0`, which the gate must not touch. A pass on every line is what
 lets the reopening plan proceed to size and create the measurement pair; **a fail on any line:
 stop, delete the gate VM (8.7), and record which line failed and on which machine type** — do
 not try to work around a failing line on the same series; try another series or size instead.
@@ -489,23 +582,28 @@ gcloud compute instances describe bypass-gate --zone=asia-southeast1-b \
   --format='value(machineType,zone)'
 uname -r                                           # e.g. 6.1.0-... or 6.8.0-...
 
-# driver is gve
-ethtool -i <nic>                                   # pass: driver: gve
+# driver is gve, on nic1 (found above, e.g. ens5 — not nic0/ens4)
+ethtool -i <nic1>                                  # pass: driver: gve
 
 # flow steering is a device option this instance's series offers
 dmesg | grep -i "FLOW STEERING"                    # pass: "... enabled with max rule limit of N", N > 0
 
 # n-tuple steering can be turned on
-sudo ethtool -K <nic> ntuple on
-ethtool -k <nic> | grep ntuple                     # pass: ntuple-filters: on
+sudo ethtool -K <nic1> ntuple on
+ethtool -k <nic1> | grep ntuple                    # pass: ntuple-filters: on
 
 # the device offers an RSS hash key (G0 from the reference page)
-ethtool -x <nic> | grep -A1 "RSS hash key"         # pass: a key is printed, not "Operation not supported"
+ethtool -x <nic1> | grep -A1 "RSS hash key"        # pass: a key is printed, not "Operation not supported"
 
 # queue count at or below half the maximum before an XDP program can attach
-ethtool -l <nic>                                   # read "Combined" maximum
-sudo ethtool -L <nic> combined <max/2 or less>
-ethtool -l <nic>                                   # pass: current <= half of maximum
+ethtool -l <nic1>                                  # read "Combined" maximum
+sudo ethtool -L <nic1> combined <max/2 or less>
+ethtool -l <nic1>                                  # pass: current <= half of maximum
+
+# register nic1 for Onload's AF_XDP path — gve is not an AMD Solarflare adapter, so this is the
+# path Onload's own README documents for "any interfaces ... not AMD Solarflare interfaces"
+# (github.com/Xilinx-CNS/onload README, "Onload with AF_XDP")
+echo <nic1> | sudo tee /sys/module/sfc_resource/afxdp/register
 
 # after Onload registers and binds the socket:
 ss --xdp                                           # pass: zc:1 on the bound socket
@@ -514,6 +612,11 @@ A `dmesg` line absent, `ethtool -x` returning `Operation not supported`, or `ss 
 showing `zc:1` are each, individually, the stop condition — the same three ways the desk's I211
 failed (ADR-0203). A failing series does not disqualify GCP; ADR-0204 decision 3 allows trying
 another series, with the series that passed named in every figure's label thereafter.
+
+If instead the kernel log shows `gve ...: XDP is not supported for mtu %d.`, the stop condition
+is the MTU, not the series or the gate: `bypass-data` was raised above `gve`'s XDP-checked ceiling
+(above, *Two gVNICs per VM*) — set it back to 1460 and rerun rather than trying another machine
+series.
 
 ### 8.7 Cost control
 
@@ -534,7 +637,12 @@ another series, with the series that passed named in every figure's label therea
   gcloud compute firewall-rules delete bypass-pair-ssh-iap                                     # if the no-address alternative was used
   gcloud compute routers nats delete bypass-nat --router=bypass-nat-router --region=asia-southeast1   # if used
   gcloud compute routers delete bypass-nat-router --region=asia-southeast1                     # if used
+  gcloud compute firewall-rules delete bypass-data-internal
+  gcloud compute networks subnets delete bypass-data-sub --region=asia-southeast1
+  gcloud compute networks delete bypass-data
   ```
+  `bypass-data`, its subnet and its firewall rule are shared by the gate VM and the measurement
+  pair (above); delete them once neither is left running, not after each VM individually.
 - **Budget alert**, so an idle pair left running is caught before a bill surprises the owner:
   ```
   gcloud billing budgets create --billing-account=BILLING_ACCOUNT_ID \
