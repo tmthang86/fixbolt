@@ -1,0 +1,25 @@
+# The documentation site: an mdBook built over docs/ in place (ADR-0206).
+#
+# docs/SUMMARY.md is the table of contents. The markdown under docs/ stays the one
+# authored copy; the site under target/book is generated and never edited.
+# Build with `mdbook build` from the repository root.
+
+[book]
+title = "fixbolt"
+description = "A FIX 4.4 engine in Rust, acceptor-first, documented for the developers who embed it."
+language = "en"
+src = "docs"
+
+[build]
+# Under target/, which .gitignore already excludes.
+build-dir = "target/book"
+# A SUMMARY.md entry whose file does not exist fails the build instead of
+# creating an empty page inside docs/.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/tmthang86/fixbolt"
+# The documents carry their own section numbers (DESIGN.md §4, GUIDE.md §3a), and
+# hundreds of citations use them. mdBook's chapter numbers would be a second,
+# unrelated numbering beside them, so they are turned off.
+no-section-label = true
