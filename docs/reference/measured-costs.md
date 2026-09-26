@@ -236,19 +236,13 @@ in the pinned commit — pairing it with `hft` would be the mode-mixing non-nego
 
 ## 4. Reference points from other engines — not measured here
 
-Repeated from [prior-art.md](prior-art.md) because the comparison is what justifies the
-architecture. **Every row is the vendor's or project's own claim.**
-
-| Engine | Claim | Note |
-|---|---|---|
-| fix8 (C++) | `NewOrderSingle` encode **2.1 µs**, `ExecutionReport` decode **3.2 µs** | Production hardware. 68% faster than QuickFIX |
-| fix8 (C++) | **1.4 µs** encode *without framework overhead* | Their own figure. **33% of their latency is framework** |
-| QuickFIX (C++) | 6,000–8,000 msg/s per session | Commodity hardware, minimal application |
-| QuickFIX `FileStore` | `Sync()` per write, across 3 files | The dominant latency source in the default configuration |
-
-Set against the 138.8 ns measured in §1: the distance between a mature C++ engine and a
-flyweight parser is roughly **an order of magnitude**, and fix8's own numbers say where it
-goes. That is the entire argument for [DESIGN.md §1](../DESIGN.md#1-the-finding-this-architecture-is-built-around).
+Other engines' own latency claims are not repeated on this page, which holds measurements.
+fix8's published encode and decode figures, and its own figure for the share its framework
+costs, are recorded as fix8's claims, with their source and conditions, in
+[prior-art-for-embedders §1](prior-art-for-embedders.md#1-engines); QuickFIX's are in
+[prior-art.md](prior-art.md). The flyweight parse measured in §1 is set against them in
+[DESIGN.md §1](../DESIGN.md#1-the-finding-this-architecture-is-built-around), in words, not
+numbers side by side.
 
 ---
 

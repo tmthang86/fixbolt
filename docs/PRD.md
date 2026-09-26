@@ -22,7 +22,7 @@ where the work stands today is [STATUS.md](../STATUS.md).
 
 | Mode | For | Buys | Costs |
 |---|---|---|---|
-| **`standard`** (default) | anybody, any OS, any hardware, a container, a laptop | portability, and the core back: it blocks when idle | the microsecond |
+| **`standard`** (default) | anybody, any Unix (Linux and macOS), any hardware, a container, a laptop | portability, and the core back: it blocks when idle | the microsecond |
 | **`hft`** (opt-in, Linux only) | a tuned box with isolated cores | the microsecond | a core burned per polling thread, and a machine that satisfies [DESIGN.md §9](DESIGN.md) |
 
 An engine whose default configuration pins a core at 100% looks broken to most people who try
@@ -132,7 +132,7 @@ could not build.
 | A dictionary a published crate can build | Its own ADR first: Apache-2.0 FIX Orchestra files with QuickFIX's XML kept as the oracle (recommended), or QuickFIX-derived tables with a `NOTICE` ([ADR-0001](decisions/ADR-0001-relationship-to-quickfix.md) decision 5) |
 | No credential reaches disk | `554=` / `96=` redacted in the message log and journal. The admission hook (`Registry::admit`) already exists |
 | `Decimal` | [ADR-0028](decisions/ADR-0028-a-decimal-is-a-copy-value-parsed-on-demand.md), accepted 2026-09-01; shape revised and built by [ADR-0120](decisions/ADR-0120-a-decimal-is-a-mantissa-and-a-signed-exponent-read-by-a-free-function-and-round-trips-only-in-canonical-form.md), 2026-09-23 |
-| A second engine family in the interop gate | QuickFIX/J, both roles, plaintext and TLS — §3 gap 2 is that TLS has never spoken to another engine |
+| A second engine family in the interop gate | QuickFIX/J, both roles, plaintext and TLS — delivered: 7 / 7 on each TLS arm, CI job *Both roles, plaintext and TLS, against QuickFIX/J*, run 35892604235 on `d4bea77` ([CONFORMANCE.md §10](CONFORMANCE.md#10-interop-against-a-real-quickfixj-both-roles-plaintext-and-tls)) |
 | Packaging and an API gate | `cargo publish --workspace --dry-run` with no `vendor/`; `cargo-semver-checks` from the first release |
 | First release, `0.1.0` as the git tag `v0.1.0` | Not `1.0`: the `1.0` condition (one outside deployment, one clean minor) is written into `CHANGELOG.md` and is not a phase-3 criterion. Not a crates.io upload (ADR-0161) |
 | FIXP oracle spike, *conditional* | Only if the owner names a target venue (B3 Binary EntryPoint is the candidate; Artio's acceptor is the second implementation). Its output is the FIXP ADR, not a session machine ([ADR-0078](decisions/ADR-0078-sbe-enters-as-an-encoding-without-a-session-and-fixp-is-its-own-phase.md) decision 2). **Done 2026-09-23 (row 9)**: `scripts/fixp-spike.sh` — `accept PASS 5/5, reject-timestamp PASS, reject-credentials PASS` against Artio 0.184, blocking CI job `fixp-spike` ([ADR-0140](decisions/ADR-0140-the-fixp-spike-speaks-the-referees-own-schema-through-a-detached-probe-and-its-ci-job-blocks.md), [CONFORMANCE.md §11](CONFORMANCE.md)); the FIXP ADR is [ADR-0141](decisions/ADR-0141-fixp-is-built-only-in-the-venues-current-dialect-in-a-role-that-dialect-has-a-referee-for-and-not-before-phase-5.md) (Proposed): no session before phase 5, built only in B3's current dialect and in a role with a running referee | |
@@ -362,8 +362,12 @@ the gaps have to be named, because anyone comparing the two will find them.
    feature on Linux for both roles (`serve_tls`, `connect_and_serve_tls`); the steady-state round
    trip is published in [DESIGN.md](DESIGN.md) §8; and a session's mode is reported and can be
    required (`EventKind::TlsFellBackToUserspace`, `Engine::tls_mode`, `TlsRequireKernel` —
-   [DESIGN.md](DESIGN.md) §6, *Which TLS mode is actually in force*). What is still missing is a
-   counterparty this repository did not write: nothing here has spoken TLS to another engine.
+   [DESIGN.md](DESIGN.md) §6, *Which TLS mode is actually in force*). ~~What is still missing is a
+   counterparty this repository did not write: nothing here has spoken TLS to another engine.~~
+   `[2026-09-23]` TLS has spoken to another engine: QuickFIX/J 3.0.2, both roles, **7 / 7** on each
+   TLS arm with the kernel mode asserted, CI job *Both roles, plaintext and TLS, against
+   QuickFIX/J*, run 35892604235 on `d4bea77`
+   ([CONFORMANCE.md §10](CONFORMANCE.md#10-interop-against-a-real-quickfixj-both-roles-plaintext-and-tls)).
 
 The one that was the largest, **many counterparties on one acceptor**, closed on 2026-09-01.
 Until then every entry point took one `Config`, so the engine was a link rather than an

@@ -1,5 +1,9 @@
 # Getting Started with fixbolt
 
+*For a Rust developer who wants a FIX 4.4 acceptor running before reading anything else. By the
+end you have a binary that accepts a Logon from either of two configured counterparties, answers
+their orders with fills, and stops cleanly when you press Enter.*
+
 Run a FIX 4.4 acceptor in two steps: a configuration file, and one file of Rust that wires up a
 handler and starts the engine. Both blocks below are pasted **verbatim** into a fresh crate and
 run against a real socket by `scripts/stranger-check.sh` — a client sharing no code with this

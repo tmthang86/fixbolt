@@ -9,6 +9,7 @@
 
 # How-to guides
 
+- [Task index](how-to/index.md)
 - [Embedding guide: the constraints](GUIDE.md)
 - [Operating in standard mode](best-practices-standard.md)
 - [Operating in hft mode](best-practices-hft.md)
@@ -173,6 +174,10 @@
 # Explanation
 
 - [FIX 4.4 and the acceptor role](INTRODUCTION.md)
+- [Why fixbolt is built this way](explanation/index.md)
+  - [Why fixbolt](explanation/why-fixbolt.md)
+  - [Why Rust, and what it costs](explanation/why-rust.md)
+  - [The design in ten decisions](explanation/design-rationale.md)
 - [Design document](DESIGN.md)
 - [Scope and phases](PRD.md)
 
