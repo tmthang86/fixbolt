@@ -27,7 +27,8 @@ Heartbeat pays nothing.
 
 `FIX44.xml` declares one `<group>` in its `<header>`: `NoHops(627)`, with `HopCompID(628)`,
 `HopSendingTime(629)` and `HopRefID(630)`. The generator already says what that means, at
-`crates/dict/build.rs:820`:
+`crates/dict/src/codegen/emit.rs:283` (it was in `crates/dict/build.rs` until the generator moved
+into `src/codegen/`, ADR-0207 decision 1):
 
 > The header's one group, `NoHops(627)`, can appear in ANY message, so it is keyed under the
 > empty message type and emitted without a `msg_type` arm.
@@ -96,4 +97,4 @@ second.
   decision 2 — the ordering rule this would have broken.
 - [a-feature-gated-test-is-a-test-ci-never-runs](a-feature-gated-test-is-a-test-ci-never-runs.md)
   — the other trap found this phase where the gates were green about something they never ran.
-- `crates/dict/build.rs:820` — the comment that already said it, to whoever went looking.
+- `crates/dict/src/codegen/emit.rs:283` — the comment that already said it, to whoever went looking.

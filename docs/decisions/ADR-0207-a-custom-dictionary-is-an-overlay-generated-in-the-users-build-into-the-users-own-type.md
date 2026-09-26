@@ -2,6 +2,9 @@
 
 - **Status**: Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
   answers: decision 8 (FIX 4.4 only) and the first *Bad* consequence (rebuild accepted).
+  *Revised again 2026-09-26, at plan step 17*: the module and the feature are `codegen`, not
+  `gen` — `gen` is a reserved keyword in Rust edition 2024, so `pub mod gen` does not compile and
+  `r#gen` would leak into every user's `build.rs`.
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);
@@ -78,14 +81,14 @@ reason.)
 ## Decision
 
 1. **One generator, three callers.** The generator moves out of `crates/dict/build.rs` into
-   `crates/dict/src/gen/`, lint-clean (no `panic!`/`unwrap`/`expect`, no panicking index —
+   `crates/dict/src/codegen/`, lint-clean (no `panic!`/`unwrap`/`expect`, no panicking index —
    non-negotiable 7 and the indexing-debt ratchet apply, because it is now under `src/`), returning
    `Result<String, GenError>` where it used to `die`. It is loaded twice, `sbe-gen`'s pattern
    (ADR-0081): `build.rs` includes it by `#[path]` to generate `Fix44` (and, under `fix50sp2`, the
-   pair) exactly as today, and the crate exposes it as `pub mod gen` behind a new **off-by-default**
-   feature `gen` for a user's `build.rs`. The feature gates the `mod` declaration
+   pair) exactly as today, and the crate exposes it as `pub mod codegen` behind a new **off-by-default**
+   feature `codegen` for a user's `build.rs`. The feature gates the `mod` declaration
    (non-negotiable 6); `roxmltree` (already the pinned build-dependency, `=0.20.0`) becomes an
-   optional normal dependency under `gen` only. **No new crate**: a separate generator crate would
+   optional normal dependency under `codegen` only. **No new crate**: a separate generator crate would
    have to join the lockstep release family (ADR-0160) because `fixbolt-dict`'s own `build.rs`
    would build-depend on it, or would need the three XML files moved out of `crates/dict/spec/`
    (ADR-0104 decision 2, non-negotiable 9). Both are larger than the feature.
@@ -106,11 +109,11 @@ reason.)
    The shipped `spec/` files are read, never written (non-negotiable 9); the base text reaches the
    generator as `include_str!` from inside the `fixbolt-dict` package, so it works from the git tag
    and from a `.crate`.
-4. **Output: the user's own zero-sized type.** `gen` writes one Rust file for the user to
+4. **Output: the user's own zero-sized type.** `codegen` writes one Rust file for the user to
    `include!` in a module of their choosing: the tables, a unit struct named by the caller, and its
    `impl codec::Dictionary` and `impl dict::Tables`. Paths in the emitted code are absolute through
    the facade (`::fixbolt::dict::…`), so a user depends on `fixbolt` at run time and on
-   `fixbolt-dict` with `features = ["gen"]` only as a build-dependency. The emitted file carries a
+   `fixbolt-dict` with `features = ["codegen"]` only as a build-dependency. The emitted file carries a
    compile-time check that the generator's format version equals the runtime crate's, so a
    build-dependency at a different tag fails to compile with a sentence, not silently.
 5. **The facade becomes generic over the dictionary, additively.** `fixbolt::dict` re-exports
