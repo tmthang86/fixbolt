@@ -1,11 +1,27 @@
 # fixbolt
 
-A FIX 4.4 protocol engine written in Rust. It is built to be **a FIX acceptor on ordinary
-kernel TCP whose latency is a published, reproduced number** — a kernel-bypass figure, where
-one exists, is only a second, labelled row beside a kernel-TCP figure from the same boot
-([ADR-0099](docs/decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)),
-which is the part of the protocol the Rust ecosystem does not yet cover with anything
-production-proven.
+A FIX 4.4 protocol engine written in Rust, as a library you embed in your own application. It is
+built to be **a FIX acceptor on ordinary kernel TCP whose latency is a published, reproduced
+number** — a kernel-bypass figure, where one exists, is only a second, labelled row beside a
+kernel-TCP figure from the same boot
+([ADR-0099](docs/decisions/ADR-0099-kernel-tcp-stays-the-default-and-the-headline-and-a-bypass-figure-is-a-second-labelled-row.md)).
+It plays the initiator role too, over the same session state machine. It is not a port of
+QuickFIX: it takes QuickFIX's dictionaries and acceptance tests as data
+([ADR-0001](docs/decisions/ADR-0001-relationship-to-quickfix.md)).
+
+**Documentation** is a book at <https://tmthang86.github.io/fixbolt/>, rendered from the Markdown
+under [`docs/`](docs/) in this repository, which stays the authored copy.
+
+## Who it is for
+
+A Rust developer who has to **accept FIX 4.4 sessions** — counterparties that connect in, log on
+and send orders — inside their own process, or dial out to one, and who wants to know what the
+engine costs in latency instead of being told it is fast. Your code is a `Handler`: the engine
+reads the socket, runs the session protocol, and calls your handler with a borrowed view of each
+application message and a `Reply` to answer through.
+
+It is a protocol engine, not a trading system: no order book, no matching, no risk checks, no
+clustering or replication ([PRD.md §5](docs/PRD.md#5-permanent-non-goals)).
 
 ## What it is
 
@@ -21,11 +37,11 @@ production-proven.
   ([DESIGN.md §8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp)).
 - **Two modes, and the default is the portable one**
   ([ADR-0013](docs/decisions/ADR-0013-two-modes-standard-and-hft.md)).
-  `standard` blocks when idle, gives the core back, and runs on any OS and any hardware. It
-  is what you get if you say nothing. `hft` is opt-in and Linux-only: it pins a polling thread
-  to an isolated core and spins there, burning that core to save microseconds. `serve` is
-  `standard`; `serve_hft` is `hft`
-  ([ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)).
+  `standard` blocks when idle, gives the core back, and runs on Unix: Linux, and macOS, where
+  it is developed. `serve` does not exist on a target that is not Unix. It is what you get if you say
+  nothing. `hft` is opt-in and Linux-only: it pins a polling thread to an isolated core and
+  spins there, burning that core to save microseconds. `serve` is `standard`; `serve_hft` is
+  `hft` ([ADR-0014](docs/decisions/ADR-0014-standard-mode-blocks-on-poll.md)).
 - **In `hft`, one session per polling thread.** An idle turn of the engine costs
   `[measured 2026-08-31]` **449 ns per session** on a tuned Linux core, flat from 1 to 16
   sockets. Two sessions on one `hft` thread already cost more in polling than the whole
@@ -33,6 +49,47 @@ production-proven.
   not inherit the headline latency figures
   ([ADR-0012](docs/decisions/ADR-0012-latency-first-and-one-session-per-polling-thread.md)).
   Every latency number in this repository names its session count.
+
+## What it does not do yet
+
+Stated here because anyone comparing FIX engines will find them.
+[PRD.md §3](docs/PRD.md#3-where-this-stands-against-quickfix) sets fixbolt against QuickFIX
+capability by capability, and [GUIDE.md §9](docs/GUIDE.md#9-what-this-engine-does-not-do-for-you)
+lists what an embedder still has to do themselves.
+
+- **No production track record.** No deployment this repository did not write has been reported.
+  No amount of testing stands in for counterparties having found an engine's bugs.
+- **FIX 4.4 is the version the `fixbolt` crate serves.** A FIXT 1.1 / FIX 5.0 SP2 session exists
+  in the lower crates behind their off-by-default `fix50sp2` feature
+  ([CONFORMANCE.md §9](docs/CONFORMANCE.md#9-fixt-11--fix-50-sp2-added-2026-09-19)); `fixbolt`
+  has no feature that turns it on.
+- **The dictionary is compiled in.** Its tables are generated at build time from QuickFIX's FIX
+  4.4 XML; changing it means rebuilding, and today it means replacing the whole file
+  ([CONFIGURATION.md §5](docs/CONFIGURATION.md#5-build-time-environment-variables)). A venue's
+  own fields as an overlay on FIX 4.4 is phase 5 work, not yet built
+  ([PRD.md §2](docs/PRD.md#2-phases)).
+- **Logon admits by identity only.** A counterparty presenting a configured comp-ID pair is
+  admitted; there is no password, no `553` / `554` rejection and no IP allowlist.
+- **No Windows.** `standard` needs a Unix target, `hft` needs Linux, and TLS is Linux-only,
+  behind `fixbolt-engine`'s `tls` feature.
+- **Session schedules are UTC only**, and a configuration file is not reloaded while the engine
+  runs.
+- **Not on crates.io, no docs.rs page, and pre-1.0.** It is released as a git tag; the install
+  line and the conditions for `1.0` are under *Getting started* below.
+
+## Start here
+
+- **An acceptor running now:** [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md), a
+  configuration file and one Rust file.
+- **The same acceptor built step by step, down to the bytes on the wire:**
+  [docs/TUTORIAL.md](docs/TUTORIAL.md).
+- **Why it is built this way, and what that costs:** [docs/explanation/](docs/explanation/index.md),
+  three pages for a developer deciding whether to embed it.
+- **New to FIX:** [docs/INTRODUCTION.md](docs/INTRODUCTION.md).
+- **Embedding it in a real application:** [docs/GUIDE.md](docs/GUIDE.md), every constraint the
+  compiler cannot check for you.
+- **Everything, as one site:** [the book](https://tmthang86.github.io/fixbolt/). The full reading
+  list is the table under *As a contributor* below; a codemap, ARCHITECTURE.md, is being written.
 
 ## Where it stands
 
@@ -83,8 +140,9 @@ external toolchain (ADR-0104). Two steps to a running acceptor:
 
 ### Support level
 
-This is a **single-owner, spare-time project**, not a company or a team. Issues and pull
-requests are read, but there is no SLA and no on-call. `docs/PRD.md` says what is built and what
+fixbolt has a development team; today that team is one developer, its owner. Issues and pull
+requests are read, but there is no SLA and no on-call, and contributions from outside the team
+are not accepted yet ([docs/contributing.md](docs/contributing.md)). `docs/PRD.md` says what is built and what
 is not; `CHANGELOG.md`'s *Conditions to reach 1.0* says what has to be true — a deployment this
 repository did not write, reported publicly, and one minor release with no `semver-checks`
 exemption — before this project calls itself `1.0`.
@@ -226,4 +284,7 @@ read it, and which test guards it — start at
 
 ## Licence
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+The code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
+option. `fixbolt-dict` also ships QuickFIX's FIX 4.4, FIXT 1.1 and FIX 5.0 SP2 XML dictionaries,
+under the QuickFIX Software License; [`NOTICE`](NOTICE) holds its text, and *Relationship to
+QuickFIX* above says what it asks of a binary you distribute.

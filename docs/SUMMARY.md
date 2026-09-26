@@ -9,6 +9,7 @@
 
 # How-to guides
 
+- [Task index](how-to/index.md)
 - [Embedding guide: the constraints](GUIDE.md)
 - [Operating in standard mode](best-practices-standard.md)
 - [Operating in hft mode](best-practices-hft.md)
