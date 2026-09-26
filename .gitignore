@@ -50,3 +50,6 @@ KRX-Specs/
 # They are working copies of this same repository; committing one would nest
 # the repo inside itself.
 /.claude/worktrees/
+
+# Python bytecode from scripts/*.py
+__pycache__/

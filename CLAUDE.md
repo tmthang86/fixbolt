@@ -115,16 +115,24 @@ Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code
 | `docs/best-practices-standard.md` / `docs/best-practices-hft.md` | operational recommendations per mode |
 | `docs/hft-playbook.md` | tuning procedure: hardware, BIOS, kernel, NIC, app, acceptance |
 | `docs/DESIGN.md` | how the system is built, and the latency budget |
+| `docs/how-to/` | one task an embedder must get done, step by step, linking into the section that explains it |
+| `docs/explanation/` | why fixbolt is built as it is: its mechanisms and the cost each avoids, linking to where every figure is recorded |
 | `docs/internals/` | one page per crate: which file holds what, the order to read them in, the test guarding each |
 | `docs/reference/` | protocol facts, prior art, measured costs, traps |
 | `docs/decisions/` | ADRs: who decided what, why, at what cost |
 | `docs/plans/` | what is about to be built |
+| `docs/SUMMARY.md` + `book.toml` | the documentation site: which pages the book holds and in what order; the site under `target/book` is generated |
 | `STATUS.md` | where the work stands, open items, what is not proven |
+| `ARCHITECTURE.md` | the codemap: crate boundaries, names to search for, and each invariant — including what is deliberately absent — mapped to its §2 item |
+| `CONTRIBUTING.md` | who may contribute and how a change gets in |
+| `SECURITY.md` | where a vulnerability is reported |
 
 | When you change… | You must update |
 |---|---|
 | Move work between phases, or change what a phase must deliver | `PRD.md` §2, and the ADR that moved it |
 | Add / remove / rename a crate | `DESIGN.md` §3 + `README.md` layout + `Cargo.toml` members + its `docs/internals/` page |
+| Add, rename or remove a page under `docs/` | `docs/SUMMARY.md` (`scripts/gen-book-summary.py` for `reference/`, `internals/`, `decisions/`) |
+| Change a crate boundary or an invariant | `ARCHITECTURE.md` |
 | The public API of any crate | `DESIGN.md`, the crate's rustdoc, `CHANGELOG.md` |
 | A constraint a user must honour and the compiler cannot check | `GUIDE.md` |
 | A user-visible constant, default, or config key | `docs/CONFIGURATION.md` |
@@ -139,7 +147,9 @@ Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code
 | A dependency, a technique, a reversed decision | new ADR in `docs/decisions/` |
 | Prove something listed as unproven | strike the bullet in `STATUS.md` *Not proven*, same commit |
 
-No row is machine-checked; walk it row by row before a plan is closed.
+Only the `docs/SUMMARY.md` row is machine-checked (`scripts/gen-book-summary.py --check`: exact for
+`reference/`, `internals/`, `decisions/`; for top-level `docs/*.md`, `how-to/` and `explanation/` only
+that each page is listed); walk the rest row by row before a plan is closed.
 
 **If it cost you, write it down.** An hour lost to a trap goes into `docs/reference/` or an ADR
 immediately, and **every recorded trap gets a regression test**.

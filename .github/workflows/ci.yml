@@ -218,6 +218,90 @@ jobs:
       - run: scripts/check-links.py
       - run: scripts/check-adr-numbers.sh
 
+  # ADR-0206 decision 7: the documentation site is an mdBook over docs/, and
+  # this job is its gate on every pull request. `.github/workflows/pages.yml`
+  # builds the same book on push to `main` and deploys it; it repeats the
+  # install and the build (cheap), not the source-side checks below.
+  book:
+    name: The book builds without a warning, and its links, samples and cited headings hold
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # The official release binary, not `cargo install`: pinned by version
+      # AND by the SHA-256 GitHub records for the release asset
+      # (`gh api repos/rust-lang/mdBook/releases/tags/v0.5.4`, field
+      # `digest` of `mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz`), which
+      # was also recomputed from the downloaded bytes on 2026-09-26. mdBook
+      # publishes no checksum file of its own. pages.yml carries the same two
+      # lines; the step "pages.yml pins the same mdBook" holds them equal.
+      MDBOOK_VERSION: "0.5.4"
+      MDBOOK_SHA256: "3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # check-cited-headings.sh reads the base's copy of five documents
+          # with `git show HEAD^1:<file>`. At the default depth 1 the tip is
+          # grafted and HEAD^1 does not exist
+          # (docs/reference/a-shallow-clone-emptied-the-field-the-check-read.md).
+          # Depth 2 carries the tip's parents: on `pull_request` the tip is
+          # the merge of the head into the base, so HEAD^1 is the base as
+          # merged; on push to `main` it is the previous commit on `main`.
+          fetch-depth: 2
+      - name: Install mdBook ${{ env.MDBOOK_VERSION }}, the release binary, checked by sha256
+        run: |
+          tgz="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p target/mdbook-pin
+          curl -fsSL --retry 3 -o "target/mdbook-pin/${tgz}" \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/${tgz}"
+          # Checked before a byte of it runs; a mismatch fails this step.
+          echo "${MDBOOK_SHA256}  target/mdbook-pin/${tgz}" | sha256sum --check --strict
+          tar -xzf "target/mdbook-pin/${tgz}" -C target/mdbook-pin
+          echo "${GITHUB_WORKSPACE}/target/mdbook-pin" >> "${GITHUB_PATH}"
+          target/mdbook-pin/mdbook --version
+      - name: pages.yml pins the same mdBook
+        run: |
+          for k in MDBOOK_VERSION MDBOOK_SHA256; do
+            if ! grep -Eq "^ +${k}: \"$(printenv "${k}")\"\$" .github/workflows/pages.yml; then
+              echo "::error::.github/workflows/pages.yml does not pin ${k}=$(printenv "${k}") as this job does"
+              exit 1
+            fi
+          done
+      - run: python3 scripts/gen-book-summary.py --check
+      # mdBook's own warnings do not fail the build (ADR-0206 decision 7), so
+      # the log is read too. The exit code is captured before the grep runs,
+      # so the grep can neither mask a failed build nor be masked by one.
+      # mdBook logs to stderr, without colour when stderr is not a terminal,
+      # as `<level> <message>` with the level right-aligned (` WARN`, `ERROR`).
+      - name: mdbook build, and no WARN or ERROR line in its log
+        env:
+          # The GitHub links the preprocessor writes name the commit under
+          # test: the pull request's head (a commit that stays reachable),
+          # not the throwaway merge commit; on push, the pushed commit.
+          FIXBOLT_BOOK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p target
+          rc=0
+          mdbook build > target/mdbook-build.log 2>&1 || rc=$?
+          cat target/mdbook-build.log
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::mdbook build exited ${rc}"
+            exit "${rc}"
+          fi
+          if grep -En '^[[:space:]]*(WARN|ERROR)([[:space:]]|$)' target/mdbook-build.log; then
+            echo "::error::mdbook build logged the WARN/ERROR line(s) above"
+            exit 1
+          fi
+      - run: python3 scripts/check-links.py --rendered target/book
+      - run: python3 scripts/check-mdbook-repo-links.py
+      - run: scripts/check-doc-samples.sh
+      - name: No cited `## N.` heading disappears relative to the base
+        run: |
+          echo "event       = ${{ github.event_name }}"
+          echo "pr base sha = ${{ github.event.pull_request.base.sha }}"
+          echo "shallow     = $(git rev-parse --is-shallow-repository)"
+          git log -1 --format='HEAD^1      = %H%nsubject     = %s' HEAD^1
+          scripts/check-cited-headings.sh HEAD^1
+
   # STATUS.md items 78 and 79 (ADR-0065): a feature combination no gate
   # builds. CI's clippy ran under the default set and under `--features
   # affinity` *with* `standard` also on; nothing ran `--no-default-features

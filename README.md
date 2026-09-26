@@ -213,6 +213,8 @@ spikes/fixp-probe/
 docs/            see the table above; decisions/ holds the ADRs, reference/ the
                  measured facts and traps, plans/ what is about to be built (Vietnamese),
                  internals/ a map of which file in which crate holds what
+book.toml        the documentation site: an mdBook over docs/ in place (ADR-0206), its
+                 table of contents docs/SUMMARY.md, built to target/book, never edited
 vendor/          QuickFIX's acceptance definitions and generated C++ (the test oracle),
                  fetched by script, gitignored, never committed — crates/dict/spec/ holds
                  the three XML files that DO ship, byte-identical to vendor/'s own copy

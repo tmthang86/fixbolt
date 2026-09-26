@@ -3,6 +3,10 @@
 - **Status**: Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
   answers to the plan's six questions: decision 8's last two bullets (Q2), decision 9 (Q3), and the
   contributor audience in decision 4 (Q1).
+  *Revised in place 2026-09-26, at plan step 4, while Proposed*: the book's search index leaves out
+  `decisions/` and `reference/` (`[output.html.search.chapter]` in `book.toml`). With all 282
+  generated pages in, mdBook's index measured 18,075,679 bytes, over its 10 MB warning; without the
+  ADRs alone, 10,518,029; without both, 4,004,202. Those pages stay in the sidebar and in links.
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);

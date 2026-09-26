@@ -199,15 +199,69 @@ with a CI run id; the measured rows quote `scripts/check-machine.sh` from the de
 | 6 | The exporter stays off the hot path | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |
 | — | Phases 1–3 hold | 59 / 59, FIXT 179 / 180, interop 7 / 7 with both peers, `cargo semver-checks` |
 
+### Phase 5: dependable by an embedder — *approved by the owner 2026-09-26; ADR-0206 and ADR-0207 Proposed*
+
+**Approved by the owner on 2026-09-26, not yet built.** Placed after phase 4 and before the
+kernel-bypass candidate under *Later phases*
+([ADR-0206](decisions/ADR-0206-the-documentation-is-an-mdbook-over-docs-in-place-split-by-diataxis-and-no-cited-file-moves.md) decision 9). The plan is
+[plans/2026-09-26-docs-for-embedders.md](plans/2026-09-26-docs-for-embedders.md); it contains no FIXP work, so
+[ADR-0141](decisions/ADR-0141-fixp-is-built-only-in-the-venues-current-dialect-in-a-role-that-dialect-has-a-referee-for-and-not-before-phase-5.md)'s
+"not before phase 5" is unaffected.
+
+Scope: make the engine something a Rust developer at another firm can embed without reading the
+repository's history. Two parts. **Documentation**: an mdBook built over `docs/` in place,
+organised by Diátaxis, with no cited file moved and no cited section cut out of its file, plus
+the contributor files `ARCHITECTURE.md`, `CONTRIBUTING.md` and `SECURITY.md`
+([ADR-0206](decisions/ADR-0206-the-documentation-is-an-mdbook-over-docs-in-place-split-by-diataxis-and-no-cited-file-moves.md)). **Custom dictionaries**: a venue's FIX 4.4 dialect as an overlay on
+the shipped `FIX44.xml`, or a whole file, generated at build time in the user's own crate into the
+user's own type — never loaded at run time
+([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)).
+
+| PR | Item | Decided by |
+|---|---|---|
+| 1 | The book's skeleton: `book.toml`, `docs/SUMMARY.md` with its ADR, reference and internals parts generated, links that leave `docs/` rewritten to GitHub at build time, an anchor-aware check of the rendered site, CI job `book` and a GitHub Pages deployment | ADR-0206 decisions 1–3, 5–7 |
+| 2 | The contributor set: `ARCHITECTURE.md`, `CONTRIBUTING.md`, `SECURITY.md` | ADR-0206 decision 4 |
+| 3 | Pages for embedders: three explanation pages, a how-to index, the opening of `README.md` | ADR-0206 decision 8 |
+| 4 | The dictionary generator becomes a library inside `fixbolt-dict`, behind a default-off feature `gen`, with its output unchanged | ADR-0207 decisions 1–2 |
+| 5 | The overlay, and a whole user file, into the user's own type | ADR-0207 decisions 3–4 |
+| 6 | A custom dictionary through to the application: the facade generic over the dictionary, additively; an example crate over a real socket; three how-to pages; QuickFIX's four dictionary keys refused by name | ADR-0207 decisions 5–7 |
+
+**Not in phase 5, by name:** a dictionary loaded at run time; an overlay onto the FIXT 1.1 /
+FIX 5.0 SP2 pair, and `_over` entry points for the sharded and TLS doors (ADR-0207 decision 8);
+accepting contributions from outside the project team, and the CLA-or-DCO decision that has to
+come first; licensing models or pricing; head-to-head benchmarks against another engine; moving
+or splitting any cited document; `docs/plans/` in the book, and translations; rustdoc on the
+site, crates.io or docs.rs ([ADR-0161](decisions/ADR-0161-0-1-0-is-a-git-tag-not-a-crates-io-upload-and-the-stranger-and-the-semver-gate-read-the-tag.md)
+stands); typed per-message classes; FIX Orchestra input; a FIXP session. No real venue
+specification is used or committed: phase 5 proves the mechanism on an invented dialect, not
+that it works with any particular venue.
+
+**Phase 5 exit criteria.** The gates of PRs 1–6, each a command that passes or fails on the
+closing commit, with a CI run id.
+
+| # | Criterion | Gate |
+|---|---|---|
+| 1 | The book builds and its links resolve | `mdbook build` exits 0 with no mdBook warning in its log; `scripts/check-links.py`, and `scripts/check-links.py --rendered target/book` with anchors; CI job `book` |
+| 2 | The table of contents matches the tree | `scripts/gen-book-summary.py --check` |
+| 3 | The site is live | `pages.yml` deploys on push to `main`; on the published site, a link into `crates/` opens that file on GitHub at the commit that was built |
+| 4 | Code on a page is code CI compiles, and cited sections stay | `scripts/check-doc-samples.sh`; `scripts/check-cited-headings.sh`; job `stranger-git`, with the `stranger-check` blocks of `GETTING-STARTED.md` untouched |
+| 5 | The pages keep their house rules | `scripts/check-doc-claims.sh`, each of its checks proven by reversal |
+| 6 | The generator moved without changing its output | the sha256 of the generated `fix44.rs` and `fixt11_fix50sp2.rs` equals the parent commit's; `crates/dict/tests/gen_matches_build.rs` |
+| 7 | The overlay merges correctly | `crates/dict/tests/overlay.rs` under `gen`, including `an_empty_overlay_emits_byte_identical_fix44` |
+| 8 | A custom dictionary reaches the application | the example crate's socket tests; `an_empty_overlay_scores_59_of_59`; its `benches/alloc.rs` cases read 0 in job `bench`; `scripts/check-custom-dictionary-packaged.sh` in job `package` |
+| 9 | The facade grows without breaking | `scripts/check-semver-against-tag.sh` reports no major change; `crates/library/benches/alloc.rs` reads 0 |
+| — | Phases 1–3 hold | 59 / 59, FIXT 179 / 180, interop 7 / 7 with both peers, `cargo semver-checks` |
+
 ### Later phases: candidates, not scoped
 
-No phase after 4 is scoped (ADR-0141 *Consequences*). An item listed here has a reason to come
+No phase after 5 is scoped. ADR-0141 *Consequences* recorded that no phase after 4 was scoped;
+phase 5 was scoped on 2026-09-26 (ADR-0206 decision 9). An item listed here has a reason to come
 back and a named condition for coming back; it gets a phase number only when the owner scopes a
 phase that includes it.
 
 | Candidate | Why it is here | Reopens when | Decided by |
 |---|---|---|---|
-| Kernel bypass: Onload over AF_XDP on two rented cloud VMs (GCP `gve` the candidate; AWS `ena`, Azure `mana` excluded); no Solarflare card, no purchase, no Mac as counterparty (owner, 2026-09-26) | Phase 4 item 2 was dropped at gate G1 on the desk's I211, a drop on that machine, not a result about bypass; the owner kept it for later | a named pair of instances, with the gate of ADR-0204 decision 3 quoted from the acceptor (`gve`, flow steering offered, `ntuple on`, an RSS key, half the queues); the drivers that pass and what each use can run on are in [kernel-bypass-needs-a-machine-this-project-does-not-have](reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md); a VM figure is published under [ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md)'s label, never beside the desk's | [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md), [ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md) (both Accepted 2026-09-26) |
+| Kernel bypass: Onload over AF_XDP on two rented cloud VMs (GCP `gve` the candidate; AWS `ena`, Azure `mana` excluded); no Solarflare card, no purchase, no Mac as counterparty (owner, 2026-09-26). Comes after phase 5 ([ADR-0206](decisions/ADR-0206-the-documentation-is-an-mdbook-over-docs-in-place-split-by-diataxis-and-no-cited-file-moves.md) decision 9) | Phase 4 item 2 was dropped at gate G1 on the desk's I211, a drop on that machine, not a result about bypass; the owner kept it for later | a named pair of instances, with the gate of ADR-0204 decision 3 quoted from the acceptor (`gve`, flow steering offered, `ntuple on`, an RSS key, half the queues); the drivers that pass and what each use can run on are in [kernel-bypass-needs-a-machine-this-project-does-not-have](reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md); a VM figure is published under [ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md)'s label, never beside the desk's | [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md), [ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md) (both Accepted 2026-09-26) |
 
 ### Phase 1 exit criteria
 

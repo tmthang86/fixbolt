@@ -1,0 +1,81 @@
+# The documentation site (ADR-0206 decision 7): the mdBook over docs/, built
+# and deployed to GitHub Pages on push to `main` only. The gate on every pull
+# request is the `book` job in ci.yml; this workflow repeats its install and
+# build (cheap) so what is deployed is built the way it was checked, and
+# leaves the source-side checks (samples, cited headings, the preprocessor's
+# unit test) to that job.
+#
+# Requires the repository's Pages source to be "GitHub Actions"
+# (Settings → Pages), set once by the owner.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One deployment at a time. A deployment already running is left to finish
+# rather than cancelled half-way; the next push queues behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the book
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Same pin as the `book` job in ci.yml, which fails if these two lines
+      # differ from its own. Source of the checksum: see that job.
+      MDBOOK_VERSION: "0.5.4"
+      MDBOOK_SHA256: "3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install mdBook ${{ env.MDBOOK_VERSION }}, the release binary, checked by sha256
+        run: |
+          tgz="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p target/mdbook-pin
+          curl -fsSL --retry 3 -o "target/mdbook-pin/${tgz}" \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/${tgz}"
+          echo "${MDBOOK_SHA256}  target/mdbook-pin/${tgz}" | sha256sum --check --strict
+          tar -xzf "target/mdbook-pin/${tgz}" -C target/mdbook-pin
+          echo "${GITHUB_WORKSPACE}/target/mdbook-pin" >> "${GITHUB_PATH}"
+          target/mdbook-pin/mdbook --version
+      - run: python3 scripts/gen-book-summary.py --check
+      - name: mdbook build, and no WARN or ERROR line in its log
+        env:
+          FIXBOLT_BOOK_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p target
+          rc=0
+          mdbook build > target/mdbook-build.log 2>&1 || rc=$?
+          cat target/mdbook-build.log
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::mdbook build exited ${rc}"
+            exit "${rc}"
+          fi
+          if grep -En '^[[:space:]]*(WARN|ERROR)([[:space:]]|$)' target/mdbook-build.log; then
+            echo "::error::mdbook build logged the WARN/ERROR line(s) above"
+            exit 1
+          fi
+      - run: python3 scripts/check-links.py --rendered target/book
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/book
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
