@@ -147,8 +147,9 @@ Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code
 | A dependency, a technique, a reversed decision | new ADR in `docs/decisions/` |
 | Prove something listed as unproven | strike the bullet in `STATUS.md` *Not proven*, same commit |
 
-Only the `docs/SUMMARY.md` row is machine-checked (`scripts/gen-book-summary.py --check`, and only for
-`reference/`, `internals/`, `decisions/`); walk the rest row by row before a plan is closed.
+Only the `docs/SUMMARY.md` row is machine-checked (`scripts/gen-book-summary.py --check`: exact for
+`reference/`, `internals/`, `decisions/`; for top-level `docs/*.md`, `how-to/` and `explanation/` only
+that each page is listed); walk the rest row by row before a plan is closed.
 
 **If it cost you, write it down.** An hour lost to a trap goes into `docs/reference/` or an ADR
 immediately, and **every recorded trap gets a regression test**.

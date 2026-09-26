@@ -6,7 +6,7 @@ the book is left alone (ADR-0206 decision 5).
 
 Two things it fixes on top of that, both found rendering the book in step 1:
 
-  - `docs/index.md` is served at `internals/index.html`
+  - `docs/internals/README.md` is served at `internals/index.html`
     A link to a `README.md` (any directory, not just docs/internals/) is
     served by mdBook's own built-in "index" preprocessor at `index.html`,
     never `README.html`. A link naming `README.md` explicitly is rewritten to
@@ -79,6 +79,13 @@ Run (by mdBook, via book.toml's [preprocessor.repo-links] table): no
 arguments, JSON on stdin. Run by hand for a smoke test: pipe the same JSON
 mdBook would send. scripts/check-mdbook-repo-links.py exercises the pure
 `rewrite_target` function directly instead.
+
+What it cannot see: whether the `#anchor` it carries onto a GitHub URL
+names anything on that page. The fragment is copied as written, and neither
+scripts/check-links.py mode checks it -- the source mode strips anchors, and
+the `--rendered` mode skips every external href and renders none of the
+files these links land on (docs/plans/, crates/, anything SUMMARY.md does
+not list). A dead fragment there is a link to the top of the right file.
 """
 
 import json

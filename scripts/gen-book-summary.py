@@ -29,6 +29,18 @@ Two modes:
              print nothing to stdout beyond a summary line when it already
              matches.
 
+             --check also reads the hand-written part, without ever rewriting
+             it: every .md directly under docs/ (except SUMMARY.md itself),
+             and every .md under docs/how-to/ and docs/explanation/ when
+             those directories exist, must be linked from somewhere in
+             SUMMARY.md (ADR-0206 decision 6, "In: every top-level
+             `docs/*.md`, `docs/how-to/`, `docs/explanation/`"). Each file
+             that is not is named. docs/plans/ is Out and never looked at.
+             What this cannot see: a hand-written entry whose file is gone
+             (mdBook's own build reports that), a page listed under the wrong
+             Diataxis heading, and docs/internals/README.md, which is listed
+             by hand and not checked here.
+
 Run: scripts/gen-book-summary.py [--check]
 """
 
@@ -128,6 +140,38 @@ def marker_pattern(name):
 
 LINK_TARGET = re.compile(r"\]\(([^)]+)\)")
 
+# ADR-0206 decision 6's "In" list for the hand-written part: top-level
+# docs/*.md (not recursive), and everything under these two directories.
+HAND_WRITTEN_DIRS = ("how-to", "explanation")
+
+
+def hand_written_required():
+    required = sorted(
+        n
+        for n in listed_files("")
+        if n != "SUMMARY.md" and os.path.isfile(os.path.join(DOCS, n))
+    )
+    for dirname in HAND_WRITTEN_DIRS:
+        base = os.path.join(DOCS, dirname)
+        found = []
+        for dirpath, _dirs, files in os.walk(base):
+            for n in files:
+                if n.endswith(".md") and not n.startswith("."):
+                    found.append(os.path.relpath(os.path.join(dirpath, n), DOCS).replace(os.sep, "/"))
+        required.extend(sorted(found))
+    return required
+
+
+def check_hand_written(text):
+    listed = {target.split("#", 1)[0] for target in paths_in(text)}
+    return [
+        f"docs/SUMMARY.md does not list docs/{p} (ADR-0206 decision 6: every top-level "
+        "docs/*.md, docs/how-to/ and docs/explanation/ is in the book) — add it by hand "
+        "under its Diataxis heading"
+        for p in hand_written_required()
+        if p not in listed
+    ]
+
 
 def paths_in(body):
     return LINK_TARGET.findall(body)
@@ -180,6 +224,7 @@ def check(text):
                     f"docs/SUMMARY.md region '{name}' lists the right files but not with the "
                     "generated titles or order — run scripts/gen-book-summary.py to regenerate"
                 )
+    problems.extend(check_hand_written(text))
     return problems
 
 
@@ -201,13 +246,17 @@ def main():
         print(
             "docs/SUMMARY.md generated regions: "
             + ", ".join(f"{name} {counts[name]}" for name in REGIONS)
+            + f"; hand-written pages required {len(hand_written_required())}"
         )
         if problems:
-            print(f"\nFAIL: {len(problems)} problem(s) with the generated regions", file=sys.stderr)
+            print(f"\nFAIL: {len(problems)} problem(s) in docs/SUMMARY.md", file=sys.stderr)
             for problem in problems:
                 print(f"  {problem}", file=sys.stderr)
             return 1
-        print("docs/SUMMARY.md's generated regions match docs/reference, docs/internals and docs/decisions")
+        print(
+            "docs/SUMMARY.md's generated regions match docs/reference, docs/internals and "
+            "docs/decisions, and it lists every top-level docs/*.md, docs/how-to/ and docs/explanation/ page"
+        )
         return 0
 
     new_text = rewrite(text)

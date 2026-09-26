@@ -25,7 +25,12 @@
 #
 # The fenced block must be the very next non-blank line after the marker:
 # a marker followed by prose, another marker, or nothing before EOF is red
-# ("marker with no block"), not silently skipped. Only plain ``` fences are
+# ("marker with no block"), not silently skipped. The marker must start at
+# column 0: an indented marker (under a list item, say) is red, with a
+# sentence saying so, rather than supported — comparing an indented block
+# exactly would mean deciding how much indentation each block line loses,
+# and a wrong guess there is a silent green. A marker-shaped line inside
+# prose (text before or after it on the same line) is not a marker. Only plain ``` fences are
 # recognised (this repository does not use ~~~ fences or 4-backtick fences
 # today); a fence opened but never closed before EOF is red too.
 #
@@ -75,6 +80,7 @@ checked=0
 fail=0
 
 MARKER_RE='^<!--[[:space:]]*sample:[[:space:]]*([^[:space:]]+)[[:space:]]*-->[[:space:]]*$'
+INDENTED_MARKER_RE='^[[:space:]]+<!--[[:space:]]*sample:[[:space:]]*([^[:space:]]+)[[:space:]]*-->[[:space:]]*$'
 FENCE_OPEN_RE='^```'
 FENCE_CLOSE_RE='^```[[:space:]]*$'
 
@@ -90,6 +96,12 @@ for md in "${FILES[@]}"; do
   i=0
   while [[ ${i} -lt ${n} ]]; do
     this_line="${lines[${i}]}"
+    if [[ "${this_line}" =~ ${INDENTED_MARKER_RE} ]]; then
+      echo "check-doc-samples: FAIL — ${md}:$((i + 1)): marker '<!-- sample: ${BASH_REMATCH[1]} -->' is indented; indented markers are not supported — put the marker at column 0" >&2
+      fail=1
+      i=$((i + 1))
+      continue
+    fi
     if [[ "${this_line}" =~ ${MARKER_RE} ]]; then
       marker_ref="${BASH_REMATCH[1]}"
       marker_lineno=$((i + 1))

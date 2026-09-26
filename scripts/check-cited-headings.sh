@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ADR-0206 Context: "DESIGN.md is named by 288 files; its section numbers
 # are cited in prose ... about 776 times", and decision 3: "no cited section
-# is cut out of its file." A `## N.` (or `### 1a.`) heading in the five
+# is cut out of its file." A `## N.` (or `### 1a.`) heading, or a decision
+# heading `### D<n> — ` (or `### D10b — `), in the five
 # documents below is a number hundreds of other documents and comments cite
 # by that number — `DESIGN.md §8`, `D3`, `SESSION-BEHAVIOUR.md §3` — and a
 # heading that quietly disappears (renamed, renumbered, folded into another
@@ -9,7 +10,8 @@
 # citation is not a link `check-links.py` or mdBook would ever flag.
 #
 # This script asks one question, machine-checkable and no broader: every
-# heading matching `^##+ [0-9]+[a-z]?\.` that exists on the base ref, in one
+# heading matching `^##+ [0-9]+[a-z]?\.` or `^##+ D[0-9]+[a-z]? ` that
+# exists on the base ref, in one
 # of DESIGN.md, GUIDE.md, SESSION-BEHAVIOUR.md, CONFIGURATION.md or
 # CONFORMANCE.md under docs/, must still exist — same heading line, verbatim
 # — somewhere in that file in the working tree. Order does not matter;
@@ -38,13 +40,17 @@
 #   - a section deleted and a brand-new, unrelated section added under the
 #     same number in the same commit — the two are indistinguishable from a
 #     rename by this script; a human reads the diff.
+#   - a cited heading in any other shape: `### Correctness` under `## 6.`,
+#     or a `D<n>` written without the space after it (`### D3:`), is not
+#     one of the two patterns above and is not checked. DESIGN.md writes
+#     every decision heading as `### D<n> — <title>` today.
 #   - a base ref this checkout has never fetched: `git rev-parse` failing on
 #     it is reported as a setup error (exit 2), not a red about headings.
 #
 # Runs standalone: scripts/check-cited-headings.sh [base-ref]
 # Reversal: rename a `## 4.` heading in docs/DESIGN.md (edit the line in
-# place) — expect red naming DESIGN.md and the missing heading text; restore
-# the line — expect green. See the plan step this script was written for.
+# place) — expect red naming DESIGN.md and the missing heading text; delete
+# the `### D3 — ` line — expect red naming it; restore both — expect green. See the plan step this script was written for.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,7 +71,9 @@ FILES=(
   "docs/CONFORMANCE.md"
 )
 
-HEADING_RE='^##+ [0-9]+[a-z]?\.'
+# Two shapes: a numbered section (`## 4.`, `### 1a.`) and a design decision
+# (`### D3 — `, `### D10b — `), matched as DESIGN.md writes it.
+HEADING_RE='^##+ ([0-9]+[a-z]?\.|D[0-9]+[a-z]? )'
 
 fail=0
 checked=0

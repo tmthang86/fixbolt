@@ -635,6 +635,14 @@ def main():
 # book page (including, but not limited to, the ones this preprocessor
 # itself rewrites), so a human can judge whether that specific instance
 # matters, rather than the gate assuming every disagreement does.
+#
+# What this mode cannot see: the `#anchor` on a link the preprocessor
+# rewrote to a GitHub URL. That href is external here (skipped with every
+# other `https://` href), its target is a file the book does not render
+# (docs/plans/, crates/..., a path SUMMARY.md does not list), so no rendered
+# page holds its ids, and the source mode above strips anchors before it
+# checks anything. A wrong fragment on such a link -- `#L120` past the end of
+# a .rs file, a heading renamed in a plan -- is checked by neither mode.
 from html.parser import HTMLParser  # noqa: E402  (kept beside its one user)
 
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
