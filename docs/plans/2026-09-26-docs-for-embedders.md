@@ -484,4 +484,23 @@ Sáu câu hỏi của bản nháp đã được trả lời; không còn câu h�
 
 ## Nhật ký giao hàng
 
-*(chưa có — điền khi đóng từng PR)*
+### PR 0 — plan (#116, merge `4699704`, CI run 36242130265 xanh)
+
+Chủ dự án duyệt 2026-09-26, chạy song song với lần boot của phase 4.
+**Sửa sau khi duyệt (chỉ đổi tên):** feature và module `gen` đổi thành `codegen` ở bước 17 —
+`gen` là từ khoá dành riêng của Rust edition 2024, `pub mod gen` không biên dịch. Thiết kế không
+đổi; ADR-0207 ghi lần sửa tại chỗ.
+Chủ dự án yêu cầu (2026-09-26): mọi bước viết tài liệu chạy trên Opus thay cho Sonnet.
+
+### PR 1 — khung sách (#118, nhánh `docs/book-skeleton`)
+
+- Bước 1–6 xong; senior review (bước 7) ra 1 lỗi trung bình + 4 lỗi nhẹ, đã sửa ở `02f6ea9`.
+- **Lệch so với plan:** test của preprocessor chạy trong job `book`, không phải `script-logic`
+  như hàng 3 ghi — repo chưa có job `script-logic` cho script Python.
+- **Bất ngờ đã đo:** đưa đủ 282 trang ADR/reference/internals vào sách làm chỉ mục tìm kiếm
+  18 MB (quá ngưỡng cảnh báo 10 MB của mdBook); bỏ `decisions/` và `reference/` khỏi tìm kiếm
+  (vẫn trong sidebar) còn 4 MB. Ghi vào ADR-0206.
+- **Chưa chứng minh:** anchor của link đã viết lại thành URL GitHub không được kiểm (ghi trong
+  phần "cannot see" của hai script). Pages cần chủ dự án đặt nguồn "GitHub Actions".
+- CI xanh cho commit đóng: *(điền khi merge)*.
+
