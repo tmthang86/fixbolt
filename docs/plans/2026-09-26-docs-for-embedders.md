@@ -174,7 +174,7 @@ build. Mã nguồn giữ link tương đối — luật của `check-links.py` k
 | `TUTORIAL.md` | Giữ | Tutorials | Đánh dấu khối code bằng marker `sample:` trỏ tới file ví dụ đã biên dịch |
 | `INTRODUCTION.md` | Giữ | Explanation | §4 *Prior art in Rust* và §5 *How fixbolt is positioned*: thêm link sang `why-fixbolt.md`, không chép nội dung |
 | `GUIDE.md` | Giữ nguyên, **không chia** | How-to (một chương) | Chỉ thêm một đoạn ở §3a trỏ tới how-to từ điển (PR 6) |
-| `CONFIGURATION.md` | Giữ | Reference | Hàng mới cho feature `gen`, bốn key bị từ chối, §5 overlay (PR 4–6) |
+| `CONFIGURATION.md` | Giữ | Reference | Hàng mới cho feature `codegen`, bốn key bị từ chối, §5 overlay (PR 4–6) |
 | `SESSION-BEHAVIOUR.md` | Giữ | Reference | §3: tag do từ điển tuỳ biến định nghĩa là "defined" (PR 6) |
 | `CONFORMANCE.md` | Giữ | Reference | Không đổi (trừ khi số gate đổi) |
 | `DESIGN.md` | Giữ, số mục bất biến | Explanation (bản sâu) | §3 hàng `dict`, `library`, crate ví dụ mới; §4 D3 thêm đoạn về từ điển người dùng (PR 4–6) |
@@ -246,12 +246,12 @@ bật, Q4); không có email liên hệ. Phiên bản được hỗ trợ (tag m
 ### B. Từ điển tuỳ biến (ADR-0207)
 
 1. **Một bộ sinh, ba nơi gọi.** Bộ sinh chuyển từ `crates/dict/build.rs` vào
-   `crates/dict/src/gen/` (`mod.rs`, `parse.rs`, `merge.rs`, `model.rs`, `emit.rs`, `error.rs`),
+   `crates/dict/src/codegen/` (`mod.rs`, `parse.rs`, `merge.rs`, `model.rs`, `emit.rs`, `error.rs`),
    sạch lint của thư viện (lỗi là giá trị `GenError`, không `panic`/`unwrap`/`expect`, không index
    gây panic). `build.rs` còn lại mỏng, `#[path]` vào module này, sinh `Fix44` (và cặp FIXT khi bật
    `fix50sp2`) **y hệt hôm nay** — chứng minh bằng hash file sinh ra trùng commit cha, trước khi
-   có một dòng overlay nào. Feature mới `gen`, **mặc định tắt**, khai báo `pub mod gen`;
-   `roxmltree` (đã là build-dependency ghim `=0.20.0`) thành dependency tuỳ chọn dưới `gen`.
+   có một dòng overlay nào. Feature mới `codegen`, **mặc định tắt**, khai báo `pub mod codegen`;
+   `roxmltree` (đã là build-dependency ghim `=0.20.0`) thành dependency tuỳ chọn dưới `codegen`.
    Không tạo crate mới (ADR-0207 nói vì sao).
 2. **Đầu vào là XML định dạng QuickFIX**, hai dạng: *overlay* chồng lên `spec/FIX44.xml` (thêm
    field, thêm `<value>` vào field có sẵn, thêm message/component/group, thêm field vào message có
@@ -293,7 +293,7 @@ bật, Q4); không có email liên hệ. Phiên bản được hỗ trợ (tag m
   `serve_over_with_fix44_answers_like_serve` chứng minh cùng byte trên dây.
 - **5 — thứ tự field từ bảng sinh.** Kiểu của người dùng lấy thứ tự từ bảng của chính nó; test group
   tuỳ biến ghi theo thứ tự khai báo, và field header tuỳ biến nằm trong header.
-- **6 — feature gate chính `mod`.** `#[cfg(feature = "gen")] pub mod gen;`; job
+- **6 — feature gate chính `mod`.** `#[cfg(feature = "codegen")] pub mod codegen;`; job
   `no-default-features`, `scripts/check-no-optional-deps.sh`, `cargo hack … --feature-powerset`.
 - **7 — không panic trong thư viện.** Bộ sinh chuyển vào `src/` nên chịu lint và ratchet
   `check-indexing-debt.sh` (con số không được tăng).
@@ -335,20 +335,20 @@ nháp ở commit đầu, kết thúc bằng một senior review (context mới) 
 | 15 | `README.md` viết lại phần đầu; `INTRODUCTION.md` §4/§5 thêm link; `docs/how-to/index.md`; dòng mở đầu cho `GETTING-STARTED.md`/`TUTORIAL.md`; marker `sample:` cho khối code của `TUTORIAL.md` | developer (sonnet) | các file đó; **không** đụng khối `stranger-check` | `check-links.py`, `check-doc-samples.sh`, job `stranger-git`, job `book` | 11–13 |
 | 16 | Senior review, trọng tâm: mọi con số có nguồn, số của bên khác ghi "their claim", trung lập về giấy phép | senior developer (opus) | — | CI xanh, run id | 15 |
 | **PR 4** | **Bộ sinh thành thư viện, không đổi hành vi** — nhánh `dict/generator-library`; chạy song song được với PR 1–3 | | | | 0 |
-| 17 | Khung `crates/dict/src/gen/` sau feature `gen`, hàm trả `Err(GenError::Unsupported)`; test đỏ ở khẳng định: `crates/dict/tests/gen_matches_build.rs` — `generated_fix44_equals_the_build_output`, `generated_pair_equals_the_build_output` (dưới `fix50sp2`) so với `include_str!(concat!(env!("OUT_DIR"), …))` | senior developer (opus) | `crates/dict/{Cargo.toml,src/lib.rs,src/gen/,tests/gen_matches_build.rs}`; **không** sửa `spec/`, `crates/codec`, `crates/session` | output đỏ quote lại | PR 0 |
-| 18 | Chuyển bộ sinh vào `src/gen/`, sạch lint; `build.rs` mỏng. Giữ **nguyên câu** của ba nhánh `die` mà `check-dict-refuses-a-message-without-msgcat.sh` đọc | senior developer (opus) | `crates/dict/build.rs`, `src/gen/` | sha256 của `fix44.rs` và `fixt11_fix50sp2.rs` trùng commit cha (ghi vào thân commit); bước 17 xanh; `cargo test -p fixbolt-dict --tests` (có `vendor/`); `scripts/check-dict-refuses-a-message-without-msgcat.sh`; `scripts/check-indexing-debt.sh`; `cargo clippy --all-targets --all-features -- -D warnings` | 17 |
-| 19 | Gate feature: `--no-default-features`, `--features gen`, `scripts/check-no-optional-deps.sh`, `scripts/check-feature-gated-tests-ran.sh` cho các test `gen`, job `package` (`.crate` có `spec/**`); tài liệu cùng commit: `docs/internals/dict.md` (số dòng `build.rs` mà trang đang trích sẽ đổi), `DESIGN.md` §3 hàng `dict`, `CONFIGURATION.md` §4, `CHANGELOG.md` | senior developer (opus) code; developer (sonnet) tài liệu | CI yml nếu cần thêm tổ hợp feature | 59/59 `--test score`; FIXT `--features fix50sp2`; `check-dict-spec-pin.sh` | 18 |
+| 17 | Khung `crates/dict/src/codegen/` sau feature `codegen`, hàm trả `Err(GenError::Unsupported)`; test đỏ ở khẳng định: `crates/dict/tests/gen_matches_build.rs` — `generated_fix44_equals_the_build_output`, `generated_pair_equals_the_build_output` (dưới `fix50sp2`) so với `include_str!(concat!(env!("OUT_DIR"), …))` | senior developer (opus) | `crates/dict/{Cargo.toml,src/lib.rs,src/codegen/,tests/gen_matches_build.rs}`; **không** sửa `spec/`, `crates/codec`, `crates/session` | output đỏ quote lại | PR 0 |
+| 18 | Chuyển bộ sinh vào `src/codegen/`, sạch lint; `build.rs` mỏng. Giữ **nguyên câu** của ba nhánh `die` mà `check-dict-refuses-a-message-without-msgcat.sh` đọc | senior developer (opus) | `crates/dict/build.rs`, `src/codegen/` | sha256 của `fix44.rs` và `fixt11_fix50sp2.rs` trùng commit cha (ghi vào thân commit); bước 17 xanh; `cargo test -p fixbolt-dict --tests` (có `vendor/`); `scripts/check-dict-refuses-a-message-without-msgcat.sh`; `scripts/check-indexing-debt.sh`; `cargo clippy --all-targets --all-features -- -D warnings` | 17 |
+| 19 | Gate feature: `--no-default-features`, `--features codegen`, `scripts/check-no-optional-deps.sh`, `scripts/check-feature-gated-tests-ran.sh` cho các test `codegen`, job `package` (`.crate` có `spec/**`); tài liệu cùng commit: `docs/internals/dict.md` (số dòng `build.rs` mà trang đang trích sẽ đổi), `DESIGN.md` §3 hàng `dict`, `CONFIGURATION.md` §4, `CHANGELOG.md` | senior developer (opus) code; developer (sonnet) tài liệu | CI yml nếu cần thêm tổ hợp feature | 59/59 `--test score`; FIXT `--features fix50sp2`; `check-dict-spec-pin.sh` | 18 |
 | 20 | Senior review + CI | senior developer (opus), context mới | — | CI xanh, run id | 19 |
 | **PR 5** | **Overlay** — nhánh `dict/overlay` | | | | PR 4 |
-| 21 | Fixture tự bịa `crates/dict/tests/fixtures/overlay-invented.xml` (đầu file ghi: tự bịa, không phải đặc tả sàn nào). Test đỏ `crates/dict/tests/overlay.rs` (feature `gen`), hỏi trên mô hình đã gộp: `an_empty_overlay_emits_byte_identical_fix44`, `an_added_field_is_defined_and_typed`, `an_added_enum_value_is_allowed_and_the_old_ones_still_are`, `an_added_group_has_its_delimiter_members_and_declared_order`, `a_group_reused_in_two_messages_keeps_each_delimiter`, `an_added_message_type_is_a_message_type_and_not_admin`, `a_field_added_to_a_message_as_required_is_required`, `an_added_header_field_is_a_header_field`, `a_number_reused_with_another_name_fails_naming_both`, `a_name_reused_with_another_number_fails_naming_both`, `a_retyped_field_fails`, `a_data_field_added_without_its_length_field_fails`, `a_whole_file_generates_as_is`, `a_high_tag_reports_the_table_size` | senior developer (opus) | `crates/dict/tests/`, `src/gen/` (stub) | output đỏ quote lại | PR 4 |
-| 22 | Cài overlay + nguyên file + `Paths` + kiểm tra phiên bản định dạng (một doctest `compile_fail` chứng minh lệch phiên bản không biên dịch) + `cargo:warning` kích thước bảng | senior developer (opus) | `crates/dict/src/gen/` | bước 21 xanh; bước 18–19 vẫn xanh (hash `fix44.rs` không đổi) | 21 |
+| 21 | Fixture tự bịa `crates/dict/tests/fixtures/overlay-invented.xml` (đầu file ghi: tự bịa, không phải đặc tả sàn nào). Test đỏ `crates/dict/tests/overlay.rs` (feature `codegen`), hỏi trên mô hình đã gộp: `an_empty_overlay_emits_byte_identical_fix44`, `an_added_field_is_defined_and_typed`, `an_added_enum_value_is_allowed_and_the_old_ones_still_are`, `an_added_group_has_its_delimiter_members_and_declared_order`, `a_group_reused_in_two_messages_keeps_each_delimiter`, `an_added_message_type_is_a_message_type_and_not_admin`, `a_field_added_to_a_message_as_required_is_required`, `an_added_header_field_is_a_header_field`, `a_number_reused_with_another_name_fails_naming_both`, `a_name_reused_with_another_number_fails_naming_both`, `a_retyped_field_fails`, `a_data_field_added_without_its_length_field_fails`, `a_whole_file_generates_as_is`, `a_high_tag_reports_the_table_size` | senior developer (opus) | `crates/dict/tests/`, `src/codegen/` (stub) | output đỏ quote lại | PR 4 |
+| 22 | Cài overlay + nguyên file + `Paths` + kiểm tra phiên bản định dạng (một doctest `compile_fail` chứng minh lệch phiên bản không biên dịch) + `cargo:warning` kích thước bảng | senior developer (opus) | `crates/dict/src/codegen/` | bước 21 xanh; bước 18–19 vẫn xanh (hash `fix44.rs` không đổi) | 21 |
 | 23 | Tài liệu cùng commit: `docs/internals/dict.md`, `CONFIGURATION.md` §5 (overlay khác gì `NANOFIX_FIX44_XML`), `DESIGN.md` §4 D3 (bảng của người dùng cũng theo D3), trang `docs/reference/` cho mỗi bất ngờ, `CHANGELOG.md` | developer (sonnet) | chỉ `docs/`, `CHANGELOG.md` | `check-links.py`, job `book` | 22 |
 | 24 | Senior review + CI | senior developer (opus) | — | CI xanh, run id | 23 |
 | **PR 6** | **Từ điển tuỳ biến tới tận ứng dụng** — nhánh `library/custom-dictionary` | | | | PR 1, PR 5 |
 | 25 | Test đỏ: `crates/library/tests/dictionary_param.rs` — `a_reply_over_a_dialect_orders_its_custom_group_by_the_dialect`, `an_app_over_the_default_is_fix44`; `crates/engine/tests/serve_over.rs` — `serve_over_with_fix44_answers_like_serve`; test settings `a_data_dictionary_key_is_refused_by_name` (bốn key) | senior developer (opus) | test mới; **không** sửa test có sẵn | output đỏ quote lại | PR 5 |
 | 26 | Cài: `D` trên `App`/`Handler`/`Reply`/`Incoming`; `fixbolt::dict`; ba cửa `_over` với cửa cũ gọi vào chúng; `Problem::DictionaryIsBuildTime` | senior developer (opus) | `crates/library/src/`, `crates/engine/src/lib.rs`, `crates/engine/src/settings.rs`; **không** `crates/session`, `crates/codec` | bước 25 xanh; `grep -n 'Fix44' crates/library/src` chỉ còn default và re-export; `crates/library/benches/alloc.rs` đọc 0; `scripts/check-semver-against-tag.sh` (thêm vào phải là minor — nếu không, dừng, về architect) | 25 |
 | 27 | Crate `examples/custom-dictionary` (thêm vào `members`): `build.rs`, `venue.xml`, `src/main.rs`; test qua socket thật `tests/venue.rs` — `a_custom_tag_reaches_the_handler`, `a_custom_enum_value_is_not_rejected`, `a_custom_group_is_read_and_echoed_in_declared_order`, `a_custom_header_field_is_written_in_the_header`, `a_custom_message_type_is_delivered`, `a_missing_venue_required_field_is_rejected_373_1`, `an_undefined_tag_is_still_rejected_373_0`, `an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`; `tests/plain_scores.rs` — `an_empty_overlay_scores_59_of_59`; `benches/alloc.rs` ba case, thêm vào `scripts/bench.sh` | senior developer (opus) | crate mới, `Cargo.toml` gốc, `scripts/bench.sh` | các test trên xanh; job `bench` in ra ba case với 0 | 26 |
-| 28 | `scripts/check-custom-dictionary-packaged.sh`: dựng crate ví dụ **ngoài workspace** trên `target/package/` (bản `.crate`), chứng minh `gen` đọc được `spec/` từ package và đường `::fixbolt::dict` đúng; `cargo tree -e normal` của nó không có `roxmltree`. Gắn vào job `package` | developer (sonnet) | script + CI yml | script thoát 0; đảo ngược (bỏ `spec/**` khỏi `include`) → đỏ | 27 |
+| 28 | `scripts/check-custom-dictionary-packaged.sh`: dựng crate ví dụ **ngoài workspace** trên `target/package/` (bản `.crate`), chứng minh `codegen` đọc được `spec/` từ package và đường `::fixbolt::dict` đúng; `cargo tree -e normal` của nó không có `roxmltree`. Gắn vào job `package` | developer (sonnet) | script + CI yml | script thoát 0; đảo ngược (bỏ `spec/**` khỏi `include`) → đỏ | 27 |
 | 29 | Tài liệu cùng commit: `docs/how-to/add-a-custom-tag.md` (hai đường: bỏ qua bằng `ValidateUserDefinedFields=N`, hay định nghĩa nó), `use-a-venue-dictionary.md` (overlay, nguyên file, nhiều sàn = nhiều engine, phải build lại khi đổi, nghĩa vụ `NOTICE`, kích thước bảng với tag cao), `migrate-from-quickfix.md` (bảng key QuickFIX → fixbolt, bốn key bị từ chối, `ValidateFieldsOutOfOrder` không hỗ trợ); marker `sample:` trỏ vào file của crate ví dụ; `CONFIGURATION.md` §1/§4; `GUIDE.md` §3a một đoạn; `SESSION-BEHAVIOUR.md` §3; `DESIGN.md` §3 (crate mới, hàng `library`, `engine`); `PRD.md` §3 hàng mới; `docs/internals/` (trang mới + `library.md`, `engine.md`, `README.md`); `README.md` *Layout*; `SUMMARY.md`; `CHANGELOG.md` | developer (sonnet) | chỉ tài liệu | `check-links.py`, `check-doc-samples.sh`, job `book` | 27 |
 | 30 | Senior review + CI; `STATUS.md` (*Start here*, *Not proven*); `PRD.md` §2 ghi phase 5 xong; ADR-0206/0207 → Accepted (manager ghi dòng trạng thái); *Nhật ký giao hàng* | senior developer (opus); manager | `STATUS.md`, `PRD.md` §2, hai ADR | CI xanh trên commit đóng, run id | 29 |
 
@@ -399,7 +399,7 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4 (đi từng hàng):
 
 - [ ] Thêm/đổi crate (`examples/custom-dictionary`): `DESIGN.md` §3 + `README.md` *Layout* +
       `Cargo.toml` `members` + trang `docs/internals/` (bước 27, 29)
-- [ ] API công khai (`fixbolt::dict`, tham số `D`, ba cửa `_over`, feature `gen`, `GenError`):
+- [ ] API công khai (`fixbolt::dict`, tham số `D`, ba cửa `_over`, feature `codegen`, `GenError`):
       `DESIGN.md`, rustdoc, `CHANGELOG.md` (bước 19, 22, 26, 29)
 - [ ] Ràng buộc người dùng phải giữ mà compiler không kiểm (build lại khi đổi phương ngữ; build-dep
       và runtime cùng tag; nghĩa vụ `NOTICE`): `GUIDE.md` §3a (bước 29)
@@ -428,8 +428,8 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4 (đi từng hàng):
 | Refactor bộ sinh đổi âm thầm một bảng | hash `fix44.rs`/`fixt11_fix50sp2.rs` trùng commit cha; `interop_quickfix_*` |
 | Câu lỗi của ba nhánh `die` đổi → script msgcat mất khả năng thấy chúng | `scripts/check-dict-refuses-a-message-without-msgcat.sh` bước 18 |
 | Bộ sinh vào `src/` kéo index gây panic / `unwrap` theo | clippy `-D warnings`, `check-indexing-debt.sh` |
-| Test sau feature `gen` không bao giờ chạy trong CI (reference `a-feature-gated-test-is-a-test-ci-never-runs`) | `check-feature-gated-tests-ran.sh` nêu tên test `gen` |
-| `gen` chạy trong cây nhưng hỏng từ `.crate` (thiếu `spec/` trong `include`) | `check-custom-dictionary-packaged.sh` bước 28, có đảo ngược |
+| Test sau feature `codegen` không bao giờ chạy trong CI (reference `a-feature-gated-test-is-a-test-ci-never-runs`) | `check-feature-gated-tests-ran.sh` nêu tên test `codegen` |
+| `codegen` chạy trong cây nhưng hỏng từ `.crate` (thiếu `spec/` trong `include`) | `check-custom-dictionary-packaged.sh` bước 28, có đảo ngược |
 | Code sinh ra ghi `crate::FieldType` → không biên dịch trong crate người dùng | `Paths` + crate ví dụ biên dịch (bước 27, 28) |
 | Build-dependency và runtime khác tag → bảng sinh theo một định dạng, đọc theo định dạng khác | kiểm tra phiên bản lúc biên dịch + doctest `compile_fail` (bước 22) |
 | Field DATA thêm vào mà không có field độ dài (D3: `89`/`93`) | `a_data_field_added_without_its_length_field_fails` |
