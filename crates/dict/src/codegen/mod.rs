@@ -30,6 +30,7 @@ mod merge;
 mod model;
 mod parse;
 
+use crate::field_type::FieldType;
 pub use error::GenError;
 use error::refuse;
 use model::Spec;
@@ -98,6 +99,167 @@ impl Paths {
 pub fn generate(source: Source<'_>, type_name: &str, paths: Paths) -> Result<String, GenError> {
     let _ = (source, type_name, paths.root);
     Err(GenError::Unsupported)
+}
+
+/// Merges `source` into the one dictionary a generated file would be built
+/// from, and returns it for inspection (ADR-0207 decision 3).
+///
+/// [`generate`] is this followed by emitting; a refusal here is the build
+/// failure a user sees. The [`Model`] answers the questions the emitted
+/// `impl Dictionary` and `impl Tables` answer, so a merge can be tested
+/// without compiling what it emits.
+///
+/// # Errors
+///
+/// [`GenError::Unsupported`], for every input, until the overlay lands.
+pub fn merged_model(source: Source<'_>) -> Result<Model, GenError> {
+    let _ = source;
+    Err(GenError::Unsupported)
+}
+
+/// A merged dictionary: FIX 4.4 with an overlay applied, or a whole file.
+///
+/// Each query is named after, and answers as, the associated function of the
+/// same name on `fixbolt_codec::Dictionary` or [`crate::Tables`] that the
+/// emitted type implements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Model {
+    // Uninhabited until the overlay lands: no `Model` can be built, so every
+    // query below is unreachable rather than a wrong answer.
+    never: Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Never {}
+
+impl Model {
+    /// Whether the dictionary defines `tag` at all.
+    #[must_use]
+    pub fn is_defined_tag(&self, tag: u32) -> bool {
+        let _ = tag;
+        match self.never {}
+    }
+
+    /// The declared type of `tag`, `None` if it is not defined.
+    #[must_use]
+    pub fn field_type(&self, tag: u32) -> Option<FieldType> {
+        let _ = tag;
+        match self.never {}
+    }
+
+    /// `Some(allowed)` for an enumerated field, `None` for one with no value
+    /// list.
+    #[must_use]
+    pub fn enum_allows(&self, tag: u32, value: &[u8]) -> Option<bool> {
+        let _ = (tag, value);
+        match self.never {}
+    }
+
+    /// Whether `msg_type` is a message type of this dictionary.
+    #[must_use]
+    pub fn is_msg_type(&self, msg_type: &[u8]) -> bool {
+        let _ = msg_type;
+        match self.never {}
+    }
+
+    /// Whether `msg_type` is declared `msgcat='admin'`.
+    #[must_use]
+    pub fn is_admin(&self, msg_type: &[u8]) -> bool {
+        let _ = msg_type;
+        match self.never {}
+    }
+
+    /// The tags `msg_type` must carry, ascending.
+    #[must_use]
+    pub fn required(&self, msg_type: &[u8]) -> &[u32] {
+        let _ = msg_type;
+        match self.never {}
+    }
+
+    /// Whether `msg_type` may carry `tag`.
+    #[must_use]
+    pub fn allows(&self, msg_type: &[u8], tag: u32) -> bool {
+        let _ = (msg_type, tag);
+        match self.never {}
+    }
+
+    /// Whether `tag` belongs to the standard header.
+    #[must_use]
+    pub fn is_header(&self, tag: u32) -> bool {
+        let _ = tag;
+        match self.never {}
+    }
+
+    /// The length field in front of a DATA field.
+    #[must_use]
+    pub fn data_length_tag(&self, tag: u32) -> Option<u32> {
+        let _ = tag;
+        match self.never {}
+    }
+
+    /// The first declared member of the group `counter` in `msg_type`.
+    #[must_use]
+    pub fn group_delimiter(&self, msg_type: &[u8], counter: u32) -> Option<u32> {
+        let _ = (msg_type, counter);
+        match self.never {}
+    }
+
+    /// The members of the group `counter` in `msg_type`, in declaration
+    /// order; empty if `msg_type` has no such group.
+    #[must_use]
+    pub fn group_members(&self, msg_type: &[u8], counter: u32) -> &[u32] {
+        let _ = (msg_type, counter);
+        match self.never {}
+    }
+
+    /// The size of the per-tag bitsets the emitted file will hold, which the
+    /// highest tag decides (ADR-0207 *Consequences*).
+    #[must_use]
+    pub fn table_size(&self) -> TableSize {
+        match self.never {}
+    }
+
+    /// The tables alone, naming `crate::` — the text [`fix44_tables`] returns
+    /// for the same dictionary. Hidden: it exists so a test can hold an empty
+    /// overlay to [`crate::Fix44`]'s own bytes; a user's file comes from
+    /// [`generate`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`fix44_tables`] refuses.
+    #[doc(hidden)]
+    pub fn crate_tables(&self) -> Result<String, GenError> {
+        match self.never {}
+    }
+}
+
+/// How large the per-tag bitsets of a generated dictionary are.
+///
+/// `ALLOWED` holds one bitset per message type and `DEFINED_TAGS` one more,
+/// each `words` 64-bit words over `0..=max_tag`. One custom tag at 20 000
+/// makes every one of them 313 words where FIX 4.4's are 15.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TableSize {
+    /// The highest tag the dictionary defines.
+    pub max_tag: u32,
+    /// Words per bitset: `max_tag / 64 + 1`.
+    pub words: usize,
+    /// Message types, one `ALLOWED` bitset each.
+    pub message_types: usize,
+    /// `(message_types + 1) * words * 8`: `ALLOWED` and `DEFINED_TAGS`.
+    pub bitset_bytes: usize,
+}
+
+impl std::fmt::Display for TableSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the highest tag, {}, makes each per-tag bitset {} words: {} bytes of static \
+             tables for {} message types",
+            self.max_tag, self.words, self.bitset_bytes, self.message_types
+        )
+    }
 }
 
 /// The FIX 4.4 tables this crate's `build.rs` writes to `$OUT_DIR/fix44.rs`,
