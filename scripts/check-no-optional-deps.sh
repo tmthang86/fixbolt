@@ -97,6 +97,14 @@ CASES=(
   # its own off-by-default `sqlite` feature, for `--journal sqlite-async`. A
   # no-feature w2w must not compile SQLite's C.
   "fixbolt-w2w:rusqlite"
+  # `[2026-09-26]` crates/dict, plan 2026-09-26-docs-for-embedders row 19
+  # (ADR-0207 decision 1). The generator is a library behind the off-by-default
+  # `codegen` feature, and `roxmltree` is its optional **normal** dependency —
+  # while staying the unconditional **build**-dependency `build.rs` has always
+  # had. So the answer with no features is "nothing to print" (in the graph,
+  # through build edges only), never "did not match": the XML parser must not
+  # reach the target build of a crate that asked for nothing.
+  "fixbolt-dict:roxmltree"
 )
 
 rc=0

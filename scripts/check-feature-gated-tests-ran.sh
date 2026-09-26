@@ -111,6 +111,16 @@
 # error and exits 2; it is never read as a pass.
 set -uo pipefail
 
+# Needs bash 4 or newer (mapfile, declare -A). macOS's /bin/bash is 3.2, and a script
+# like this one can print `ok` there having checked nothing:
+# docs/reference/a-check-script-under-bash-3-2-can-print-ok-having-checked-nothing.md.
+# Refused before anything runs; scripts/check-old-bash-is-refused.sh holds
+# this guard in every scripts/check-*.sh that needs it.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo "check-feature-gated-tests-ran: FAIL — needs bash 4 or newer (mapfile, declare -A); this is bash ${BASH_VERSION:-unknown}. Put a newer bash first on PATH; under macOS's /bin/bash 3.2 this script can report ok having checked nothing." >&2
+  exit 2
+fi
+
 # R3's ratchet. 0 is the honest count today; raising it needs a commit that
 # says which test is ignored and why.
 IGNORED_CEILING=0

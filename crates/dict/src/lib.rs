@@ -10,6 +10,11 @@
 mod field_type;
 mod tables;
 
+// The dictionary generator as a library (ADR-0207 decision 1). The feature
+// gates the declaration itself (CLAUDE.md §2 item 6).
+#[cfg(feature = "codegen")]
+pub mod codegen;
+
 pub use field_type::FieldType;
 pub use tables::Tables;
 

@@ -20,7 +20,7 @@
 # until something builds AT it (plan trap 7, reference page trap 3):
 #
 #   - on the pinned default toolchain (`rust-toolchain.toml`, currently
-#     1.98.0): nine cases, each a single feature switched on beside the
+#     1.98.0): eleven cases, each a single feature switched on beside the
 #     default, one crate at a time — "one crate turns every feature on"
 #     would hide a feature that is broken standing alone (plan trap "một
 #     crate tạm bật mọi feature che mất một feature hỏng khi đứng riêng").
@@ -29,7 +29,8 @@
 #     `+1.88.0` (`cargo +1.88.0 check -p fixbolt --all-features` and `-p
 #     fixbolt-engine --all-features`, both finish on 1.88.0 and fail with
 #     E0658 on 1.85.0), plus `fixbolt --no-default-features` — the featureless
-#     build non-negotiable 6 requires, now proven on the floor toolchain too.
+#     build non-negotiable 6 requires, now proven on the floor toolchain too,
+#     and `fixbolt-dict` with `codegen,fix50sp2` (ADR-0207 decision 1).
 #
 # WHAT IT CANNOT SEE: whether `+1.89.0` is installed (`rustup toolchain
 # install 1.89.0` is a step of the `package` CI job, run before this script;
@@ -159,8 +160,9 @@ mkdir -p "${WORKDIR}"
 # setting, and a comma-separated feature list (empty = none beyond default),
 # and the toolchain to build it with (empty = the pinned default).
 #
-# The nine on the default toolchain: one feature at a time, beside whatever
-# is on by default, one crate at a time.
+# The eleven on the default toolchain: one feature at a time, beside whatever
+# is on by default, one crate at a time (fixbolt-dict's `codegen` twice: alone
+# and beside `fix50sp2`).
 DEFAULT_CASES=(
   "fixbolt-default|fixbolt|true|"
   "fixbolt-no-default|fixbolt|false|"
@@ -171,10 +173,16 @@ DEFAULT_CASES=(
   "fixbolt-engine-fix50sp2|fixbolt-engine|true|fix50sp2"
   "fixbolt-sbe-no-default|fixbolt-sbe|false|"
   "fixbolt-codec-alone|fixbolt-codec|true|"
+  # ADR-0207 decision 1: the generator as a library, from the packaged
+  # sources — `src/codegen/` and the optional `roxmltree` must both reach
+  # the `.crate`. Compiling it is what this proves; running it against the
+  # packaged `spec/` is plan row 28's check-custom-dictionary-packaged.sh.
+  "fixbolt-dict-codegen|fixbolt-dict|false|codegen"
+  "fixbolt-dict-codegen-fix50sp2|fixbolt-dict|true|codegen,fix50sp2"
 )
 
-# The three on +1.89.0 (the declared rust-version, ADR-0154 decision 1): the
-# combined-everything build for the two crates that have more than one
+# The four on +1.89.0 (the declared rust-version, ADR-0154 decision 1): the
+# combined-everything build for the three crates that have more than one
 # feature (the exact combination reference page trap 4 measured by hand on
 # the then-declared 1.88.0), and the featureless build non-negotiable 6
 # requires, now proven on the floor toolchain.
@@ -183,6 +191,7 @@ MSRV_CASES=(
   "fixbolt-all-features-msrv|fixbolt|true|standard,sbe"
   "fixbolt-engine-all-features-msrv|fixbolt-engine|true|standard,affinity,tls,fix50sp2"
   "fixbolt-no-default-msrv|fixbolt|false|"
+  "fixbolt-dict-all-features-msrv|fixbolt-dict|true|codegen,fix50sp2"
 )
 
 status=0

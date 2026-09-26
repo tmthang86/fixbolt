@@ -104,7 +104,14 @@ fi
 # one expression. Deduping on `file:line:col` alone reads that as one site and
 # the total comes out 205 instead of 207 — a two-site discount for writing the
 # denser expression, which is exactly backwards.
-SITES="$(grep -E '^crates/[a-z0-9_]+/src/[a-zA-Z0-9_]+\.rs:[0-9]+:[0-9]+: warning: (indexing|slicing) may panic' "$LOG" | sort -u || true)"
+#
+# Every file under `src/`, at any depth. `[measured 2026-09-26]` the pattern
+# used to allow one path segment after `src/`, so `crates/dict/src/codegen/*.rs`
+# and `crates/engine/src/transport/uring.rs` were never counted whatever clippy
+# printed about them. Widening it moved nothing (176 either way, none of the
+# seven files has a site), so the ceiling did not change.
+# docs/reference/the-indexing-ratchet-counts-only-files-directly-under-src.md
+SITES="$(grep -E '^crates/[a-z0-9_]+/src/([a-zA-Z0-9_]+/)*[a-zA-Z0-9_]+\.rs:[0-9]+:[0-9]+: warning: (indexing|slicing) may panic' "$LOG" | sort -u || true)"
 COUNT="$(printf '%s' "$SITES" | grep -c '^' || true)"
 
 if [[ "${1:-}" == "--show" ]]; then
