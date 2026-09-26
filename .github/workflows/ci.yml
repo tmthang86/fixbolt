@@ -99,6 +99,12 @@ jobs:
       # and nothing read the workload's own output.
       # docs/reference/perf-record-exits-zero-when-sudo-cannot-find-the-workload.md
       - run: scripts/check-sudo-names-what-root-can-find.sh
+      # `[measured 2026-09-26]` under macOS's /bin/bash 3.2 check-dict-spec-pin.sh
+      # printed ok having compared no sha, and check-sudo read 0 lines and said
+      # ok. Every check-*.sh that needs bash 4 now refuses under 3.2; this runs
+      # each one in the official bash:3.2 image and holds the guard in place.
+      # docs/reference/a-check-script-under-bash-3-2-can-print-ok-having-checked-nothing.md
+      - run: scripts/check-old-bash-is-refused.sh
       # `[added 2026-09-12]` plan docs/plans/2026-09-12-gates-that-match-a-meaning.md,
       # section E: the three scripts this plan writes or rewrites are shell,
       # and shell is where a quoting bug (item 66b) lives. `ubuntu-latest`
@@ -123,7 +129,7 @@ jobs:
       # than being left out with the other scripts: they need no §9 machine
       # to prove a quoting fix changed nothing, since their pure halves are
       # already tested by check-ab-rotation.sh in the script-logic job.
-      - run: shellcheck -S info scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh scripts/check-sudo-names-what-root-can-find.sh scripts/check-sudo-verdicts.sh scripts/ab-rotation.sh scripts/check-ab-rotation.sh scripts/check-dict-spec-pin.sh scripts/check-dict-spec-pin-reversal.sh
+      - run: shellcheck -S info scripts/check-old-bash-is-refused.sh scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh scripts/check-sudo-names-what-root-can-find.sh scripts/check-sudo-verdicts.sh scripts/ab-rotation.sh scripts/check-ab-rotation.sh scripts/check-dict-spec-pin.sh scripts/check-dict-spec-pin-reversal.sh
 
   # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
   # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
@@ -549,6 +555,28 @@ jobs:
       # break a feature-gated test on purpose and watch CI go red. Until that
       # has been observed, this step is a claim, not a measurement — CLAUDE.md
       # §10, and the whole reason the reference page above exists.
+      # ADR-0207 decision 1: the generator as a library, behind the
+      # off-by-default `codegen` feature of fixbolt-dict. `cargo test --all`
+      # never enables it, so gen_matches_build's two tests — the proof the
+      # library writes build.rs's bytes — run only here, and
+      # check-feature-gated-tests-ran.sh proves they did. fixbolt-dict has no
+      # default features, so `--no-default-features --features codegen` and
+      # `--features codegen` are one build; the flag is spelled out because
+      # that is the combination plan row 19 names. Clippy for both sets also
+      # runs in `feature-sets` (cargo hack's powerset now contains them); it
+      # is repeated here so this step is the whole answer for the feature.
+      - name: The codegen tests, and proof they were the ones that ran
+        run: |
+          set -o pipefail
+          cargo clippy -p fixbolt-dict --all-targets --no-default-features --features codegen -- -D warnings
+          cargo clippy -p fixbolt-dict --all-targets --features codegen,fix50sp2 -- -D warnings
+          for f in codegen codegen,fix50sp2; do
+            echo "=== fixbolt-dict --no-default-features --features ${f} ==="
+            cargo test -p fixbolt-dict --tests --no-default-features --features "${f}" --no-fail-fast --locked \
+              2>&1 | tee "/tmp/dict-${f}.log"
+            scripts/check-feature-gated-tests-ran.sh fixbolt-dict "${f}" "/tmp/dict-${f}.log"
+          done
+
       - name: The fix50sp2 tests, and proof they were the ones that ran
         run: |
           set -o pipefail
@@ -1094,7 +1122,7 @@ jobs:
   # time"). `cargo publish --workspace --dry-run` proves the six crates build
   # against EACH OTHER'S packaged sources, but only with DEFAULT features —
   # docs/reference/publishing-a-workspace-to-crates-io.md trap 7 says so in
-  # words, and `check-packaged-build.sh` says so by building twelve other
+  # words, and `check-packaged-build.sh` says so by building fifteen other
   # combinations from the exact same bytes. Same shape as `dict-no-vendor`
   # above: this job's whole point is a runner that never fetched `vendor/`,
   # because a real crates.io user and docs.rs never see it either.

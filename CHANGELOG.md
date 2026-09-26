@@ -19,6 +19,16 @@ decision 1), so the changes below wait for the next version rather than shipping
 is a git tag, not a crates.io upload (ADR-0161), so `cargo-semver-checks` for this work runs
 against that tag rather than a published baseline.
 
+- **`fixbolt-dict`** — added the off-by-default **`codegen`** feature: `pub mod codegen`, the
+  dictionary generator as a library ([ADR-0207](docs/decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+  decision 1). `codegen::fix44_tables(&str)` and, with `fix50sp2`,
+  `codegen::fixt11_fix50sp2_tables(&str, &str)` return the Rust source `fixbolt-dict`'s own build
+  writes; `codegen::GenError` (`Xml`, `Dictionary`, `Unsupported`; `#[non_exhaustive]`) is what
+  they return instead of stopping the build. `codegen::generate`, `Source` and `Paths` are the
+  shape of the custom-dictionary door and return `GenError::Unsupported` for now. The feature
+  makes `roxmltree` an optional normal dependency. **No behaviour change**: `build.rs` now calls
+  this module, and the generated `fix44.rs` and `fixt11_fix50sp2.rs` hash identical to the
+  commit before the move.
 - **`fixbolt-engine`** — additive observability surface for phase 4's metrics exporter
   ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)):
   `observe::Occupancy { used, capacity }`; `Snapshot::ring_to_app() -> Option<Occupancy>`, read

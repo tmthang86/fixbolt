@@ -82,6 +82,16 @@
 
 set -euo pipefail
 
+# Needs bash 4 or newer (mapfile). macOS's /bin/bash is 3.2, and a script
+# like this one can print `ok` there having checked nothing:
+# docs/reference/a-check-script-under-bash-3-2-can-print-ok-having-checked-nothing.md.
+# Refused before anything runs; scripts/check-old-bash-is-refused.sh holds
+# this guard in every scripts/check-*.sh that needs it.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo "check-no-crate-root-allow: FAIL — needs bash 4 or newer (mapfile); this is bash ${BASH_VERSION:-unknown}. Put a newer bash first on PATH; under macOS's /bin/bash 3.2 this script can report ok having checked nothing." >&2
+  exit 2
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 

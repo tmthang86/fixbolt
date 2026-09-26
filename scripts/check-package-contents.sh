@@ -68,6 +68,22 @@ COMMON_REQUIRED=(README.md LICENSE-MIT LICENSE-APACHE)
 # Required in fixbolt-dict alone (ADR-0104).
 DICT_REQUIRED=(NOTICE spec/FIX44.xml spec/FIXT11.xml spec/FIX50SP2.xml)
 
+# And every tracked file of the generator (ADR-0207 decision 1): `build.rs`
+# loads `src/codegen/` by `#[path]` and the `codegen` feature exposes it, so a
+# `.crate` missing one of them does not build at all. Read from git rather
+# than written here, so a file added to the generator is required without
+# anyone remembering this list — and an empty answer is a broken query, not an
+# empty generator.
+DICT_CODEGEN=()
+while IFS= read -r path; do
+  [[ -n "${path}" ]] && DICT_CODEGEN+=("${path#crates/dict/}")
+done < <(git -C "${ROOT}" ls-files -- crates/dict/src/codegen)
+if [[ "${#DICT_CODEGEN[@]}" -eq 0 ]]; then
+  echo "check-package-contents: FAIL — git ls-files found nothing under crates/dict/src/codegen; the generator is there on every commit since 2026-09-26, so this is a broken query" >&2
+  exit 2
+fi
+DICT_REQUIRED+=("${DICT_CODEGEN[@]}")
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
@@ -179,4 +195,4 @@ if [[ "${#fails[@]}" -gt 0 ]]; then
   exit 1
 fi
 
-echo "check-package-contents: OK — ${crates_checked} crates, each with README.md/LICENSE-MIT/LICENSE-APACHE, fixbolt-dict with NOTICE + 3 spec/*.xml, none shipping tests/benches/vendor/.def"
+echo "check-package-contents: OK — ${crates_checked} crates, each with README.md/LICENSE-MIT/LICENSE-APACHE, fixbolt-dict with NOTICE + 3 spec/*.xml + ${#DICT_CODEGEN[@]} src/codegen files, none shipping tests/benches/vendor/.def"
