@@ -1,6 +1,7 @@
 # ADR-0207 — A custom dictionary is an overlay, generated in the user's build into the user's own type
 
-- **Status**: Proposed — 2026-09-26
+- **Status**: Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
+  answers: decision 8 (FIX 4.4 only) and the first *Bad* consequence (rebuild accepted).
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);
@@ -128,9 +129,10 @@ reason.)
    (`Problem` is `#[non_exhaustive]`), whose sentence points at the how-to — where today they are
    *unknown key*. `ValidateUserDefinedFields` keeps its meaning: with a dialect that defines a tag,
    that tag is defined, and the knob governs only tags the dialect does not define.
-8. **Scope of the first version**: FIX 4.4 base (overlay or whole file). An overlay onto the
-   FIXT 1.1 + FIX 5.0 SP2 pair is not built; the generator's input type is shaped so it can be
-   added (plan, *Ngoài phạm vi*).
+8. **Scope of the first version: FIX 4.4 only** (owner, 2026-09-26) — an overlay onto
+   `FIX44.xml`, or a whole FIX 4.4 file. Overlays onto the FIXT 1.1 + FIX 5.0 SP2 pair are out of
+   scope (plan, *Ngoài phạm vi*); the generator's input type is shaped so a later plan can add
+   them.
 
 ## Consequences
 
@@ -148,9 +150,10 @@ reason.)
 
 **Bad — and accepted**
 
-- **A dialect change is a rebuild.** QuickFIX's operator can swap a file and restart; a fixbolt
-  user rebuilds. For a firm that treats venue onboarding as a deploy this is the norm (Fix8 and
-  Chronicle work the same way); for one that expects an operator to edit XML, it is a real loss.
+- **A dialect change is a rebuild — accepted by the owner on 2026-09-26.** QuickFIX's operator
+  can swap a file and restart; a fixbolt user rebuilds. For a firm that treats venue onboarding as
+  a deploy this is the norm (Fix8 and Chronicle work the same way); for one that expects an
+  operator to edit XML, it is a real loss, and the how-to and the "why fixbolt" page say so.
 - **The largest cost is the refactor**: 1 595 lines of generator rewritten to the library lints
   (errors as values, no panicking index), under a byte-identical-output gate. It touches no hot
   path and no behaviour, and it is still the riskiest step in the plan.

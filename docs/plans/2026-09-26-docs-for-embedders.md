@@ -10,7 +10,8 @@
 > [ADR-0207](../decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
 > (cơ chế từ điển tuỳ biến). Tư liệu nghiên cứu:
 > [reference/prior-art-for-embedders.md](../reference/prior-art-for-embedders.md).
-> **Chưa thuộc phase nào** trong `PRD.md` §2 — xem câu hỏi Q3.
+> **Phase 5** mới trong `PRD.md` §2, sau phase 4 và trước kernel bypass (chủ dự án quyết định
+> 2026-09-26; bước 1a). Câu trả lời của chủ dự án cho Q1–Q6: mục *Quyết định của chủ dự án*.
 
 ## Bối cảnh
 
@@ -107,8 +108,8 @@ chạy, `Dictionary::from_quickfix_xml`. **Định dạng XML của QuickFIX là
 - `scripts/bench.sh` liệt kê bench bằng tay (`TARGETS`), và một bench không có trong danh sách
   `is_invariant` là lỗi cứng.
 - ADR-0104 quyết định 7: tên "QuickFIX" chỉ xuất hiện như một sự thật, "never as an endorsement, a
-  compatibility badge or a comparison in marketing copy" — đụng trực tiếp trang "vì sao fixbolt"
-  (câu hỏi Q2).
+  compatibility badge or a comparison in marketing copy". Trang "vì sao fixbolt" vì thế là giải
+  thích kỹ thuật về cơ chế của fixbolt, không phải bài so sánh (chủ dự án, Q2).
 - Cargo: lỗi cũ `[env]` không làm chạy lại build script (#10358, #14350) **đã đóng** — không phải
   lý do để từ chối phương án biến môi trường.
 
@@ -177,7 +178,7 @@ build. Mã nguồn giữ link tương đối — luật của `check-links.py` k
 | `SESSION-BEHAVIOUR.md` | Giữ | Reference | §3: tag do từ điển tuỳ biến định nghĩa là "defined" (PR 6) |
 | `CONFORMANCE.md` | Giữ | Reference | Không đổi (trừ khi số gate đổi) |
 | `DESIGN.md` | Giữ, số mục bất biến | Explanation (bản sâu) | §3 hàng `dict`, `library`, crate ví dụ mới; §4 D3 thêm đoạn về từ điển người dùng (PR 4–6) |
-| `PRD.md` | Giữ | Explanation | §2 chỗ của việc này (theo Q3); §3 thêm hàng "Custom fields / venue dictionary" (PR 6) |
+| `PRD.md` | Giữ | Explanation | §2 phase 5 mới, bypass dời sau nó (bước 1a); §3 thêm hàng "Custom fields / venue dictionary" (PR 6) |
 | `best-practices-standard.md`, `best-practices-hft.md`, `hft-playbook.md` | Giữ | How-to | Không đổi |
 | `docs/internals/*` | Giữ | Contributing | `dict.md` (PR 4–5), `library.md`, `engine.md`, trang mới cho crate ví dụ (PR 6) |
 | `docs/reference/*` | Giữ | Reference (mục sinh tự động) | Trang mới cho mỗi bất ngờ gặp phải |
@@ -199,14 +200,25 @@ và workflow `pages.yml`.
 
 - `design-rationale.md`: D1–D10 kể cho người ngoài. Mỗi quyết định: một câu nói nó là gì, vì sao,
   giá phải trả, link `DESIGN.md` §4 Dn và ADR gốc. Không chép số đo — link tới chỗ ghi số đo.
-- `why-fixbolt.md`: so sánh **thiết kế**, không so sánh tốc độ. Các trục: từ điển đọc lúc nào (chạy
-  / build); parser có cấp phát không, message là map sở hữu hay view mượn buffer; session thuần
-  (không socket, không đồng hồ) hay dính I/O; cổng kiểm là gì (59 định nghĩa QuickFIX, interop hai
-  chiều); tách chế độ `standard`/`hft`; kỷ luật công bố số (non-negotiable 10). Engine so: QuickFIX
-  C++/J/n/Go, Fix8, Chronicle, OnixS, B2BITS, FerrumFIX, IronFix — mỗi khẳng định về engine khác
-  trích tài liệu hoặc mã nguồn của chính nó. Số của họ nằm ở **bảng riêng**, ghi "their claim" và
-  đúng điều kiện họ nêu, không bao giờ cùng bảng/câu với số fixbolt. Phần "fixbolt chưa bằng" lấy
-  từ `PRD.md` §3 (độ phủ phiên bản, zero track record). Phụ thuộc Q2.
+- `why-fixbolt.md`: **giải thích kỹ thuật vì sao fixbolt nhanh** — cơ chế nào, và nó tránh được chi
+  phí nào — không phải bài so sánh (chủ dự án, Q2). Mỗi mục: một cơ chế của fixbolt, chi phí nó
+  tránh, và chỗ số đo được ghi (link, không chép số — non-negotiable 10). Các cơ chế: parse tại chỗ
+  thành view mượn buffer, không map sở hữu (D2, ADR-0003); không cấp phát trên đường nóng, chứng
+  minh bằng bộ đếm (D9, `benches/alloc.rs`); từ điển là bảng sinh lúc build, dispatch tĩnh, không
+  tra cứu cấu trúc dựng lúc chạy (D3, ADR-0080); message gửi đi là template được vá, không dựng lại
+  (D9); session thuần, không socket, không đồng hồ (D1); dispatch inline trên luồng engine (D4);
+  tách `standard`/`hft` và một session mỗi luồng poll trong `hft` (D8, ADR-0012). Kèm phần "cái giá"
+  (build lại khi đổi phương ngữ, một core bị đốt trong `hft`) và "chưa có" từ `PRD.md` §3 (độ phủ
+  phiên bản, zero track record). **Engine khác chỉ xuất hiện khi cần để giải thích**, dưới dạng sự
+  thật thiết kế có nguồn từ tài liệu hoặc mã nguồn của chính họ (ví dụ "QuickFIX đọc từ điển XML lúc
+  chạy, theo trang cấu hình của nó"); **không xếp hạng, không "nhanh hơn X", không con số latency
+  của engine khác** — số của họ chỉ ở trang reference prior-art, ghi "their claim".
+  **Vì sao trang nằm trong ADR-0104 quyết định 7:** tên QuickFIX chỉ xuất hiện như sự thật có nguồn
+  (điều quyết định 7 cho phép), không có câu tán thành, huy hiệu tương thích hay so sánh hơn kém.
+  Giữ bằng máy: `check-doc-claims.sh` (bước 14) đỏ khi một dòng có tên engine khác (QuickFIX,
+  Fix8, Chronicle, OnixS, B2BITS, FerrumFIX, IronFix) cùng một từ so sánh (`faster`, `slower`,
+  `better`, `outperform`, `than`); và bằng tay: senior review bước 16 đọc từng câu có tên engine
+  khác.
 - `why-rust.md`: mức cược của micro giây (Aquilina–Budish–O'Neill, QJE 2022 — chỉ cho luận điểm
   này), cái Rust cho dự án (bằng chứng của chính repo: bộ đếm cấp phát, lint cấm `panic`, `unsafe`
   phải có bằng chứng), và nhược điểm thật (matklad *Why Not Rust*, Databento). **Cấm** các câu Jane
@@ -220,14 +232,16 @@ không socket, không đồng hồ; không chọn từ điển lúc chạy; code
 Mỗi invariant ghi mục `CLAUDE.md` §2 tương ứng và cái máy nào kiểm nó — **link tới luật, không
 chép luật** (một luật, một chỗ).
 
-**`CONTRIBUTING.md`**: build, `scripts/fetch-quickfix-assets.sh` và `fetch-sbe-assets.sh`, lệnh gate
+**`CONTRIBUTING.md`** — viết cho **lập trình viên trong nhóm dự án**, không cho công chúng (chủ
+dự án, Q1): build, `scripts/fetch-quickfix-assets.sh` và `fetch-sbe-assets.sh`, lệnh gate
 (link tới bảng `CLAUDE.md` §7 và tên job CI, không chép), quy trình đề xuất thay đổi: issue → plan
-(`docs/plans/_template.md`) → ADR nếu là quyết định → PR nháp sớm → gate xanh. Đoạn "đóng góp được
-nhận theo điều khoản nào" **chờ Q1**; trước khi có câu trả lời, file nói: PR từ bên ngoài được mở,
-chưa PR nào được merge cho tới khi ADR về điều khoản đóng góp được Accepted.
+(`docs/plans/_template.md`) → ADR nếu là quyết định → PR nháp sớm → gate xanh. **Luật ghi trong
+file:** đóng góp từ ngoài nhóm **chưa được nhận**, cho tới khi một ADR về giấy phép quyết định CLA
+hay DCO. Câu hỏi CLA/DCO là việc **hoãn**, gắn với mốc "trước khi nhận đóng góp ngoài đầu tiên",
+không chặn plan này.
 
-**`SECURITY.md`**: báo lỗ hổng qua *private vulnerability reporting* của GitHub (chủ dự án bật —
-Q4), phiên bản được hỗ trợ (tag mới nhất), phạm vi, không có bounty.
+**`SECURITY.md`**: báo lỗ hổng **chỉ** qua *private vulnerability reporting* của GitHub (chủ dự án
+bật, Q4); không có email liên hệ. Phiên bản được hỗ trợ (tag mới nhất), phạm vi, không có bounty.
 
 ### B. Từ điển tuỳ biến (ADR-0207)
 
@@ -299,24 +313,25 @@ nháp ở commit đầu, kết thúc bằng một senior review (context mới) 
 | Bước | Kết quả | Người làm | File được sửa / không được sửa | Gate | Phụ thuộc |
 |---|---|---|---|---|---|
 | **PR 0** | **Plan này + ADR-0206, ADR-0207 + trang prior-art** (nhánh `plan/docs-for-embedders`) | architect | chỉ ba file đó và plan | `scripts/check-links.py`, `scripts/check-adr-numbers.sh` | — |
-| 0 | Chủ dự án duyệt plan, trả lời Q1–Q6 | chủ dự án | — | — | PR 0 |
+| 0 | Chủ dự án duyệt plan (Q1–Q6 đã trả lời 2026-09-26) | chủ dự án | — | — | PR 0 |
 | **PR 1** | **Khung sách** — nhánh `docs/book-skeleton` | | | | 0 |
 | 1 | `book.toml`, `docs/SUMMARY.md` (phần viết tay, chỉ file đang có), `docs/index.md`, `docs/api.md`, `docs/contributing.md` (link ra ba file gốc, tạm là stub cho tới PR 2) | developer (sonnet) | chỉ các file này; không sửa file `docs/` đang có | `mdbook build` thoát 0 | 0 |
+| 1a | `PRD.md` §2: mục mới *Phase 5: dependable by an embedder* đặt sau phase 4 (phạm vi = plan này, tiêu chí thoát = gate của PR 1–6, trỏ ADR-0206/0207); hàng kernel bypass ở *Later phases* ghi thêm "comes after phase 5". **Không sửa nội dung ADR-0204/0205** — xem mục *Quyết định của chủ dự án*, Q3 | developer (sonnet) | chỉ `PRD.md` §2 | `check-links.py` | 0 |
 | 2 | `scripts/gen-book-summary.py` sinh phần ADR / reference / internals của `SUMMARY.md`; `--check` đỏ khi thiếu hoặc thừa. Đảo ngược: xoá một dòng ADR khỏi `SUMMARY.md` → đỏ với câu nêu tên file | developer (sonnet) | script + `SUMMARY.md` | `scripts/gen-book-summary.py --check`, và câu đỏ khi đảo ngược | 1 |
 | 3 | `scripts/mdbook-repo-links.py` (preprocessor): link ra ngoài `docs/` hoặc tới trang không trong `SUMMARY.md` → URL GitHub ở commit đang build. Test trong job `script-logic`: `../crates/codec/src/dict.rs` → `…/blob/<sha>/crates/codec/src/dict.rs`; link nội bộ trong sách giữ nguyên | developer (sonnet) | script + test của nó + `book.toml` | test script xanh; đảo ngược (tắt preprocessor) → bước 4 đỏ | 1 |
 | 4 | `scripts/check-links.py --rendered target/book`: đọc HTML bằng thư viện chuẩn, kiểm mọi `href` nội bộ **và anchor**; ghi ra danh sách anchor lệch giữa GitHub và mdBook (đo, không đoán) | developer (sonnet) | `scripts/check-links.py` (thêm chế độ, không đổi chế độ cũ) | chạy trên sách đã build: 0 lỗi, hoặc danh sách lỗi được sửa ở nguồn | 2, 3 |
 | 5 | `scripts/check-doc-samples.sh` (marker `<!-- sample: <path> -->`, khối code phải trùng byte với file đã biên dịch); `scripts/check-cited-headings.sh` (một heading `## N.` có trên `main` của `DESIGN.md`, `GUIDE.md`, `SESSION-BEHAVIOUR.md`, `CONFIGURATION.md`, `CONFORMANCE.md` mà biến mất → đỏ). Mỗi script chứng minh bằng đảo ngược | developer (sonnet) | hai script | câu đỏ khi đảo ngược, xanh khi khôi phục | 1 |
 | 6 | CI: job `book` (mdBook v0.5.4 bản nhị phân ghim sha256, `gen-book-summary.py --check`, `mdbook build`, grep cảnh báo của mdBook trong log, bước 4, bước 5); `.github/workflows/pages.yml` deploy chỉ khi push `main`. `CLAUDE.md` §4 hai bảng: thêm hàng `ARCHITECTURE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `docs/SUMMARY.md` + `book.toml`, `docs/how-to/`, `docs/explanation/`; hàng đồng bộ "thêm trang dưới `docs/` → `SUMMARY.md`", "đổi ranh giới crate hoặc một invariant → `ARCHITECTURE.md`". Sửa `CLAUDE.md` dùng skill `mattpocock-skills:writing-for-agents`; manager nói rõ luật nào đổi | developer (sonnet) | `.github/workflows/`, `CLAUDE.md` §4, `README.md` mục *Layout* | job `book` xanh trên PR | 2–5 |
-| 7 | Senior review + CI; chủ dự án (hoặc manager qua API nếu token có quyền) bật Pages nguồn "GitHub Actions" (Q4) | senior developer (opus); manager | — | CI xanh, run id | 6 |
+| 7 | Senior review + CI; chủ dự án (hoặc manager qua API nếu token có quyền) bật Pages nguồn "GitHub Actions", URL mặc định (Q4) | senior developer (opus); manager | — | CI xanh, run id | 6 |
 | **PR 2** | **Bộ cho người đóng góp** — nhánh `docs/contributor-set` | | | | PR 1 |
 | 8 | `ARCHITECTURE.md` theo kiểu matklad, như mục *Cách làm* | architect (opus) | chỉ file này | `check-links.py`; bảng tay: mỗi invariant ↔ mục §2 ↔ máy kiểm | PR 1 |
-| 9 | `CONTRIBUTING.md`, `SECURITY.md`; `docs/contributing.md` hết là stub | developer (sonnet) | ba file | `check-links.py`, job `book` | 8, Q1, Q4 |
+| 9 | `CONTRIBUTING.md`, `SECURITY.md`; `docs/contributing.md` hết là stub | developer (sonnet) | ba file | `check-links.py`, job `book` | 8 |
 | 10 | Senior review + CI; chủ dự án bật private vulnerability reporting | senior developer (opus); manager | — | CI xanh, run id | 9 |
 | **PR 3** | **Trang cho người nhúng** — nhánh `docs/embedder-pages` | | | | PR 1 |
 | 11 | `docs/explanation/design-rationale.md` | architect (opus) | chỉ file này + `SUMMARY.md` | `check-links.py`, job `book` | PR 1 |
-| 12 | `docs/explanation/why-fixbolt.md` (theo câu trả lời Q2) | architect (opus) | như trên | như trên + bước 14 | Q2 |
+| 12 | `docs/explanation/why-fixbolt.md` (giải thích cơ chế, theo mục *Cách làm*) | architect (opus) | như trên | như trên + bước 14 | PR 1 |
 | 13 | `docs/explanation/why-rust.md` | architect (opus) | như trên | như trên + bước 14 | PR 1 |
-| 14 | `scripts/check-doc-claims.sh`: grep `docs/`, `README.md`, `ARCHITECTURE.md` tìm các câu cấm (Jane Street, Jump Trading, Tower Research, "98.7") và từ ngữ giấy phép tương lai ("commercial licen", "enterprise edition", "pricing"); đảo ngược bằng một dòng mồi | developer (sonnet) | script + job CI `links` | câu đỏ khi đảo ngược | 11 |
+| 14 | `scripts/check-doc-claims.sh`: grep `docs/`, `README.md`, `ARCHITECTURE.md` tìm các câu cấm (Jane Street, Jump Trading, Tower Research, "98.7"), từ ngữ giấy phép tương lai ("commercial licen", "enterprise edition", "pricing"), và dòng có tên engine khác cùng từ so sánh (xem `why-fixbolt.md` ở *Cách làm*); trang reference prior-art được miễn phần so sánh vì nó ghi lời của nhà cung cấp. Đảo ngược bằng một dòng mồi mỗi loại | developer (sonnet) | script + job CI `links` | câu đỏ khi đảo ngược | 11 |
 | 15 | `README.md` viết lại phần đầu; `INTRODUCTION.md` §4/§5 thêm link; `docs/how-to/index.md`; dòng mở đầu cho `GETTING-STARTED.md`/`TUTORIAL.md`; marker `sample:` cho khối code của `TUTORIAL.md` | developer (sonnet) | các file đó; **không** đụng khối `stranger-check` | `check-links.py`, `check-doc-samples.sh`, job `stranger-git`, job `book` | 11–13 |
 | 16 | Senior review, trọng tâm: mọi con số có nguồn, số của bên khác ghi "their claim", trung lập về giấy phép | senior developer (opus) | — | CI xanh, run id | 15 |
 | **PR 4** | **Bộ sinh thành thư viện, không đổi hành vi** — nhánh `dict/generator-library`; chạy song song được với PR 1–3 | | | | 0 |
@@ -335,7 +350,7 @@ nháp ở commit đầu, kết thúc bằng một senior review (context mới) 
 | 27 | Crate `examples/custom-dictionary` (thêm vào `members`): `build.rs`, `venue.xml`, `src/main.rs`; test qua socket thật `tests/venue.rs` — `a_custom_tag_reaches_the_handler`, `a_custom_enum_value_is_not_rejected`, `a_custom_group_is_read_and_echoed_in_declared_order`, `a_custom_header_field_is_written_in_the_header`, `a_custom_message_type_is_delivered`, `a_missing_venue_required_field_is_rejected_373_1`, `an_undefined_tag_is_still_rejected_373_0`, `an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`; `tests/plain_scores.rs` — `an_empty_overlay_scores_59_of_59`; `benches/alloc.rs` ba case, thêm vào `scripts/bench.sh` | senior developer (opus) | crate mới, `Cargo.toml` gốc, `scripts/bench.sh` | các test trên xanh; job `bench` in ra ba case với 0 | 26 |
 | 28 | `scripts/check-custom-dictionary-packaged.sh`: dựng crate ví dụ **ngoài workspace** trên `target/package/` (bản `.crate`), chứng minh `gen` đọc được `spec/` từ package và đường `::fixbolt::dict` đúng; `cargo tree -e normal` của nó không có `roxmltree`. Gắn vào job `package` | developer (sonnet) | script + CI yml | script thoát 0; đảo ngược (bỏ `spec/**` khỏi `include`) → đỏ | 27 |
 | 29 | Tài liệu cùng commit: `docs/how-to/add-a-custom-tag.md` (hai đường: bỏ qua bằng `ValidateUserDefinedFields=N`, hay định nghĩa nó), `use-a-venue-dictionary.md` (overlay, nguyên file, nhiều sàn = nhiều engine, phải build lại khi đổi, nghĩa vụ `NOTICE`, kích thước bảng với tag cao), `migrate-from-quickfix.md` (bảng key QuickFIX → fixbolt, bốn key bị từ chối, `ValidateFieldsOutOfOrder` không hỗ trợ); marker `sample:` trỏ vào file của crate ví dụ; `CONFIGURATION.md` §1/§4; `GUIDE.md` §3a một đoạn; `SESSION-BEHAVIOUR.md` §3; `DESIGN.md` §3 (crate mới, hàng `library`, `engine`); `PRD.md` §3 hàng mới; `docs/internals/` (trang mới + `library.md`, `engine.md`, `README.md`); `README.md` *Layout*; `SUMMARY.md`; `CHANGELOG.md` | developer (sonnet) | chỉ tài liệu | `check-links.py`, `check-doc-samples.sh`, job `book` | 27 |
-| 30 | Senior review + CI; `STATUS.md` (*Start here*, *Not proven*); `PRD.md` §2 theo Q3; ADR-0206/0207 → Accepted (manager ghi dòng trạng thái); *Nhật ký giao hàng* | senior developer (opus); manager | `STATUS.md`, `PRD.md` §2, hai ADR | CI xanh trên commit đóng, run id | 29 |
+| 30 | Senior review + CI; `STATUS.md` (*Start here*, *Not proven*); `PRD.md` §2 ghi phase 5 xong; ADR-0206/0207 → Accepted (manager ghi dòng trạng thái); *Nhật ký giao hàng* | senior developer (opus); manager | `STATUS.md`, `PRD.md` §2, hai ADR | CI xanh trên commit đóng, run id | 29 |
 
 **Ranh giới PR:** PR 0 (plan) → PR 1 (khung sách) → PR 2 và PR 3 song song. PR 4 → PR 5 chạy
 song song với PR 1–3 (không đụng file chung ngoài `CHANGELOG.md`, `DESIGN.md` — mỗi lúc một người
@@ -393,8 +408,8 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4 (đi từng hàng):
       (bước 29)
 - [ ] Hành vi codec/dispatch (bảng người dùng theo D3): `DESIGN.md` §4 D3, và đi lại §2 (bước 23)
 - [ ] Bẫy / bất ngờ: `docs/reference/` — trang prior-art (PR 0) và mỗi bất ngờ gặp khi làm
-- [ ] Quyết định mới: ADR-0206, ADR-0207 (PR 0); ADR điều khoản đóng góp sau Q1 (ngoài plan này)
-- [ ] Chuyển việc vào phase: `PRD.md` §2 theo Q3 (bước 30); `PRD.md` §3 hàng mới (bước 29)
+- [ ] Quyết định mới: ADR-0206, ADR-0207 (PR 0); ADR giấy phép / CLA hay DCO — hoãn tới trước đóng góp ngoài đầu tiên (ngoài plan này)
+- [ ] Chuyển việc vào phase: `PRD.md` §2 phase 5 (bước 1a, đóng ở bước 30), ADR-0206 quyết định 9; `PRD.md` §3 hàng mới (bước 29)
 - [ ] Chứng minh điều đang ghi "chưa chứng minh": gạch dòng tương ứng trong `STATUS.md` *Not proven*
 - [ ] `CLAUDE.md` §4 hai bảng (bước 6); `STATUS.md` (bước 30)
 
@@ -433,28 +448,33 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4 (đi từng hàng):
 |---|---|---|
 | Viết lại 1 595 dòng bộ sinh cho sạch lint khó hơn dự kiến, không đạt hash trùng | Cao | PR 4 là PR riêng, không chặn phần A; không đạt hash trùng thì dừng ở bước 18, báo lại, không merge |
 | Thêm tham số `D` vào trait `Handler` bị semver gate coi là major | Trung bình | Dừng ở bước 26, về architect; phương án dự phòng (một trait mới cho phương ngữ) cần sửa ADR-0207 và duyệt lại |
-| Người dùng mong đổi phương ngữ không cần build lại, như QuickFIX | Trung bình | Nói thẳng trong how-to và `why-fixbolt.md`; là cái giá chính của ADR-0207 (Q6) |
-| Trang web công khai từ lần deploy đầu; sai ở đó là sai trước công chúng | Trung bình | Review như repo; chủ dự án quyết định thời điểm bật Pages (Q4) |
-| Làm song song với phase 4 hàng 7 → xung đột `DESIGN.md`, `STATUS.md`, `CHANGELOG.md` | Thấp | Một người viết mỗi file mỗi lúc; rebase trước khi mở PR (memory: PR xung đột không có CI) |
+| Người dùng mong đổi phương ngữ không cần build lại, như QuickFIX | Trung bình | Chủ dự án đã chấp nhận (Q6), ghi trong ADR-0207 *Consequences*; how-to và `why-fixbolt.md` nói thẳng |
+| Trang web công khai từ lần deploy đầu; sai ở đó là sai trước công chúng | Trung bình | Chủ dự án đã cho bật (Q4); mọi trang qua senior review như repo trước khi merge vào `main` |
+| Phase 5 xếp sau phase 4, nhưng phase 4 hàng 7 còn chờ một lần boot máy §9. Nếu PR của plan này mở trước khi phase 4 đóng → xung đột `DESIGN.md`, `STATUS.md`, `CHANGELOG.md` | Thấp | Thứ tự phase không nói hai việc có được chạy chồng không: manager hỏi chủ dự án một câu khi bắt đầu PR 1 nếu phase 4 chưa đóng. Một người viết mỗi file mỗi lúc; rebase trước khi mở PR (PR xung đột không có CI) |
 | Sách rất lớn (131 ADR, 132 reference) → build chậm, index tìm kiếm nặng | Thấp | Đo ở PR 1, ghi số vào *Nhật ký giao hàng* |
 
-### Câu hỏi chủ dự án phải trả lời
+### Quyết định của chủ dự án (2026-09-26)
 
-| # | Câu hỏi | Hạn | Kiến nghị của architect |
+Sáu câu hỏi của bản nháp đã được trả lời; không còn câu hỏi mở nào chặn plan.
+
+| # | Câu hỏi | Câu trả lời | Plan ghi ở đâu |
 |---|---|---|---|
-| Q1 | CLA hay DCO cho đóng góp từ bên ngoài? | **Trước khi merge đóng góp ngoài đầu tiên** | Nếu muốn giữ khả năng bán giấy phép thương mại hoặc đổi giấy phép sau này: CLA. Nếu không: DCO. Câu trả lời thành một ADR riêng; `CONTRIBUTING.md` chờ nó |
-| Q2 | Trang "why fixbolt" so sánh **thiết kế** với QuickFIX, có trích nguồn — có tính là "a comparison in marketing copy" mà ADR-0104 quyết định 7 cấm không? | Trước bước 12 | Không tính, nếu trang chỉ nêu sự thật có nguồn và không có từ so sánh hơn kém; nếu anh thấy có tính, trang không nêu tên engine nào và cần một ADR mới để đổi |
-| Q3 | Việc này nằm ở đâu trong `PRD.md` §2: một phase mới (5), hay việc ngoài phase chạy song song phase 4? | Trước PR 1 | Việc ngoài phase, song song: không cần máy §9, không đụng `codec` (nơi SIMD của phase 4 đang làm) |
-| Q4 | Bật GitHub Pages (URL mặc định hay tên miền riêng?) và private vulnerability reporting; email liên hệ bảo mật cho `SECURITY.md` | Trước bước 7 và bước 10 | URL mặc định; bật cả hai |
-| Q5 | Bản đầu chỉ overlay lên FIX 4.4. Các sàn anh nhắm có dùng FIXT 1.1 / FIX 5.0 SP2 không? | Trước PR 5 | Chỉ FIX 4.4 ở bản đầu; SP2 là plan sau nếu cần |
-| Q6 | Chấp nhận "đổi phương ngữ = build lại" (không có từ điển nạp lúc chạy)? | Khi duyệt plan | Chấp nhận — đó là điều giữ D3 và non-negotiable 1 cho bảng của người dùng |
+| Q1 | Ai đóng góp; CLA hay DCO? | Người đóng góp là lập trình viên trong nhóm dự án, không phải công chúng. Đóng góp từ ngoài **chưa được nhận** cho tới khi một ADR giấy phép quyết định CLA hay DCO. **Việc hoãn**, hạn: trước khi nhận đóng góp ngoài đầu tiên; không chặn plan này | *Cách làm* `CONTRIBUTING.md`; *Tài liệu phải cập nhật* |
+| Q2 | Trang "why fixbolt" là gì? | Giải thích kỹ thuật vì sao fixbolt nhanh (cơ chế, chi phí tránh được), không phải so sánh marketing. Engine khác chỉ là sự thật thiết kế có nguồn khi cần; không xếp hạng, không "nhanh hơn X" | *Cách làm* `why-fixbolt.md` (kèm lý do nằm trong ADR-0104 quyết định 7); bước 12, 14, 16; ADR-0206 quyết định 8 |
+| Q3 | Việc này ở phase nào? | **Phase mới (5), sau phase 4 và trước kernel bypass.** ADR-0204 không gán số phase cho bypass ("no phase number until the owner scopes a phase that includes it") nên câu đó vẫn đúng; câu "phase 5 is not scoped" trong ADR-0204 *Context* là sự thật tại ngày viết. ADR-0141 "FIXP not before phase 5" vẫn đúng, vì phase 5 không chứa FIXP. **Không sửa nội dung ADR đã Accepted, không cần ADR thay thế**: việc xếp phase ghi ở `PRD.md` §2 (bước 1a) và ADR-0206 quyết định 9 | bước 1a, 30; ADR-0206 quyết định 9 |
+| Q4 | Pages, báo lỗ hổng? | Bật GitHub Pages (URL mặc định) và private vulnerability reporting. Không email: `SECURITY.md` chỉ trỏ tới private vulnerability reporting | *Cách làm* `SECURITY.md`; bước 7, 10 |
+| Q5 | Overlay cho FIXT / SP2? | Chỉ FIX 4.4 ở bản đầu; overlay FIXT 1.1 / FIX 5.0 SP2 ngoài phạm vi | *Ngoài phạm vi*; ADR-0207 quyết định 8 |
+| Q6 | Chấp nhận build lại khi đổi phương ngữ? | Chấp nhận | ADR-0207 *Consequences* (ghi là chủ dự án chấp nhận) |
 
 ## Ngoài phạm vi
 
 - Mô hình giấy phép thương mại, giá, bản "enterprise" — ADR riêng sau này (quyết định của chủ dự án).
 - Benchmark đối đầu với engine khác. Số của họ chỉ được trích như lời họ nói.
 - Từ điển nạp lúc chạy (ADR-0207 phương án A, bị loại).
-- Overlay lên cặp FIXT 1.1 + FIX 5.0 SP2 (Q5); cửa `_over` cho các cửa sharded và TLS.
+- Overlay lên cặp FIXT 1.1 + FIX 5.0 SP2 — chủ dự án quyết định bản đầu chỉ FIX 4.4 (Q5); cửa
+  `_over` cho các cửa sharded và TLS.
+- Quyết định CLA hay DCO, và nhận đóng góp từ ngoài nhóm — ADR giấy phép sau, trước đóng góp
+  ngoài đầu tiên (Q1).
 - Chia nhỏ `GUIDE.md` hay `DESIGN.md`; dời bất kỳ file đang bị trích dẫn (ADR-0206 quyết định 3).
 - Đưa `docs/plans/` vào sách; dịch tài liệu.
 - Xuất bản rustdoc lên Pages, lên crates.io, docs.rs (ADR-0161 giữ nguyên).

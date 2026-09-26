@@ -1,6 +1,8 @@
 # ADR-0206 — The documentation is an mdBook over `docs/` in place, organised by Diátaxis, and no cited file moves
 
-- **Status**: Proposed — 2026-09-26
+- **Status**: Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
+  answers to the plan's six questions: decision 8's last two bullets (Q2), decision 9 (Q3), and the
+  contributor audience in decision 4 (Q1).
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);
@@ -54,9 +56,14 @@ What constrains any restructuring, `[measured 2026-09-26]` with `grep -rl` over 
    therefore unused today and reserved for a future move, which needs its own ADR.
 4. **New pages are new files in new directories**: `docs/how-to/`, `docs/explanation/`,
    `docs/index.md` (the book's landing page). Contributor files live at the repository root where
-   GitHub looks for them: `ARCHITECTURE.md` (matklad's shape: short, a codemap of names to search
+   GitHub looks for them — written for the **project team's developers**, not the public (owner,
+   2026-09-26): `ARCHITECTURE.md` (matklad's shape: short, a codemap of names to search
    for, *Architecture Invariant* call-outs that include what is deliberately absent, each mapped to
    a `CLAUDE.md` §2 item), `CONTRIBUTING.md`, `SECURITY.md`. The book links to them.
+   `CONTRIBUTING.md` states the rule that **contributions from outside the team are not accepted**
+   until a future licensing ADR decides between a CLA and a DCO; that ADR is due before the first
+   outside contribution is accepted, and does not block this one. `SECURITY.md` points only at
+   GitHub's private vulnerability reporting (enabled by the owner); it names no email address.
 5. **Links that leave `docs/` are rewritten at build time, not in the source.** A preprocessor
    in this repository, `scripts/mdbook-repo-links.py` (Python standard library only, the shape of
    `scripts/check-links.py`), rewrites any relative link that resolves outside `docs/`, or to a
@@ -86,18 +93,30 @@ What constrains any restructuring, `[measured 2026-09-26]` with `grep -rl` over 
      nothing about future licensing, commercial editions or pricing.
    - **Every fixbolt number obeys non-negotiable 10**; a page that repeats one links to where it is
      recorded with its machine and settings, never restates it bare.
-   - **Every other engine's number is labelled as that vendor's claim**, with only the conditions
-     the vendor stated, and is never put in the same table or sentence as a fixbolt number. The
-     phrases listed as not citable in
-     [prior-art-for-embedders](../reference/prior-art-for-embedders.md) §5
-     are a review finding wherever they appear.
-   - **QuickFIX is named as ADR-0104 decision 7 allows**: as a fact (the corpus, the interop peer,
-     the dictionary source, and what its documentation says it does), never as a superlative or
-     an endorsement. The "why fixbolt" page compares **designs** — where the dictionary is read,
-     what the parser allocates, how a session is driven — each claim about another engine cited to
-     that engine's own documentation or source. **Whether a sourced design comparison counts as
-     "a comparison in marketing copy" under ADR-0104 decision 7 is the owner's call** (plan,
-     open question); if it does, that page names no engine and a new ADR is needed to change it.
+   - **Another engine's latency figure appears only on the prior-art reference page**, labelled
+     as that vendor's claim with the conditions the vendor stated, never beside a fixbolt number.
+     The phrases listed as not citable in
+     [prior-art-for-embedders](../reference/prior-art-for-embedders.md) §5 are a review finding
+     wherever they appear.
+   - **The "why fixbolt" page is a technical explanation, not a comparison** (owner, 2026-09-26): it
+     explains fixbolt's own mechanisms — in-place parse into a borrowed view, no hot-path
+     allocation, build-time tables with static dispatch, patched outbound templates, a pure
+     session, inline dispatch, the mode split — and the costs each avoids, linking to where each
+     figure is recorded. Another engine appears only as a sourced design fact where the explanation
+     needs it ("QuickFIX reads its XML dictionary at run time, per its configuration page"); there
+     is no ranking, no "faster than X", and no other engine's number on the page.
+   - **This keeps the page inside ADR-0104 decision 7**: "QuickFIX" appears as a sourced fact, which
+     decision 7 allows, and never as an endorsement, a compatibility badge or a comparison. Held by
+     machine — `scripts/check-doc-claims.sh` fails a line that names another engine together with a
+     comparative (`faster`, `slower`, `better`, `outperform`, `than`), the prior-art reference page
+     exempted because it quotes vendors — and by hand, in the senior review of that pull request.
+9. **This work is phase 5** (owner, 2026-09-26): a new phase in `PRD.md` §2 after phase 4 and before
+   the kernel-bypass candidate. No accepted ADR needs superseding. ADR-0204 gave the bypass item
+   "no phase number until the owner scopes a phase that includes it", which stays true — the
+   candidate stays under *Later phases*, now noted as coming after phase 5. ADR-0204's *Context*
+   sentence "Phase 5 is not scoped" was a fact on its date, and ADR-0141's "FIXP not before phase 5"
+   still holds, because phase 5 contains no FIXP work. The placement is recorded in `PRD.md` §2
+   (plan step 1a) and here.
 
 ## Consequences
 
