@@ -247,3 +247,299 @@ timeout, not the engine.
 - **This engine has never sent to a production FIX peer.** Its independent check is 7 interop
   cases each way against a real `libquickfix`, not a venue. Treat any number as provisional
   until your own run, on your own hardware, with these settings recorded, confirms it.
+
+## 8. Renting the GCP VM pair for the bypass item (ADR-0204, ADR-0205)
+
+This section is procedure, not the decision: [ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md)
+decision 3 is the gate a rented pair must pass before anything is built on it, and
+[ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md)
+is how a figure from it is labelled. The platform choice and the hardware facts behind it are
+[kernel-bypass-needs-a-machine-this-project-does-not-have](reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md).
+No price appears below — prices go stale and this repository is public; use
+[GCP's pricing calculator](https://cloud.google.com/products/calculator) for a current estimate
+before renting.
+
+### 8.1 Account and billing
+
+1. Sign in with a Google account and create a project: `gcloud projects create PROJECT_ID`, or
+   the console's *New Project* dialog.
+2. Link a billing account. **A new Google Cloud customer gets a free-trial credit** — $300,
+   valid 90 days, and no charge until the account is explicitly upgraded to a paid one — but
+   this is a promotional term Google can change; check
+   [cloud.google.com/free](https://cloud.google.com/free) and the
+   [free-trial FAQ](https://cloud.google.com/signup-faqs) at signup time rather than trust a
+   figure written here.
+3. **Payment method**: Google's own list of accepted cards is Visa, Mastercard, American
+   Express and Discover/JCB where applicable
+   ([payment methods](https://docs.cloud.google.com/billing/docs/how-to/payment-methods)); a
+   Vietnamese-issued Visa or Mastercard is on that list. **Unverified**: whether a *debit* card
+   issued in Vietnam is accepted in practice — user reports of rejected VN debit cards exist
+   online, but this project found no Google document naming Vietnam as excluded or restricted.
+   If a card is rejected, Google's own fallback is a different card or a reseller offering
+   invoiced billing; there is no project-specific workaround.
+4. Enable the Compute Engine API: `gcloud services enable compute.googleapis.com`.
+5. Install the `gcloud` CLI per Google's own instructions
+   ([install docs](https://cloud.google.com/sdk/docs/install)) and authenticate:
+   ```
+   gcloud auth login
+   gcloud config set project PROJECT_ID
+   ```
+6. Set the region and a zone. `asia-southeast1` (Singapore) is the nearest Google Cloud region
+   to Vietnam:
+   ```
+   gcloud config set compute/region asia-southeast1
+   gcloud config set compute/zone asia-southeast1-b
+   ```
+   Both VMs go in the **same zone** — ADR-0204 decision 2 names one zone for the pair, and a
+   compact placement policy (8.4) is zone-scoped.
+
+### 8.2 Quota check
+
+A new billing account's CPU quota is often too low for a `c3-standard-44`-class pair (8.3).
+Check before choosing a machine type:
+```
+gcloud compute regions describe asia-southeast1 \
+  --format="table(quotas.metric,quotas.limit,quotas.usage)" | grep -w CPUS
+```
+If the limit is short of what two instances need, request an increase from the console's
+*IAM & Admin → Quotas* page, or:
+```
+gcloud beta quotas preferences create \
+  --project=PROJECT_ID --service=compute.googleapis.com \
+  --quota-id=CPUS-per-project-region --dimensions=region=asia-southeast1 \
+  --preferred-value=VALUE --contact-email=OWNER_EMAIL \
+  --justification="kernel-bypass measurement pair, ADR-0204"
+```
+A quota increase is not instant; a new account should ask for it before picking a boot date.
+
+### 8.3 Machine series
+
+The reference page's driver table (`gve`) is necessary but not sufficient: n-tuple steering and
+the RSS key are **device options gVNIC exposes only on some machine series**
+(ADR-0204 decision 3; ADR-0205 *Context*), so the gate is what decides, not this table. What the
+table narrows to is which series to *try first*.
+
+- **Tier_1 is a bandwidth tier, not a flow-steering feature.** Nothing found on Google's
+  `gve` source or documentation ties n-tuple steering or the RSS key to Tier_1 — those are
+  device options the virtual NIC offers or does not, independent of the egress-bandwidth tier
+  (ADR-0204 decision 3; ADR-0205 *Context*). Tier_1 buys bandwidth headroom, which this item does
+  not need — the gate is about latency-relevant device options, and the measurement pair's
+  concern (if any) is tail latency, not throughput. Do not require Tier_1 for the gate.
+- **Two stages, two different VMs.**
+  1. **Gate VM** — cheap, disposable, used only to run the ADR-0204 gate (8.6). No Tier_1
+     needed. The smallest published C3 size, **`c3-standard-4`** (4 vCPU, 2 physical cores) —
+     verify `--threads-per-core=1` is accepted on it at creation time; Google's docs name N4A
+     and Tau T2D as the series that cannot disable SMT at all, but do not state that every size
+     of every other series accepts the flag, so confirm on this specific size before relying on
+     it. On-demand or spot is fine — if the gate fails, delete the VM (8.7) and try another
+     series or size; nothing measured on it is kept.
+  2. **Measurement pair** — sized by the reopening plan once a gate-passing series is known
+     (ADR-0204 decision 3: "the series that passed is part of every figure's label"). Tier_1 is
+     **optional**, not required: enable it only if the reopening plan's own bandwidth needs call
+     for it, not because the gate does.
+  `gve`'s driver README does say n-tuple and RSS support "varies by VM platform" and to check
+  before use — which is exactly why the gate (8.6), not this series list, is the actual decision
+  ([gve README](https://github.com/GoogleCloudPlatform/compute-virtual-ethernet-linux)).
+- **Which series to try first (for the gate VM):** **C3** and **C4** are current, gVNIC-default
+  series per Google's
+  [network-optimized](https://docs.cloud.google.com/compute/docs/network-optimized-machines) and
+  [general-purpose](https://docs.cloud.google.com/compute/docs/general-purpose-machines)
+  machine-family pages; **N2** is a fallback if C3/C4 quota is unavailable. This ordering is
+  about gVNIC being the default NIC and current generation, not about the gate's outcome, which
+  none of these pages state.
+- **Spot vs on-demand.** A spot VM can be preempted mid-run. ADR-0205 decision 4 already treats
+  a recreated instance as a new machine whose figures are not reused; a preemption during a
+  measurement boot is the same event, uninvited. Use on-demand for the boot that produces a
+  published figure; spot is acceptable for the gate VM and for throwaway development, where a
+  mid-run restart costs nothing.
+
+### 8.4 Placement: sole-tenant node vs compact placement policy
+
+ADR-0204 leaves this choice to the owner. Google's own sole-tenancy docs are explicit that
+**the two cannot be combined**: *"you can't apply placement policies to sole-tenant
+instances"* ([sole-tenancy](https://docs.cloud.google.com/compute/docs/nodes/sole-tenant-nodes)).
+Pick one.
+
+**Compact placement policy** (both VMs physically close in the zone, still multi-tenant):
+```
+gcloud compute resource-policies create group-placement bypass-pair-policy \
+  --collocation=collocated --region=asia-southeast1
+gcloud compute instances create bypass-acceptor \
+  --resource-policies=bypass-pair-policy --zone=asia-southeast1-b …
+gcloud compute instances create bypass-counterparty \
+  --resource-policies=bypass-pair-policy --zone=asia-southeast1-b …
+```
+
+**Sole-tenant node** (both VMs alone on dedicated hardware, no compact placement). The node type
+name is not guessed here — list what this project's zone actually offers and use that value:
+```
+gcloud compute sole-tenancy node-types list --filter="zone:asia-southeast1-b"
+```
+```
+gcloud compute sole-tenancy node-templates create bypass-node-template \
+  --node-type=<C3 node type from: gcloud compute sole-tenancy node-types list --filter="zone:asia-southeast1-b"> \
+  --region=asia-southeast1
+gcloud compute sole-tenancy node-groups create bypass-node-group \
+  --node-template=bypass-node-template --target-size=1 --zone=asia-southeast1-b
+gcloud compute instances create bypass-acceptor bypass-counterparty \
+  --node-group=bypass-node-group --zone=asia-southeast1-b …
+```
+The node type must match the machine series chosen in 8.3; a sole-tenant node costs for the
+whole node, not per instance, so this is the more expensive of the two shapes to leave running.
+
+### 8.5 Create the two VMs
+
+An Onload build needs a kernel inside the 6.1–7.0 range the README states
+(reference page, *What Onload's AF_XDP path asks of a driver*). Two current GCP images are
+candidates: **Debian 12 (`debian-12`)**, whose distribution ships kernel 6.1 by default, and
+**Ubuntu 24.04 LTS (`ubuntu-2404-lts-amd64`)**, whose distribution ships kernel 6.8 by default —
+these defaults come from Debian's and Canonical's own release documentation, not from a single
+GCP page naming the exact kernel per image; Google's
+[OS details page](https://docs.cloud.google.com/compute/docs/images/os-details) confirms the
+image families exist and lists their interfaces but not their exact shipped kernel build.
+**Treat both numbers as unconfirmed until `uname -r` on the booted VM says so** — which ADR-0204
+decision 3 requires quoting anyway. **Ubuntu 22.04's GA kernel is 5.15, outside the range**; its
+HWE kernel moves later but is not the image default, so prefer 24.04 over relying on an HWE
+upgrade after boot.
+
+**Networking, outbound and inbound.** Both VMs need outbound internet to fetch the Onload
+source, kernel headers and build tooling. The simplest arrangement for a solo owner is an
+**external IP on each VM**, with the firewall doing the restricting (below); the alternative —
+`no-address` plus [Cloud NAT](https://docs.cloud.google.com/nat/docs/overview) for outbound and
+[IAP TCP forwarding](https://docs.cloud.google.com/iap/docs/using-tcp-forwarding) for inbound SSH
+— gives up no traffic capability but adds a Cloud Router and a NAT gateway to create, keep track
+of and eventually delete alongside the VMs (8.7). This procedure uses the external-IP shape;
+commands for the no-address alternative follow it.
+
+```
+# gate VM — cheap, disposable, run only the ADR-0204 gate (8.6) on it
+gcloud compute instances create bypass-gate \
+  --zone=asia-southeast1-b --machine-type=c3-standard-4 \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --network-interface=nic-type=GVNIC \
+  --threads-per-core=1 \
+  --tags=bypass-pair
+
+# measurement pair — created only after the gate above passes, series/size per the reopening plan
+gcloud compute instances create bypass-acceptor \
+  --zone=asia-southeast1-b --machine-type=MACHINE_TYPE \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --network-interface=nic-type=GVNIC \
+  --threads-per-core=1 \
+  --tags=bypass-pair \
+  [--resource-policies=bypass-pair-policy | --node-group=bypass-node-group]
+
+gcloud compute instances create bypass-counterparty \
+  --zone=asia-southeast1-b --machine-type=MACHINE_TYPE \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --network-interface=nic-type=GVNIC \
+  --threads-per-core=1 \
+  --tags=bypass-pair \
+  [--resource-policies=bypass-pair-policy | --node-group=bypass-node-group]
+```
+Add `--network-performance-configs=total-egress-bandwidth-tier=TIER_1` to either instance only
+if the reopening plan states a bandwidth reason for it (8.3) — it is not part of the gate.
+
+**Firewall**, allowing only the pair's own traffic and SSH from the owner's IP — nothing else:
+```
+gcloud compute firewall-rules create bypass-pair-internal \
+  --network=default --direction=INGRESS --action=ALLOW \
+  --rules=tcp,udp --source-tags=bypass-pair --target-tags=bypass-pair
+
+gcloud compute firewall-rules create bypass-pair-ssh \
+  --network=default --direction=INGRESS --action=ALLOW \
+  --rules=tcp:22 --source-ranges=OWNER_IP/32 --target-tags=bypass-pair
+```
+
+**The `no-address` alternative**, if public IPs on the VMs themselves are unwanted. Add
+`no-address` to each `--network-interface` above, then:
+```
+# outbound: a Cloud Router and NAT gateway in the same region
+gcloud compute routers create bypass-nat-router --network=default --region=asia-southeast1
+gcloud compute routers nats create bypass-nat \
+  --router=bypass-nat-router --region=asia-southeast1 \
+  --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges
+
+# inbound SSH: source must be Google's own IAP range, not the owner's IP —
+# IAP terminates the connection and re-originates it from this range
+# (verified: docs.cloud.google.com/iap/docs/using-tcp-forwarding)
+gcloud compute firewall-rules create bypass-pair-ssh-iap \
+  --network=default --direction=INGRESS --action=ALLOW \
+  --rules=tcp:22 --source-ranges=35.235.240.0/20 --target-tags=bypass-pair
+
+gcloud compute ssh bypass-acceptor --zone=asia-southeast1-b --tunnel-through-iap
+```
+This is the more locked-down shape — neither VM is directly reachable from the internet — at the
+cost of two more resources (router, NAT) to create and delete alongside the VMs. For a solo
+owner running a short-lived measurement pair, external IP plus the restrictive firewall rules
+above is the simpler choice and what the rest of this section assumes; switch to `no-address`
+plus Cloud NAT and IAP if the exposure of a public IP, however firewalled, is unacceptable.
+
+### 8.6 Run the ADR-0204 gate on the gate VM
+
+Run on `bypass-gate` (8.5), not on the measurement pair — the pair is not created until this
+gate passes. Every line below is ADR-0204 decision 3, in order. A pass on every line is what
+lets the reopening plan proceed to size and create the measurement pair; **a fail on any line:
+stop, delete the gate VM (8.7), and record which line failed and on which machine type** — do
+not try to work around a failing line on the same series; try another series or size instead.
+
+```
+# machine type, zone, and confirm the kernel is in Onload's 6.1–7.0 range
+gcloud compute instances describe bypass-gate --zone=asia-southeast1-b \
+  --format='value(machineType,zone)'
+uname -r                                           # e.g. 6.1.0-... or 6.8.0-...
+
+# driver is gve
+ethtool -i <nic>                                   # pass: driver: gve
+
+# flow steering is a device option this instance's series offers
+dmesg | grep -i "FLOW STEERING"                    # pass: "... enabled with max rule limit of N", N > 0
+
+# n-tuple steering can be turned on
+sudo ethtool -K <nic> ntuple on
+ethtool -k <nic> | grep ntuple                     # pass: ntuple-filters: on
+
+# the device offers an RSS hash key (G0 from the reference page)
+ethtool -x <nic> | grep -A1 "RSS hash key"         # pass: a key is printed, not "Operation not supported"
+
+# queue count at or below half the maximum before an XDP program can attach
+ethtool -l <nic>                                   # read "Combined" maximum
+sudo ethtool -L <nic> combined <max/2 or less>
+ethtool -l <nic>                                   # pass: current <= half of maximum
+
+# after Onload registers and binds the socket:
+ss --xdp                                           # pass: zc:1 on the bound socket
+```
+A `dmesg` line absent, `ethtool -x` returning `Operation not supported`, or `ss --xdp` never
+showing `zc:1` are each, individually, the stop condition — the same three ways the desk's I211
+failed (ADR-0203). A failing series does not disqualify GCP; ADR-0204 decision 3 allows trying
+another series, with the series that passed named in every figure's label thereafter.
+
+### 8.7 Cost control
+
+- **Delete the gate VM** as soon as 8.6 has a verdict, pass or fail — it is disposable by
+  design and nothing about it is reused: `gcloud compute instances delete bypass-gate --zone=asia-southeast1-b`.
+- **Stop** a measurement-pair instance between sessions to release the vCPU/memory billing
+  while keeping the disk and its configuration:
+  `gcloud compute instances stop bypass-acceptor bypass-counterparty --zone=asia-southeast1-b`.
+  A stopped sole-tenant node still bills for the node itself.
+- **Delete** the measurement pair when the item is not being worked: this also ends node-group
+  and disk billing. ADR-0205 decision 4 already treats a recreated instance as a new machine, so
+  deleting between measurement campaigns costs nothing the record depends on.
+  ```
+  gcloud compute instances delete bypass-acceptor bypass-counterparty --zone=asia-southeast1-b
+  gcloud compute sole-tenancy node-groups delete bypass-node-group --zone=asia-southeast1-b   # if used
+  gcloud compute resource-policies delete bypass-pair-policy --region=asia-southeast1          # if used
+  gcloud compute firewall-rules delete bypass-pair-internal bypass-pair-ssh
+  gcloud compute firewall-rules delete bypass-pair-ssh-iap                                     # if the no-address alternative was used
+  gcloud compute routers nats delete bypass-nat --router=bypass-nat-router --region=asia-southeast1   # if used
+  gcloud compute routers delete bypass-nat-router --region=asia-southeast1                     # if used
+  ```
+- **Budget alert**, so an idle pair left running is caught before a bill surprises the owner:
+  ```
+  gcloud billing budgets create --billing-account=BILLING_ACCOUNT_ID \
+    --display-name="bypass-pair-budget" --budget-amount=AMOUNTUSD \
+    --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+  ```
+  or the console's *Billing → Budgets & alerts → Create Budget*. A budget alert notifies; it
+  does not stop the VMs by itself.

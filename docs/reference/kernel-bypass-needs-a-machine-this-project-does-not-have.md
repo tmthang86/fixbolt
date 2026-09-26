@@ -85,7 +85,8 @@ both arms from the counterparty.
 
 The owner chose **two rented cloud VMs, a commodity NIC over AF_XDP, no purchase, no Mac**, and
 accepted a VM figure as publishable (ADR-0204 decisions 2–5, ADR-0205). By the driver table, the
-candidate is **GCP with `gve`**; AWS `ena` and Azure `mana` are out.
+candidate is **GCP with `gve`**; AWS `ena` and Azure `mana` are out. The step-by-step procedure for
+renting and gating the pair is [hft-playbook.md §8](../hft-playbook.md).
 
 What `gve` adds to the table, read from its source and Google's driver
 [README](https://github.com/GoogleCloudPlatform/compute-virtual-ethernet-linux):
