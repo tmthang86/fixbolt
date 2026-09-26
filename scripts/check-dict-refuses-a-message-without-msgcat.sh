@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CLAUDE.md §10 — a guard is proven by reversal. The dictionary generator
 # refuses a `<message>` in the FIX XML that carries no `msgcat` attribute
-# (`None => return refuse(...)` at crates/dict/src/codegen/emit.rs:238-246;
+# (`None => return refuse(...)` at crates/dict/src/codegen/model.rs:545-553;
 # `crates/dict/build.rs` turns the refusal into a failed build through
 # `or_die`), and that path has never once
 # been observed to fire: nothing in this repository ever hands the
@@ -12,8 +12,8 @@
 # `Not proven (b)`.
 #
 # It also proves the two die arms sitting in the same `match` (the
-# unknown-category arm at src/codegen/emit.rs:232-237, and the
-# admin_types-empty arm at src/codegen/emit.rs:645-651) fire with the
+# unknown-category arm at src/codegen/model.rs:539-544, and the
+# no-admin-message arm at src/codegen/model.rs:744-751) fire with the
 # message they claim, and that the
 # generator does NOT die on an untouched copy of the same file — a script
 # that only ever produces red would pass just as well with `die()` wired to
@@ -24,12 +24,12 @@
 # ADR-0001):
 #   0  the untouched copy — must BUILD.
 #   1  Heartbeat's `msgcat='admin'` removed entirely — must refuse, the
-#      message naming "has no msgcat attribute" (src/codegen/emit.rs:238-246).
+#      message naming "has no msgcat attribute" (src/codegen/model.rs:545-553).
 #   2  Heartbeat's `msgcat='admin'` changed to `msgcat='other'` — must
-#      refuse, the message naming `has msgcat="other"` (src/codegen/emit.rs:232-237).
+#      refuse, the message naming `has msgcat="other"` (src/codegen/model.rs:539-544).
 #   3  every `msgcat='admin'` in the file changed to `msgcat='app'`,
 #      leaving no administrative message at all — must refuse, the message
-#      naming "not one <message> carries msgcat='admin'" (src/codegen/emit.rs:645).
+#      naming "not one <message> carries msgcat='admin'" (src/codegen/model.rs:744).
 #
 # The fixture directory is target/check-msgcat/, never /tmp: /tmp is tmpfs
 # on the desk (project memory) and scripts/check-scratch-fixtures.sh watches

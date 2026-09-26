@@ -36,7 +36,10 @@ against that tag rather than a published baseline.
     enum values, groups, components, messages, required fields, header fields and header groups.
     An overlay never removes or retypes. A number, name, type, `msgtype` or `msgcat` that disagrees
     with FIX 4.4 fails naming both sides, and so do a `<trailer>`, a misspelt section, one field
-    twice at one level, and a value list on a field FIX 4.4 leaves open. An empty overlay writes
+    twice at one level, and a value list on a field FIX 4.4 leaves open. Refused in an overlay
+    or a whole file alike: a tag in two of header, trailer and message bodies (a valid message
+    would be answered 373=14), a DATA group member whose length field is not declared
+    immediately in front of it, a field numbered 0, and per-tag bitsets over 64 MiB. An empty overlay writes
     `Fix44`'s tables byte for byte. `Source::Fix44Whole(&str)` reads a complete file as written.
     `Source` is `#[non_exhaustive]`.
   - `Paths::facade()` (the default) makes the file name `::fixbolt::dict::…`, whose re-exports

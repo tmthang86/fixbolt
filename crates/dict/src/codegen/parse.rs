@@ -36,6 +36,11 @@ pub(super) fn collect_fields<'a>(
         let Ok(num) = num.parse::<u32>() else {
             return refuse(format!("field {name} has a non-numeric number"));
         };
+        if num == 0 {
+            return refuse(format!(
+                "{file}: field {name} has number 0; FIX tag numbers start at 1."
+            ));
+        }
         if number_of.insert(name, num).is_some() {
             return refuse(format!("field name {name} appears twice"));
         }

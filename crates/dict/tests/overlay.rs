@@ -641,3 +641,128 @@ fn a_type_name_that_cannot_name_a_struct_fails() {
         }
     }
 }
+
+// ---- review of PR 5: a tag in two places, DATA order in a group, limits ----
+
+#[test]
+fn a_header_field_that_a_body_declares_fails_naming_both() {
+    // Account(1) is a body field of ~40 messages; in the header too, the
+    // session answers 373=14 to a D whose Account follows a body tag, and the
+    // writer moves it into the header.
+    let msg = refusal(&overlay(
+        "<header><field name='Account' required='N' /></header>",
+    ));
+    assert_names(&msg, &["Account", "1", "header", "body"]);
+}
+
+#[test]
+fn a_trailer_field_added_to_the_header_fails_naming_both() {
+    let msg = refusal(&overlay(
+        "<header><field name='CheckSum' required='N' /></header>",
+    ));
+    assert_names(&msg, &["CheckSum", "10", "header", "trailer"]);
+}
+
+#[test]
+fn a_header_field_added_to_a_body_fails_naming_both() {
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='D' msgcat='app'>\
+         <field name='SenderSubID' required='N' /></message></messages>",
+    ));
+    assert_names(
+        &msg,
+        &["SenderSubID", "50", "header", "NewOrderSingle", "D"],
+    );
+}
+
+#[test]
+fn a_trailer_field_added_to_a_body_fails_naming_both() {
+    let msg = refusal(&overlay(
+        "<messages><message name='NewOrderSingle' msgtype='D' msgcat='app'>\
+         <field name='Signature' required='N' /></message></messages>",
+    ));
+    assert_names(&msg, &["Signature", "89", "trailer", "NewOrderSingle", "D"]);
+}
+
+#[test]
+fn fix44_keeps_header_trailer_and_bodies_apart() {
+    // The rule above holds for the shipped file and for an overlay that adds
+    // nothing, or neither would build.
+    let shipped = model(Source::Fix44Whole(SHIPPED_FIX44));
+    for empty in EMPTY_OVERLAYS {
+        assert_eq!(model(Source::Fix44Overlay(empty)), shipped);
+    }
+    assert!(shipped.is_header(50) && !shipped.is_header(1) && !shipped.is_header(10));
+}
+
+/// U2 with one group NoVenueBlobs(9100) whose members are `members`, plus the
+/// fields it may name.
+fn blob_group_overlay(members: &str) -> String {
+    overlay(&format!(
+        "<messages><message name='VenueBlobReport' msgtype='U2' msgcat='app'>\
+         <field name='ClOrdID' required='Y' />\
+         <group name='NoVenueBlobs' required='N'>{members}</group></message></messages>\
+         <fields><field number='9100' name='NoVenueBlobs' type='NUMINGROUP' />\
+         <field number='9101' name='VenueBlobTag' type='STRING' />\
+         <field number='9102' name='VenueBlobLen' type='LENGTH' />\
+         <field number='9103' name='VenueBlob' type='DATA' /></fields>"
+    ))
+}
+
+#[test]
+fn a_data_group_member_without_its_length_immediately_in_front_fails() {
+    // The codec writes a group entry in declaration order
+    // (crates/codec/src/template.rs, put_group) and a reader needs the length
+    // before the data: the length must be the member just in front.
+    for members in [
+        "<field name='VenueBlob' required='N' /><field name='VenueBlobLen' required='N' />",
+        "<field name='VenueBlobLen' required='N' /><field name='VenueBlobTag' required='N' />\
+         <field name='VenueBlob' required='N' />",
+    ] {
+        let msg = refusal(&blob_group_overlay(members));
+        assert_names(
+            &msg,
+            &["VenueBlob", "9103", "VenueBlobLen", "9102", "NoVenueBlobs"],
+        );
+    }
+    // In front, it is accepted.
+    let m = model(Source::Fix44Overlay(&blob_group_overlay(
+        "<field name='VenueBlobTag' required='N' /><field name='VenueBlobLen' required='N' />\
+         <field name='VenueBlob' required='N' />",
+    )));
+    assert_eq!(m.group_members(b"U2", 9100), &[9101, 9102, 9103]);
+    assert_eq!(m.data_length_tag(9103), Some(9102));
+}
+
+#[test]
+fn a_data_field_after_its_length_at_body_level_is_still_accepted_in_any_order() {
+    // At body level the encoder sorts a DATA field by its length field's tag
+    // (template.rs `key`), so declaration order does not matter there.
+    let m = model(Source::Fix44Overlay(&overlay(
+        "<messages><message name='VenueBlobReport' msgtype='U2' msgcat='app'>\
+         <field name='VenueBlob' required='N' /><field name='VenueBlobLen' required='N' />\
+         </message></messages>\
+         <fields><field number='9102' name='VenueBlobLen' type='LENGTH' />\
+         <field number='9103' name='VenueBlob' type='DATA' /></fields>",
+    )));
+    assert_eq!(m.data_length_tag(9103), Some(9102));
+    assert!(m.allows(b"U2", 9103) && m.allows(b"U2", 9102));
+}
+
+#[test]
+fn a_field_numbered_zero_fails() {
+    let msg = refusal(&fields_overlay(
+        "<field number='0' name='VenueZero' type='STRING' />",
+    ));
+    assert_names(&msg, &["VenueZero", "0"]);
+}
+
+#[test]
+fn a_tag_whose_tables_pass_64_mib_fails_naming_it() {
+    // u32::MAX would make every bitset 67 108 864 words; refused before any
+    // bitset is sized.
+    let msg = refusal(&fields_overlay(
+        "<field number='4294967295' name='VenueHuge' type='STRING' />",
+    ));
+    assert_names(&msg, &["VenueHuge", "4294967295", "64"]);
+}

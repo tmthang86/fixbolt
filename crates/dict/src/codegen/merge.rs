@@ -399,6 +399,11 @@ fn overlay_fields<'a, 'i>(
                 "the overlay's field {name} has a non-numeric number {number:?}"
             ));
         };
+        if num == 0 {
+            return refuse(format!(
+                "the overlay's field {name} has number 0; FIX tag numbers start at 1."
+            ));
+        }
         if !names.insert(name) {
             return refuse(format!("field {name} appears twice in the overlay"));
         }

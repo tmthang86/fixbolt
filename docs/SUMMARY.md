@@ -89,6 +89,7 @@
 - [A shell error inside an `if` drops the row, and the report exits zero](reference/a-shell-error-inside-an-if-drops-the-row-and-the-report-exits-zero.md)
 - [A `read ... <<<"$(fn)"` line reports the function's exit status as `read`'s, not its own](reference/a-shell-read-heredoc-swallows-a-failed-functions-exit-status.md)
 - [A synchronous scrape waits for the exporter's next tick](reference/a-synchronous-scrape-waits-for-the-exporters-next-tick.md)
+- [A tag in the header and in a body makes a valid message a 373=14](reference/a-tag-in-the-header-and-a-body-makes-a-valid-message-a-373-14.md)
 - [A test oracle that reads `read_dir` has more than one answer](reference/a-test-oracle-that-reads-read-dir-has-more-than-one-answer.md)
 - [A test's name is spelled differently in a listing and in a run](reference/a-test-s-name-is-spelled-differently-in-a-listing-and-in-a-run.md)
 - [A test that cannot fail, and the reversal that was the only thing that noticed](reference/a-test-that-cannot-fail-reads-as-coverage.md)

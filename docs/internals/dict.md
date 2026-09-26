@@ -34,7 +34,11 @@ text of the shipped `spec/FIX44.xml` (reached by `include_str!`, never through
 builds `Fix44`, so an empty overlay writes `Fix44`'s own tables byte for byte. The order is:
 `merge` refuses what only an overlay can get wrong (a repeated number, name or `msgtype` that
 disagrees with FIX 4.4, a value list on an open field, a `<trailer>`, an unknown section).
-`Model::compute` then makes every refusal about the dictionary's content. `merge::refuse_repeats`
+`Model::compute` then makes every refusal about the dictionary's content. That includes three
+added in review: a tag in two of header, trailer and message bodies; a DATA group member whose
+length field is not the member immediately in front of it (the order `put_group` in
+`crates/codec/src/template.rs` writes); and per-tag bitsets over the 64 MiB ceiling
+(`MAX_BITSET_BYTES`). `parse` refuses a field numbered 0. `merge::refuse_repeats`
 last refuses a field carried twice at one level. `emit` only writes. `codegen::merged_model` stops
 before the writing: it returns the `Model`, which answers the questions the emitted `impl
 Dictionary` and `impl Tables` will answer, and whose `table_size()` is the size report. The
@@ -114,7 +118,10 @@ crate, which is built without `codegen`
   header field and a header group. A conflict is refused naming both sides: a number, a name, a
   type, a `msgtype` or a `msgcat` that disagrees with FIX 4.4; an unknown field; one field twice at
   one level, through a component too; a `<trailer>`; a misspelt section; a value list on an open
-  field; a DATA field without its length field; a type name that cannot name a struct. The FIX
+  field; a DATA field without its length field; a type name that cannot name a struct; a tag in
+  the header or trailer and a body, or in both the header and the trailer; a DATA group member
+  without its length immediately in front (at body level any order stays accepted); a field
+  numbered 0; a tag whose bitsets would pass 64 MiB. The FIX
   4.4 traps the base survives still hold after the merge. `an_empty_overlay_emits_byte_identical_fix44`
   holds an empty overlay to `$OUT_DIR/fix44.rs`, byte for byte. `a_whole_file_generates_as_is`
   reads a whole file as written, a retype included, which an overlay refuses. `a_high_tag_reports_the_table_size` checks the size report.

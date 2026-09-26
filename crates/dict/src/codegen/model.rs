@@ -305,6 +305,11 @@ pub(super) fn collect_groups<'a>(
     Ok(())
 }
 
+/// The largest the per-tag bitsets may be, `ALLOWED` and `DEFINED_TAGS`
+/// together: 64 MiB. FIX 4.4's are about 11 KB; a tag at 20 000 makes them
+/// about 238 KB.
+pub(super) const MAX_BITSET_BYTES: usize = 64 * 1024 * 1024;
+
 /// One `<message>`, as the tables see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Message {
@@ -652,6 +657,89 @@ impl Model {
 
         let mut trailer: BTreeSet<u32> = BTreeSet::new();
         collect_header(spec.trailer, number_of, &mut trailer)?;
+
+        let name_of: BTreeMap<u32, &str> = number_of.iter().map(|(k, v)| (*v, *k)).collect();
+        let named = |tag: u32| format!("{}({tag})", name_of.get(&tag).copied().unwrap_or("?"));
+
+        // ---- one place per tag: header, trailer, or a body ------------------
+        // `is_header` and `allows` are separate tables, and the session and
+        // the writer read a tag as header or body by the first. A tag in both
+        // makes a valid message answer 373=14 (a header field after a body
+        // field) and makes the writer move a body field into the header.
+        // `[measured 2026-09-26]` FIX 4.4 keeps the three apart, so every tag
+        // found here was put there by an overlay or a whole file.
+        // docs/reference/a-tag-in-the-header-and-a-body-makes-a-valid-message-a-373-14.md
+        if let Some(&tag) = header.intersection(&trailer).next() {
+            return refuse(format!(
+                "tag {} is in the header and in the trailer. A tag has one place:\n\
+                 the header, the trailer, or a message body. ADR-0207 decision 3.",
+                named(tag)
+            ));
+        }
+        for m in &messages {
+            for (place, set) in [("header", &header), ("trailer", &trailer)] {
+                if let Some(&tag) = set.intersection(&m.allowed).next() {
+                    return refuse(format!(
+                        "tag {} is in the {place} and in the body of message {}({}).\n\
+                         A tag has one place: the header, the trailer, or a message body —\n\
+                         in two, a valid message is rejected with 373=14 and the writer\n\
+                         moves the field. ADR-0207 decision 3.",
+                        named(tag),
+                        m.name,
+                        m.msg_type
+                    ));
+                }
+            }
+        }
+
+        // ---- a DATA member of a group follows its length member -------------
+        // At body level the encoder sorts a DATA field by its length field's
+        // tag (crates/codec/src/template.rs `key`), so declaration order does
+        // not matter there. A group entry is written in declaration order
+        // (`put_group`) and read the same way, so there the length must be the
+        // member immediately in front — the invariant `put_group`'s comment
+        // records FIX 4.4 meeting for all 66 of its DATA members.
+        for ((mt, counter), members) in &groups {
+            for (i, tag) in members.iter().enumerate() {
+                let Some(&len) = data_len.get(tag) else {
+                    continue;
+                };
+                let in_front = i.checked_sub(1).and_then(|j| members.get(j)).copied();
+                if in_front != Some(len) {
+                    let owner = messages.iter().find(|m| m.msg_type == *mt).map_or_else(
+                        || "the header".to_string(),
+                        |m| format!("message {}({})", m.name, m.msg_type),
+                    );
+                    return refuse(format!(
+                        "group {} in {owner} declares the DATA field {} without its length\n\
+                         field {} immediately in front of it. A group entry is written and\n\
+                         read in declaration order, so the length must come just before the\n\
+                         data. ADR-0207 decision 3.",
+                        named(*counter),
+                        named(*tag),
+                        named(len)
+                    ));
+                }
+            }
+        }
+
+        // ---- a ceiling on the per-tag bitsets --------------------------------
+        // Each is `max_tag / 64 + 1` words, one per message type plus one. A
+        // tag near u32::MAX would size each at 512 MiB; refused before any is
+        // sized.
+        let max_tag = number_of.values().copied().max().unwrap_or(0);
+        let words = (max_tag as usize / 64).saturating_add(1);
+        let bytes = (messages.len().saturating_add(1))
+            .saturating_mul(words)
+            .saturating_mul(8);
+        if bytes > MAX_BITSET_BYTES {
+            return refuse(format!(
+                "the highest tag, {}, would make the per-tag bitsets {bytes} bytes, over the\n\
+                 64 MiB ceiling ({MAX_BITSET_BYTES} bytes). Use a lower tag number.\n\
+                 ADR-0207 Consequences.",
+                named(max_tag)
+            ));
+        }
 
         if !messages.iter().any(|m| m.admin) {
             let dialect = spec.dialect;

@@ -32,8 +32,9 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! and in the crate, a module of its own — the file holds free functions and a
-//! `tables` module beside the type:
+//! and in the crate, a module of its own — the file holds a format check, a
+//! `tables` module (the free functions and statics the type answers from) and
+//! the type with its two impls, and those names must not meet the crate's own:
 //!
 //! ```ignore
 //! mod venue {
