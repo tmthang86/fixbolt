@@ -70,6 +70,10 @@ when both of these hold:
 
 Reopening is a new plan; ADR-0200 already holds the measurement design (generator-side pair
 against a same-boot kernel twin) it would reuse.
+`[2026-09-26]` The item is now a later-phase candidate that reopens only on a named machine
+([ADR-0204](../decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md));
+which NICs pass is on
+[kernel-bypass-needs-a-machine-this-project-does-not-have](kernel-bypass-needs-a-machine-this-project-does-not-have.md).
 
 ## The guard that watches it
 

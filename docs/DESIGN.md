@@ -2017,7 +2017,7 @@ machine, not the code. None of this is optional for a latency measurement to mea
 
 | Setting | Why |
 |---|---|
-| **The machine is not a guest** | Governor, turbo, C-states, SMT and NIC IRQ affinity are **host** properties. A VM cannot set them and does not fail them loudly; the `/sys` files are simply absent. `check-machine.sh` reports `systemd-detect-virt` and steal time; a guest is a **FAIL**. Development may move to a cloud VM; measurement cannot |
+| **The machine is not a guest** | Governor, turbo, C-states, SMT and NIC IRQ affinity are **host** properties. A VM cannot set them and does not fail them loudly; the `/sys` files are simply absent. `check-machine.sh` reports `systemd-detect-virt` and steal time; a guest is a **FAIL**. Development may move to a cloud VM; ~~measurement cannot~~ `[2026-09-26]` measurement may too, for the kernel-bypass pair only, under its own label, and the FAIL is printed in it rather than forbidding it ([ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md); *A figure from a cloud VM* below) |
 | **Nothing else is running on the machine** | `[measured 2026-08-30]` the row that dominates every other row. On the Ryzen 7 3700X, all six tuning rows below move the `ring, one way` median by **0.8%** (260.6 → 259.7 ns); competing CPU load moves it by **71%** (262 → 449 ns) and takes a second mode near 324 ns from ~5% to 92% of samples. `check-machine.sh` reads CPU busy over a one-second window and **FAILs above 3%**, naming the processes |
 | **No systemd timer due inside the campaign window** | `[measured 2026-09-22]` boot D lost rounds 13–20 to `apt-daily-upgrade.timer` at 06:51 while the quiet row read green before and after; a quiet check reads one second and says nothing about what systemd has already scheduled. `check-machine.sh` reads `systemctl list-timers --all --output=json` and **FAILs** on any timer due inside `FIXBOLT_TIMER_WINDOW` hours (default 12, the longest campaign on record), naming the units; the fix is `systemctl stop`, not `disable`, so the next boot restores them. `ab-rotation.sh` refuses to start on that FAIL ([ADR-0093](decisions/ADR-0093-a-campaign-driver-is-committed-sudo-in-a-committed-script-names-what-root-can-find-and-a-timer-due-inside-the-window-is-a-fail-row.md)) |
 | `isolcpus` + `rcu_nocbs` for the engine core, **and the engine thread pinned to it** | No other tenants and no RCU callbacks on the engine core. `[measured 2026-08-31]` free: 494.8 ns and 498.2 ns per turn against 501.8 untouched. `[measured 2026-09-02]` worth **11× at p99.9 and nothing at p50**, wire-to-wire, application path, one variable, both arms inside one CCD: p50 19 968 against 19 407 (the isolated core is 2.9% *slower*), p99.9 **26 300 against 266 887**, and 293 749 with no pinning at all. A 20 000-sample benchmark of a 500 ns operation could not see it; the excursion is 250 µs long |
@@ -2033,6 +2033,33 @@ machine, not the code. None of this is optional for a latency measurement to mea
 | **If TLS is on:** a kernel that carries the negotiated cipher suite in kTLS | kTLS support is narrower than what `rustls` will negotiate. A session that negotiates outside it drops silently to the userspace path and off the hot-path guarantee (D11). **Which kernel and which suites — ADR-0005 open question 2, answered at the level measured.** `[measured 2026-09-14]` `TLS13_AES_128_GCM_SHA256`, the only suite this engine offers (`crates/engine/src/tls.rs`, `offloadable_provider`), is taken by the kernel on **`7.0.0-31-generic`**: every kTLS run on the §9 desktop read back `tls: kernel`. **Not measured**: any other suite — the `tls` plan's optional suite step did not run — and the minimum kernel. **On the CI runner**, the `tls` job (*TLS, with the kernel it needs*, job `103750342469` of run [`34767259852`](https://github.com/tmthang86/fixbolt/actions/runs/34767259852), commit `1178f4d`) asserts that the kernel took `TLS13_AES_128_GCM_SHA256` keys — `crates/engine/tests/tls.rs:40-45` narrows to that suite and `:488-497` requires `/proc/net/tls_stat` `TlsTxSw` and `TlsRxSw` to move — and its log reads `verdict: READY` and every test `ok`. **That job prints no kernel version.** The runner kernel `6.17.0-1022-azure` is recorded on 2026-09-10 ([CONFORMANCE.md](CONFORMANCE.md) §8) and, in the same run, by another job (*The machine probes reach the right verdicts*, `kernel: Linux 6.17.0-1022-azure`) — not by the job that took the keys. That gap is the residue |
 
 A latency number published without stating which of these were set is not a number.
+
+### A figure from a cloud VM
+
+`[2026-09-26]` [ADR-0205](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md)
+allows one kind of figure from a guest: the kernel-TCP / bypass pair of
+[ADR-0204](decisions/ADR-0204-kernel-bypass-is-a-later-phase-candidate-that-reopens-on-a-named-machine.md),
+measured from a counterparty VM, in its own table, never beside or against a figure from this
+desk. Its label (ADR-0205 decision 3) marks every row above as one of four states. On the
+candidate platform (GCP, `gve`), the rows read:
+
+| Row | On a cloud VM | What the label prints |
+|---|---|---|
+| The machine is not a guest | **absent** — `check-machine.sh` FAILs it | the `GUEST` verdict verbatim, and steal % per run |
+| Nothing else is running | **applied inside the guest; absent on the host** | the quiet row's reading; the placement policy or sole-tenant node type; steal % per run |
+| No systemd timer due | applied | the timer row's reading |
+| `isolcpus` + `rcu_nocbs`, engine pinned | **applied at vCPU level** — the guest's grub line isolates vCPUs; which physical core backs a vCPU is the host's | `/proc/cmdline`, the pinned vCPU |
+| Mitigations in force | **applied in the guest; the host's are unknown** | the guest's `/sys/devices/system/cpu/vulnerabilities` |
+| `nohz_full` not recommended | applied (not set) | `/proc/cmdline` |
+| IRQ affinity off the engine core | **applied at vCPU level** — the guest routes the virtual NIC's vectors; the physical NIC is the host's | `/proc/irq/*/smp_affinity_list` for the NIC, `irqbalance` state |
+| Interrupt coalescing off | applied if the driver accepts `ethtool -C <nic> rx-usecs 0`, else absent | `ethtool -c <nic>` |
+| EEE off | **not applicable** — no PHY in the guest | `n/a` |
+| `mlockall` + pre-faulted buffers | applied | as on the desk |
+| THP off | applied (guest) | as on the desk |
+| Governor `performance`, C-states off | **absent (host property)** | `absent` — never `PASS` |
+| SMT | applied by instance setting where the series allows threads per core = 1 | the instance's threads-per-core |
+| `SO_BUSY_POLL` / `net.core.busy_poll` | applied | as on the desk |
+| TLS row | not applicable — bypass is plaintext (D11) | `n/a` |
 
 ### Checking the machine
 
