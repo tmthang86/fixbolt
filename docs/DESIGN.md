@@ -359,6 +359,17 @@ caller. `[measured 2026-08-30]` fifteen of FIX 4.4's sixteen DATA pairs have
 `crates/codec/tests/data_encode.rs` and by `group_roundtrip.rs`, which writes 508 DATA members
 with a separator inside every value.
 
+**A dictionary type of the user's own obeys D3 too.** `[2026-09-26]` `fixbolt-dict`'s
+`codegen::generate` writes a user's venue dialect into their own type, from an overlay onto FIX
+4.4 or from a whole file (ADR-0207). It writes that type's field ordering, group declaration order
+and DATA pairing into generated tables, from the same `Model::compute` that builds `Fix44`. An
+overlay's group keeps the order the overlay declares it in
+(`crates/dict/tests/overlay.rs::an_added_group_has_its_delimiter_members_and_declared_order`),
+and an empty overlay writes `Fix44`'s own tables byte for byte
+(`an_empty_overlay_emits_byte_identical_fix44`). No call site orders a custom field either. One
+field twice at one level of a message can be neither parsed nor ordered, so the overlay merge
+refuses it (`a_field_added_twice_to_one_message_fails_naming_both`).
+
 ### D4 — Dispatch is a trait; inline is the default, the ring buffer is the option
 
 Taken from [Artio](https://github.com/artiofix/artio), which separates the engine (owns
