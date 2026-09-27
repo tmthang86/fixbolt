@@ -377,22 +377,6 @@ where
     where
         L: Default,
     {
-        // ADR-0190 decision 1, the shape ADR-0014 decision 4 gave `idle_with`.
-        // A transport whose bytes arrive only when the idle strategy reaps
-        // them, under a strategy that does not, is an engine that runs and
-        // never receives a byte — the 59 definitions would time out rather
-        // than fail. The pairing is a property of the types, so it is refused
-        // when it is compiled; the `compile_fail,E0080` doctest on
-        // `Transport::NEEDS_REAPER` holds it (the `io_uring` transport it was
-        // written for was removed on 2026-09-27, ADR-0190 *Result*).
-        const {
-            assert!(
-                !T::NEEDS_REAPER || W::REAPS,
-                "this transport receives only through an idle strategy that reaps \
-                 its completions, and this waiting strategy does not. The engine \
-                 would run and never receive a byte."
-            )
-        };
         Self {
             conns: Vec::with_capacity(capacity),
             log: L::default(),
@@ -842,22 +826,6 @@ where
             .iter()
             .find(|c| c.id == id)
             .map(|c| c.transport.tls_mode())
-    }
-
-    /// What carries connection `id`'s received bytes, **as its transport
-    /// reports it**, or `None` if this engine holds no connection by that id.
-    ///
-    /// `[2026-09-24]` phase 4 row 5 (ADR-0190), the shape of
-    /// [`Self::tls_mode`]: `tools/w2w` prints it as its `transport:` line,
-    /// read from the engine after the logon, never from a flag. (Its `uring`
-    /// arm was removed on 2026-09-27 with the `io-uring` feature, ADR-0190
-    /// *Result*.) A linear search, for a caller that asks once per connection.
-    #[must_use]
-    pub fn carrier(&self, id: ConnId) -> Option<crate::transport::Carrier> {
-        self.conns
-            .iter()
-            .find(|c| c.id == id)
-            .map(|c| c.transport.carrier())
     }
 
     /// Tell this engine how many sockets the pre-session stage in front of it

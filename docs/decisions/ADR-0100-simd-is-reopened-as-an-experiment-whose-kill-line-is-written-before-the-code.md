@@ -7,6 +7,7 @@
   **supersedes [ADR-0045](ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
   decision 1** (*declined*). ADR-0045 decisions 2, 3 and 4 stand and are used below; its text is
   not edited beyond a status line naming this ADR.
+  **Decision 3 superseded in part by [ADR-0211](ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md) (2026-09-27)**: one kill line per SWAR kernel, and the density arm counts only when the instruction count moved.
 - **Date**: 2026-09-23
 - **Deciders**: Tran Manh Thang (chose SIMD for phase 4, 2026-09-23). Written by the architect
   (Opus).

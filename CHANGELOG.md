@@ -136,17 +136,15 @@ against that tag rather than a published baseline.
   row 4).
   Not a dependency of `fixbolt-engine` or of `fixbolt`; usage is
   [GUIDE.md §6d](docs/GUIDE.md), settings are [CONFIGURATION.md §6](docs/CONFIGURATION.md).
-- **`fixbolt-engine`: two defaulted hooks on the transport and the waiting strategy.**
-  **`Transport::NEEDS_REAPER`** and **`Waiting::REAPS`** are defaulted associated constants,
-  both `false`, so no implementation outside this crate changes. A `const` block in
-  `Engine::new` refuses a transport that needs a reaper under a strategy that does not reap, as a
-  compile error. **`Transport::carrier(&self) -> Carrier`** (defaulted to `Carrier::Other`) and
-  **`Engine::carrier(&self, ConnId) -> Option<Carrier>`** report which receive path carries a
-  connection's bytes, read back after the fact. `Carrier` is `Kernel` or `Other` (its `Uring`
-  variant went with the transport, before any tag carried it). `tools/w2w` prints it as
-  `transport: kernel`. **No transport or strategy in this crate sets `NEEDS_REAPER` or `REAPS`
-  to `true`**; whether these hooks stay public is an open question for the architect
-  (`STATUS.md` *Open items*).
+- **Not in this release: two hooks on the transport and the waiting strategy.**
+  `Transport::NEEDS_REAPER` and `Waiting::REAPS` (defaulted associated constants, with a `const`
+  refusal in `Engine::new` held by a `compile_fail` doctest), `Carrier`, `Transport::carrier` and
+  `Engine::carrier` were added to `fixbolt-engine` with the `io_uring` transport (2026-09-24) and
+  removed on 2026-09-27, before any tag carried them: no transport in this crate used them, and
+  `Carrier` could not gain a variant without a breaking change
+  ([ADR-0210](docs/decisions/ADR-0210-the-reaper-pair-and-the-carrier-report-leave-the-public-api-before-the-next-tag.md)). A `main`
+  commit between those dates has them; `v0.1.0` never did. `tools/w2w` still prints
+  `transport: kernel`, now named by the transport type it builds rather than read from the engine.
 - **Not in this release: an `io_uring` transport.** It was built behind an off-by-default
   `io-uring` feature (2026-09-24) and removed on 2026-09-27, before any tag carried it. On the §9
   desk its `hft` wire p50 was 29–30 % slower than kernel TCP, which fails its kill line
