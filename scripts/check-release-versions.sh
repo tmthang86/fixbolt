@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# The six published crates release in lockstep, and a stranger can never
+# The published crates release in lockstep, and a stranger can never
 # resolve a mix of them that no CI run built (ADR-0160 decisions 1 and 4).
+# Six at ADR-0160; eight since 2026-09-27, when `fixbolt-metrics` (ADR-0170
+# decision 10) and `fixbolt-store-sqlite` (ADR-0182 decision 3) passed their
+# phase-4 kill lines.
 #
 # WHAT IT ASSERTS, read from the manifests themselves (python `tomllib`), not
 # from `cargo metadata` — metadata resolves `version.workspace = true` to the
@@ -8,9 +11,9 @@
 # that inherits the workspace version from one that has quietly stopped:
 #
 #   1. `[workspace.package] version` exists.
-#   2. Each of the six published crates inherits it (`version.workspace = true`)
+#   2. Each published crate inherits it (`version.workspace = true`)
 #      and is not `publish = false`.
-#   3. Every internal **normal** dependency of those six — `[dependencies]`,
+#   3. Every internal **normal** dependency of those crates — `[dependencies]`,
 #      `[build-dependencies]` and their `[target.*]` forms, i.e. whatever cargo
 #      keeps in the `.crate` — carries `version = "=<workspace version>"`
 #      beside its `path`. A path-only requirement is what `cargo package`
@@ -18,15 +21,15 @@
 #      a caret requirement is what lets a stranger mix two releases.
 #   4. Every other workspace member is `publish = false` (ADR-0160 decision 2):
 #      `cargo publish --workspace` would otherwise upload it.
-#   5. `crates/<crate>/LICENSE-MIT` and `LICENSE-APACHE` exist for each of the
-#      six and are byte-identical to the root copies. Only files under a package
+#   5. `crates/<crate>/LICENSE-MIT` and `LICENSE-APACHE` exist for each
+#      published crate and are byte-identical to the root copies. Only files under a package
 #      root reach its `.crate` (ADR-0104 decision 4), so each crate carries a
 #      copy, and a copy that drifts is a second licence.
 #
 # The same rules 2 (inheritance only), 3 and 5 hold every crate in
 # SHAPED_UNRELEASED — in the mould, `publish = false`, not yet released
-# (ADR-0170 decision 10, ADR-0182 decision 2; today `fixbolt-metrics` and
-# `fixbolt-store-sqlite`).
+# (ADR-0170 decision 10, ADR-0182 decision 2). Empty since 2026-09-27: both
+# crates that were in it joined PUBLISHED.
 #
 # WHAT IT CANNOT SEE: dev-dependencies (path-only on purpose — cargo strips
 # them, ADR-0160 decision 1); what actually lands in a `.crate` (that is
@@ -34,7 +37,7 @@
 # packaged sources build (the `package` CI job); the dict's `NOTICE` pair
 # (`scripts/check-dict-spec-pin.sh` check 4 already holds that).
 #
-# The list of six is written here on purpose. Reading "the published crates"
+# The list is written here on purpose. Reading "the published crates"
 # from the manifests would make a crate that was switched to `publish = false`
 # by mistake vanish from the check instead of failing it.
 #
@@ -52,7 +55,8 @@ import tomllib
 
 root = pathlib.Path(sys.argv[1])
 
-# name -> directory, the six crates ADR-0160 publishes.
+# name -> directory, the crates published: ADR-0160's six, then the two
+# phase-4 crates whose kill lines passed on 2026-09-27.
 PUBLISHED = {
     "fixbolt-codec": "crates/codec",
     "fixbolt-dict": "crates/dict",
@@ -60,6 +64,8 @@ PUBLISHED = {
     "fixbolt-engine": "crates/engine",
     "fixbolt-sbe": "crates/sbe",
     "fixbolt": "crates/library",
+    "fixbolt-metrics": "crates/metrics",
+    "fixbolt-store-sqlite": "crates/store-sqlite",
 }
 # name -> directory: crates in the lockstep mould that are NOT released yet —
 # `publish = false`, so rule 4 holds them out of `cargo publish --workspace`,
@@ -69,11 +75,8 @@ PUBLISHED = {
 # `w2w` pair that passes its kill line, and must not need re-shaping then.
 # ADR-0182 decision 2: `fixbolt-store-sqlite` is born in the same mould, and
 # joins `PUBLISHED` only in the commit that records row 4's kill line passed
-# (decision 3).
-SHAPED_UNRELEASED = {
-    "fixbolt-metrics": "crates/metrics",
-    "fixbolt-store-sqlite": "crates/store-sqlite",
-}
+# (decision 3). Both did on 2026-09-27 (ADR-0170 *Result*, ADR-0180 *Result*).
+SHAPED_UNRELEASED = {}
 LICENCES = ("LICENSE-MIT", "LICENSE-APACHE")
 
 fails = []
@@ -167,7 +170,7 @@ for name, directory in sorted(member_names.items()):
         continue
     package = load(root / directory / "Cargo.toml").get("package", {})
     if package.get("publish") is not False:
-        fails.append(f"FAIL {name}: not one of the six published crates, and not publish = false")
+        fails.append(f"FAIL {name}: not one of the {len(PUBLISHED)} published crates, and not publish = false")
 
 for line in fails:
     print(line)
@@ -177,7 +180,7 @@ if fails:
 shaped = len(PUBLISHED) + len(SHAPED_UNRELEASED)
 print(
     f"check-release-versions: OK — {len(PUBLISHED)} crates at {ws_version} and "
-    f"{len(SHAPED_UNRELEASED)} shaped but unreleased ({', '.join(SHAPED_UNRELEASED)}), every "
+    f"{len(SHAPED_UNRELEASED)} shaped but unreleased ({', '.join(SHAPED_UNRELEASED) or 'none'}), every "
     f'internal normal dependency "{want}", {shaped * len(LICENCES)} licence copies identical, '
     f"{len(member_names) - len(PUBLISHED)} other members publish = false"
 )

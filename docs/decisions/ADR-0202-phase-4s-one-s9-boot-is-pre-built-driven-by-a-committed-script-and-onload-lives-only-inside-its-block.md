@@ -1,6 +1,17 @@
 # ADR-0202 — Phase 4's one §9 boot is pre-built, driven by a committed script, and Onload lives only inside its block
 
-- **Status**: Proposed — 2026-09-24, with
+- **Status**: **Accepted — 2026-09-27, by the manager under the owner's delegation of
+  2026-09-18**: the preparing PR (7a, [#113](https://github.com/tmthang86/fixbolt/pull/113)) merged
+  as `1dd99bd`, and the boot ran to its end under it (third attempt, exit 0,
+  `target/boot-p4-evidence/20260927T042832Z/`); the two changes below are what the first two
+  attempts and the driver's log found. **Revised in place 2026-09-27, third time, before
+  acceptance** (boot plan *Sửa 5*): decision 1's `run` also refuses (exit 2) while any timer unit,
+  system or user, is active, whatever its `next` reads —
+  [a-timer-with-no-next-elapse-can-still-fire](../reference/a-timer-with-no-next-elapse-can-still-fire.md);
+  and the driver hands `w2w-baseline.sh` its settings through `env`, because a readonly name as a
+  command prefix was dropped in every arm —
+  [a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs](../reference/a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs.md).
+  Before that: Proposed — 2026-09-24, with
   [plans/2026-09-24-p4-bypass-and-s9-boot](../plans/2026-09-24-p4-bypass-and-s9-boot.md).
   **Revised in place 2026-09-24** (senior review of PR #111): Onload over AF_XDP was dropped at the
   probe (ADR-0201 *Result*), so decisions 1–4 are rewritten for a boot that measures the `io_uring`
@@ -64,7 +75,8 @@ the desk is taken on.
    green first, the binaries are built from that commit, and only then is the handoff (docs only)
    committed. `run` refuses before anything runs (exit 2) on a missing manifest or build record, a
    missing capability or a `nosuid` mount, a build commit that is not on `origin/main` (outside a
-   rehearsal), or a timer due within 12 hours plus the boot's length (naming each); it checks every
+   rehearsal), a timer due within 12 hours plus the boot's length, or any active timer unit of
+   the system or the user manager (naming each); it checks every
    binary's sha256 **and** every `w2w`'s capability before **and** after every arm, and stops
    (exit 3) when either changes or when the Mac's HEAD or `w2w` sha256 differs from
    `BUILD-INFO.txt`. A boot that runs to its end with a failed arm exits 1, naming the arms.

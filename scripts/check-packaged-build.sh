@@ -20,7 +20,7 @@
 # until something builds AT it (plan trap 7, reference page trap 3):
 #
 #   - on the pinned default toolchain (`rust-toolchain.toml`, currently
-#     1.98.0): eleven cases, each a single feature switched on beside the
+#     1.98.0): fourteen cases, each a single feature switched on beside the
 #     default, one crate at a time — "one crate turns every feature on"
 #     would hide a feature that is broken standing alone (plan trap "một
 #     crate tạm bật mọi feature che mất một feature hỏng khi đứng riêng").
@@ -30,7 +30,10 @@
 #     fixbolt-engine --all-features`, both finish on 1.88.0 and fail with
 #     E0658 on 1.85.0), plus `fixbolt --no-default-features` — the featureless
 #     build non-negotiable 6 requires, now proven on the floor toolchain too,
-#     and `fixbolt-dict` with `codegen,fix50sp2` (ADR-0207 decision 1).
+#     and `fixbolt-dict` with `codegen,fix50sp2` (ADR-0207 decision 1),
+#     and — since they joined the published set on 2026-09-27 — the
+#     `fixbolt-store-sqlite` `sqlite` build (ADR-0182 decision 3) and
+#     `fixbolt-metrics`.
 #
 # WHAT IT CANNOT SEE: whether `+1.89.0` is installed (`rustup toolchain
 # install 1.89.0` is a step of the `package` CI job, run before this script;
@@ -74,7 +77,8 @@ for arg in "$@"; do
   esac
 done
 
-PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt)
+# Eight since 2026-09-27 (ADR-0170 decision 10, ADR-0182 decision 3).
+PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt fixbolt-metrics fixbolt-store-sqlite)
 
 # The one workspace version, read the same way check-release-versions.sh
 # reads it — from the manifest, not from `cargo metadata` (which would
@@ -160,7 +164,7 @@ mkdir -p "${WORKDIR}"
 # setting, and a comma-separated feature list (empty = none beyond default),
 # and the toolchain to build it with (empty = the pinned default).
 #
-# The eleven on the default toolchain: one feature at a time, beside whatever
+# The fourteen on the default toolchain: one feature at a time, beside whatever
 # is on by default, one crate at a time (fixbolt-dict's `codegen` twice: alone
 # and beside `fix50sp2`).
 DEFAULT_CASES=(
@@ -179,19 +183,30 @@ DEFAULT_CASES=(
   # packaged `spec/` is plan row 28's check-custom-dictionary-packaged.sh.
   "fixbolt-dict-codegen|fixbolt-dict|false|codegen"
   "fixbolt-dict-codegen-fix50sp2|fixbolt-dict|true|codegen,fix50sp2"
+  # ADR-0182 decision 3: the store, with its one default feature `sqlite`
+  # (the bundled SQLite C build) and without it (an empty library, no C).
+  "fixbolt-store-sqlite|fixbolt-store-sqlite|true|"
+  "fixbolt-store-sqlite-no-default|fixbolt-store-sqlite|false|"
+  # ADR-0170 decision 10: the exporter has no features; its one build.
+  "fixbolt-metrics|fixbolt-metrics|true|"
 )
 
-# The four on +1.89.0 (the declared rust-version, ADR-0154 decision 1): the
+# The six on +1.89.0 (the declared rust-version, ADR-0154 decision 1): the
 # combined-everything build for the three crates that have more than one
 # feature (the exact combination reference page trap 4 measured by hand on
 # the then-declared 1.88.0), and the featureless build non-negotiable 6
-# requires, now proven on the floor toolchain.
+# requires, now proven on the floor toolchain; then the two crates that joined
+# on 2026-09-27.
 MSRV="1.89.0"
 MSRV_CASES=(
   "fixbolt-all-features-msrv|fixbolt|true|standard,sbe"
   "fixbolt-engine-all-features-msrv|fixbolt-engine|true|standard,affinity,tls,fix50sp2"
   "fixbolt-no-default-msrv|fixbolt|false|"
   "fixbolt-dict-all-features-msrv|fixbolt-dict|true|codegen,fix50sp2"
+  # ADR-0182 decision 3: the store's `sqlite` build on the declared
+  # rust-version too — rusqlite and its bundled C are the new floor risk.
+  "fixbolt-store-sqlite-msrv|fixbolt-store-sqlite|true|sqlite"
+  "fixbolt-metrics-msrv|fixbolt-metrics|true|"
 )
 
 status=0

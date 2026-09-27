@@ -12,8 +12,9 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 
 ## [Unreleased]
 
-The six published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`,
-`fixbolt-sbe`, `fixbolt`) release in lockstep at one version
+The published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`,
+`fixbolt-sbe`, `fixbolt`, and from the next tag `fixbolt-metrics` and `fixbolt-store-sqlite`)
+release in lockstep at one version
 ([ADR-0160](docs/decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)
 decision 1), so the changes below wait for the next version rather than shipping alone. `0.1.0`
 is a git tag, not a crates.io upload (ADR-0161), so `cargo-semver-checks` for this work runs
@@ -80,6 +81,15 @@ against that tag rather than a published baseline.
   it is shaped for the lockstep release family from day one, but does not enter the tagged
   release family until phase 4 row 2 measures its `w2w` scrape-on/scrape-off kill line
   (ADR-0170 decision 10) — this line names what exists on this branch, not a release.
+- **`fixbolt-metrics` passed its kill line and joins the tagged release family** `[2026-09-27]`:
+  `publish = false` is gone, and it is in the release, packaging and packaged-build checks.
+  On the §9 desk, a 10 Hz scrape moved the `hft` acceptor wire p50 by +0.86 % and +0.17 %, and
+  the wire p99 by +2.23 % and +1.76 %, in two procedures. That is inside ADR-0068's 5 % band. The
+  engine thread allocated 0 bytes
+  ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)
+  *Result*, [measured-costs](docs/reference/measured-costs.md)). It is released with the other
+  crates under the next git tag, at the same workspace version. No crates.io upload is planned
+  (ADR-0161).
 - **`fixbolt-metrics`'s `Builder::with_events` now passes the engine's name**, `[2026-09-24]`
   review of PR #108 (plan *Sửa 1*, finding F2): the handler is
   `FnMut(&'static str, &Event) + Send + 'static`, the first argument being the exact string
@@ -112,49 +122,36 @@ against that tag rather than a published baseline.
     `Releaser`'s owner can set it, once.
   - `ring::Idle` (`new`, `reset`, `wait`) and the constants `ring::IDLE_SPINS`,
     `ring::IDLE_SLEEP` are public: one idle rule for every writer thread.
-- **`fixbolt-store-sqlite`: a new crate, not yet released.** A `Journal` whose durable copy is a
+- **`fixbolt-store-sqlite`: a new crate, released from the next tag.** A `Journal` whose durable copy is a
   SQLite database, one file per session — `FileJournal` `Async`'s engine-thread cost with a
   writer thread that commits to SQLite in batches, joining the engine's writer bookkeeping
   through the three handles above
   ([ADR-0180](docs/decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md),
   [ADR-0182](docs/decisions/ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md)).
-  `publish = false`: born release-shaped but **outside the tagged release family** until phase 4
-  row 4's kill line (engine-thread allocations 0, wire p50 within band, 50 000 msg/s × 60 s with
-  no dropped record) is applied against it in a later pull request — see
-  [docs/plans/2026-09-24-p4-sqlite-store.md](docs/plans/2026-09-24-p4-sqlite-store.md) row 4.
+  `[2026-09-27]` **In the tagged release family**. Phase 4 row 4's kill line passed. The engine
+  thread allocated nothing. On the §9 desk, the wire p50 stayed within 0.5 % of `FileJournal`
+  `Async` in two procedures. 50 000 msg/s for 60 s lost no record: `unwritten 0 rows 3000000
+  mismatched 0`, twice, with `synchronous = NORMAL`. `publish = false` is gone (ADR-0182
+  decision 3, ADR-0180 *Result*, [docs/plans/2026-09-24-p4-sqlite-store.md](docs/plans/2026-09-24-p4-sqlite-store.md)
+  row 4).
   Not a dependency of `fixbolt-engine` or of `fixbolt`; usage is
   [GUIDE.md §6d](docs/GUIDE.md), settings are [CONFIGURATION.md §6](docs/CONFIGURATION.md).
-- **A second `Transport`, `io_uring`, behind the off-by-default `io-uring` feature (`engine`,
-  `library`, Linux only, kernel ≥ 6.1)** — receive is a multishot `recv` into a provided buffer
-  ring, reaped by the idle strategy instead of one `read(2)` per socket per turn
-  ([DESIGN.md D5, D8](docs/DESIGN.md),
-  [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md),
-  [ADR-0191](docs/decisions/ADR-0191-the-hft-sleeper-list-reads-io-uring-enter-by-its-min-complete.md)).
-  **`fixbolt_engine::transport::uring`**: `Uring` (the ring, `hft`/`standard` constructors
-  `Uring::hft`/`Uring::standard`, `Uring::register`), `UringConfig` (buffers per connection,
-  buffer length, connections — no hidden default, refused by `UringConfigError`; each connection
-  draws from its own provided-buffer ring, [ADR-0192](docs/decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)), `UringTransport`,
-  `UringSpin` (`hft`'s idle strategy and reaper) and `UringBlock` (`standard`'s, behind
-  `standard` too), `HftArm` (`Enter`, and — behind `affinity` — `Sqpoll { pin: CorePin }`,
-  never a default), `UringArm`, `UringReport` (counts only: `cqes`, `bytes`, `enobufs`,
-  `rearms`, `stale`, `enter_errors`, `unarmed`, `cq_overflow`, `unisolated`, `unflushed`,
-  `drop_conflicts`, `enobufs_slots`, `buffer_bytes`), and
-  `UringRefused` (`Disabled { sysctl }`, `Blocked`, `NotInKernel`, `KernelTooOld`,
-  `TooSmall { have, need }`, `Other`) — a blocked or too-old kernel refuses at startup, named,
-  before any socket is bound, and this transport never falls back to `read(2)`.
-  **`fixbolt_engine::{serve_hft_uring, serve_uring}`** are the new entry points;
-  **`ServeError::Uring(UringRefused)`** is the error they add. **`Transport::NEEDS_REAPER`**
-  and **`Waiting::REAPS`** are new defaulted associated constants (both default `false`, so no
-  implementation outside this crate changes), asserted compatible by a `const` block in
-  `Engine::new` — pairing `UringTransport` with `Spin` or `block::Block` is now a compile error.
-  **`Transport::carrier(&self) -> Carrier`** (defaulted to `Carrier::Other`) and
-  **`Engine::carrier(&self, ConnId) -> Option<Carrier>`** report which receive path is carrying
-  a connection's bytes, read back after the fact rather than assumed from what was asked for —
-  the same shape `TlsMode` already has. `Carrier` is `Kernel`, `Uring` or `Other`.
-  `tools/w2w` gains `--transport kernel|uring`, `--uring-arm enter|sqpoll` and
-  `--sqpoll-core <cpu>` under the same feature, printing its `transport:` line from
-  `Engine::carrier` rather than from the flag
-  ([CONFIGURATION.md](docs/CONFIGURATION.md), [GUIDE.md §9](docs/GUIDE.md)).
+- **`fixbolt-engine`: two defaulted hooks on the transport and the waiting strategy.**
+  **`Transport::NEEDS_REAPER`** and **`Waiting::REAPS`** are defaulted associated constants,
+  both `false`, so no implementation outside this crate changes. A `const` block in
+  `Engine::new` refuses a transport that needs a reaper under a strategy that does not reap, as a
+  compile error. **`Transport::carrier(&self) -> Carrier`** (defaulted to `Carrier::Other`) and
+  **`Engine::carrier(&self, ConnId) -> Option<Carrier>`** report which receive path carries a
+  connection's bytes, read back after the fact. `Carrier` is `Kernel` or `Other` (its `Uring`
+  variant went with the transport, before any tag carried it). `tools/w2w` prints it as
+  `transport: kernel`. **No transport or strategy in this crate sets `NEEDS_REAPER` or `REAPS`
+  to `true`**; whether these hooks stay public is an open question for the architect
+  (`STATUS.md` *Open items*).
+- **Not in this release: an `io_uring` transport.** It was built behind an off-by-default
+  `io-uring` feature (2026-09-24) and removed on 2026-09-27, before any tag carried it. On the §9
+  desk its `hft` wire p50 was 29–30 % slower than kernel TCP, which fails its kill line
+  ([ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
+  *Result*). `tools/w2w` refuses `--transport`, `--uring-arm` and `--sqpoll-core` by name.
 
 ## Conditions to reach `1.0`
 

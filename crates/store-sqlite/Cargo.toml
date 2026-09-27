@@ -11,9 +11,9 @@ keywords = ["fix", "sqlite", "journal", "trading", "fix-protocol"]
 categories = ["database", "finance"]
 # ADR-0160 decision 4: an allowlist. Tests and benches are not shipped.
 include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
-# ADR-0182 decision 2: born release-shaped, outside the tagged release family
-# until row 4's kill line passes (decision 3 removes this line then).
-publish = false
+# ADR-0182 decision 2: born release-shaped. Decision 3: in the tagged release
+# family since 2026-09-27, the commit that records row 4's kill line passed
+# (4a soak and 4b `w2w` pair) — so no `publish = false` here.
 
 # ADR-0182 decision 1: one default feature gates the `mod` declarations in
 # lib.rs and the one dependency that compiles C. With `--no-default-features`

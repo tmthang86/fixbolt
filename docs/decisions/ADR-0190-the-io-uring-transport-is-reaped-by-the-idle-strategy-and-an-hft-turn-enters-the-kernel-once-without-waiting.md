@@ -1,6 +1,8 @@
 # ADR-0190 — The `io_uring` transport is reaped by the idle strategy, and an `hft` turn enters the kernel once without waiting
 
-- **Status**: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18;
+- **Status**: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18.
+  **Result 2026-09-27: the transport failed decision 10's kill line and was removed** (see
+  *Result* at the end). Accepted text follows;
   **revised in place 2026-09-24** (Revision 1, R1–R4, and Revision 2, R5, at the end of this
   ADR — decisions 4, 5 and 7 changed while it was still Proposed, after steps 1–4 and 6 were
   built). **Decision 2's shared buffer pool is superseded by
@@ -401,3 +403,52 @@ edited in place and marked *(R1)*–*(R4)*.
   on 5) is added and S is compared with U′, one variable apart. The *Kept* / *S cannot keep* /
   *standard half* / *Killed* rules are word for word as before; this is how they are measured, not
   what they say.
+
+## Result
+
+**Dropped — written 2026-09-27.** `[measured 2026-09-27]` Phase 4 row 7's §9 boot,
+`target/boot-p4-evidence/20260927T042832Z/` on the desk. The desk was `tmt-B450-I-AORUS-PRO-WIFI`
+(AMD Ryzen 7 3700X, I211 `enp9s0`), kernel `7.0.0-34-generic`, with
+`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1` and mitigations on.
+`check-machine.sh` read `pass 17 fail 0 unknown 0` before every block. All arms came from one
+prebuilt `uring` binary at `1dd99bd` (`w2w` sha256 `ae0e860f…`). The generator was the Mac mini
+over the cable. Each arm ran 10 × 20 000 requests at interval 0, in two procedures 1800 s apart,
+the second in reversed order. The numbers decision 10 reads, from `verdict-inputs.txt`:
+
+| | Procedure 1 | Procedure 2 |
+|---|---|---|
+| K `hft` wire p50 / p99 (ns) | 27 778 / 33 146 | 28 402 / 33 926 |
+| U `hft` wire p50 / p99 (ns) | 36 194 / 41 410 | 36 606 / 42 082 |
+| U/K wire p50, p99 | 1.3030, 1.2493 | 1.2889, 1.2404 |
+| idle loop N = 16, uring/kernel | 0.1217 (929.1 / 7 637.0 ns) | 0.1251 (954.4 / 7 627.2 ns) |
+| S/U′ wire p50 | 0.9882 | 0.9871 |
+| stdU/stdK Mac-side p50 | 0.9999 | 0.9998 |
+
+Clause (a), p50 ≤ 0.97 and p99 ≤ 1.05 in both procedures: **no**. Clause (b), idle ≤ 0.75
+**and** p50 ≤ 1.05 in both: **no**, because the idle half holds and the p50 half does not. S
+cannot keep the item alone, and S/K is 1.29 anyway. The `standard` half is moot once the item is
+dropped. U reproduced itself across the procedures (wire p50 `diff 1.138%`), and so did K
+(`2.246%`). The 29–30 % gap is well outside both.
+
+**Applied the same day, on the row 7 branch** (ADR-0098: dropped means removed). Removed: the
+`io-uring` feature and its dependency from `fixbolt-engine` and `tools/w2w`; `transport::uring`;
+`serve_hft_uring`, `serve_uring` and `ServeError::Uring`; `tests/uring.rs` and the two
+`io_uring` corpus cases in `tests/wire.rs`; the `uring-exchange` alloc case; the idle- and
+busy-loop pairs in `benches/turn.rs` and `benches/density.rs`; the `w2w` flags `--transport`,
+`--uring-arm` and `--sqpoll-core`, which are now refused by name; the `io_uring` arms of the
+three rule-4 scripts, restored to their text before this ADR; `check-uring-refused-under-sysctl.sh`;
+and the CI job `io-uring`. [ADR-0191](ADR-0191-the-hft-sleeper-list-reads-io-uring-enter-by-its-min-complete.md)
+and [ADR-0192](ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)
+are Deprecated.
+
+**Kept, because they are not behind the feature**: decision 1's `Transport::NEEDS_REAPER`,
+`Waiting::REAPS` and the compile-time refusal in `Engine::new`, now held by a
+`compile_fail,E0080` doctest on `NEEDS_REAPER` with a transport of its own (reversal: the
+assertion made always true → `Test compiled successfully, but it's marked compile_fail`). Also
+kept: `transport::Carrier` (now `Kernel` or `Other` — its `Uring` variant was removed in the
+same pass, before any tag carried it, so removing it cost no break), `Transport::carrier` and
+`Engine::carrier`, which `tools/w2w` prints as `transport: kernel` and
+`scripts/w2w-baseline.sh` requires. Whether these hooks stay is not decided here.
+
+Full tables, the Mac-side figures and the `busy loop` pairs:
+[measured-costs](../reference/measured-costs.md), *Phase 4's §9 boot, 2026-09-27*.

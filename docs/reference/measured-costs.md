@@ -5015,3 +5015,221 @@ unlike an item that runs and loses, this one never ran. ADR-0098 asks for "the p
 [ADR-0203](../decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md) lets this gate record stand in its place for an item that cannot run. The trap this cost, and the guard that
 now watches for it on any future NIC, is
 [onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks](onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md).
+
+## Phase 4's §9 boot, 2026-09-27: the SQLite store pair and the metrics exporter's scrape pair
+
+`[measured 2026-09-27]` One §9 boot. Two scripts ran on it, from binaries built before the reboot
+(ADR-0090 decision 2, ADR-0202 decision 1). Evidence stays on the desk and is not committed:
+`target/boot-p4-evidence/20260927T042832Z/` for the driver, and its `row2/` for the exporter pair.
+The same boot's `io_uring` A/B is the first subsection. It failed its kill line, and the
+transport was removed (ADR-0190 *Result*).
+
+**Machine:** host `tmt-B450-I-AORUS-PRO-WIFI`, AMD Ryzen 7 3700X, NIC Intel I211 (`igb`, `enp9s0`,
+`combined 2`, `rx-usecs 0`, EEE off, IRQs on cores 0–4), kernel `7.0.0-34-generic`, mitigations
+on. The §9 grub line: `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, no
+`nohz_full`. Runtime: `fixbolt-machine on`, so SMT is off and cores 14 and 15 are offline. Every
+timer unit of both managers was stopped (boot plan *Sửa 5*). `FIXBOLT_NIC=enp9s0
+scripts/check-machine.sh` read `pass 17 fail 0 unknown 0` before every block and at the end of
+both scripts. It read the same in every arm's own summary **but one**: procedure 1's K arm, whose
+summary reads `machine pass 16 fail 1 unknown 0`. That arm's own read, at its start, found
+`FAIL   machine is quiet       10% CPU busy over 1s — code 2% of a core  claude 2% of a core
+code 2% of a core`: processes named `code` and `claude`, read after the driver's own gate for
+block A had read 17/0. `w2w-baseline.sh` re-reads *quiet* per run, and it disqualified one
+run there (9 of 10 qualified). Procedure 2's K arm reads 17/0. The verdict does not move: U/K
+wire p50 is 1.2889 in procedure 2, on a clean arm, as well as 1.3030 in procedure 1. **Generator:** the Mac mini over the direct cable,
+`w2w` sha256 `2826bbc19267…` at commit `1dd99bd`, unpinned. **Build:** commit `1dd99bd` (the
+7a merge), `rustc 1.98.0`, `RUSTFLAGS=-C llvm-args=-align-all-functions=6`. `MANIFEST.txt`
+read `OK` 4 of 4 before and after both scripts. **Settings of every arm:** `RUNS=10`,
+`MESSAGES=20000`, interval 0, `WARMUP=2000`, `GAP=8`, engine core 6, client core 7, `hft` observer
+core 7. Two procedures at least 1800 s apart by the clock (`gap.txt`: `elapsed_s 1800` for both
+scripts), with the arm order reversed in the second. Figures are medians over the qualifying
+runs (`scripts/w2w-baseline.sh`). `hft` rows are the **acceptor wire figure** (enp9s0 hardware
+stamps, NIC in → NIC out). `standard` rows are the **round trip as the Mac sees it**, because
+`w2w-baseline.sh` refuses NIC stamps for `standard` (Q10); they are **not** wire figures. The 5 %
+band is ADR-0068 decision 2, computed on the smaller figure by `scripts/compare-w2w-procedures.sh`.
+
+### The `io_uring` transport against kernel TCP (phase-4 row 5) — failed, removed
+
+Command: `BOOT_ROOT=/home/tmt/Projects/fb-p4-boot scripts/boot-p4.sh run`, blocks A and B. All six
+`w2w` arms come from **one** binary, the `uring` build (`w2w` sha256 `ae0e860f…`, features
+`affinity,io-uring`). The arms differ only in `W2W_EXTRA`:
+
+| Arm | `W2W_EXTRA` | Observer core |
+|---|---|---|
+| K | *(empty)* | 7 |
+| U | `--transport uring` | 7 |
+| U′ | `--transport uring` | 5 |
+| S | `--transport uring --uring-arm sqpoll --sqpoll-core 7` | 5 |
+| stdK | *(empty)*, `--mode standard` | — |
+| stdU | `--transport uring`, `--mode standard` | — |
+
+Path `admin`, `hft` arms with acceptor stamps. Every run's `transport:` line was read back from
+the engine, for example `transport: uring arm=enter cqes=22002 bytes=1803868 enobufs=0 unarmed=0
+cq-overflow=0 enter-errors=0` (U, p1 run 1). `allocs 0` in every listen file.
+
+| Procedure | Arm | Runs qualified | `hft` wire p50 / p99 / p99.9 | Mac-side p50 / p99 / p99.9 |
+|---|---|---|---|---|
+| 1 | K | 9 / 10 | 27 778 / 33 146 / 36 026 | 150 000 / 287 375 / 291 958 |
+| 1 | U | 9 / 10 | 36 194 / 41 410 / 45 130 | 260 708 / 281 042 / 323 333 |
+| 1 | U′ | 8 / 10 | 36 158 / 41 538 / 44 506 | 260 917 / 283 937 / 324 625 |
+| 1 | S | 10 / 10 | 35 730 / 40 986 / 45 054 | 261 229 / 282 604 / 323 854 |
+| 1 | stdK | 10 / 10 | — | 260 750 / 280 104 / 323 541 |
+| 1 | stdU | 10 / 10 | — | 260 729 / 280 666 / 313 979 |
+| 2 | K | 10 / 10 | 28 402 / 33 926 / 36 734 | 150 604 / 287 042 / 291 604 |
+| 2 | U | 10 / 10 | 36 606 / 42 082 / 45 050 | 260 729 / 282 791 / 324 167 |
+| 2 | U′ | 10 / 10 | 36 722 / 42 258 / 44 970 | 260 792 / 282 833 / 324 312 |
+| 2 | S | 10 / 10 | 36 250 / 41 510 / 44 510 | 261 167 / 282 104 / 323 833 |
+| 2 | stdK | 10 / 10 | — | 260 750 / 280 854 / 324 729 |
+| 2 | stdU | 10 / 10 | — | 260 708 / 280 979 / 303 479 |
+
+All figures are in ns. Every arm reproduced itself across the two procedures
+(`compare/<arm>-p1-vs-p2.txt`). K's wire p50 moved `2.246%`, the largest move. The pairs:
+
+- **K against U**: wire p50 `diff 30.297%` (p1) and `28.885%` (p2), wire p99 `24.932%` and
+  `24.041%`, all `not reproduced`, and U is the slower one. `verdict-inputs.txt`: `U/K wire p50
+  1.3030` and `1.2889`, `U/K wire p99 1.2493` and `1.2404`.
+- **U′ against S**: wire p50 `1.198%` and `1.302%`, reproduced. S is slightly faster, but
+  `S/U′ wire p50 0.9882` and `0.9871`, while S/K is 1.29 (35 730 / 27 778). S burns core 7.
+- **stdK against stdU**: p50 `0.008%` (p1) and `0.016%` (p2), and `stdU/stdK counterparty p50
+  0.9999` and `0.9998`. The p99.9 moved `3.045%` (p1) and `7.002%` (p2). The p2 move is
+  `not reproduced`, and `compare/p2-stdK-vs-stdU.txt` exits 1 on it. p99.9 is not judged.
+- **Mac-side, `hft`: two levels, and not an `io_uring` property.** The Mac-side round trip of
+  an `hft` run sits either near 150 µs or near 250–260 µs, and **K itself is bimodal**. Its
+  per-run p50s in procedure 1 are 150 000, 150 541, 149 333, **258 916**, **255 000**, 149 833,
+  149 208, 149 667, **243 583** (`across runs: 149208 .. 258916`). In procedure 2 they are nine
+  runs at 150 334–150 792 and one at **261 792**. Kernel-TCP `hft` arms also sat at the upper
+  level for whole arms: the store pair's `hft-file` (path `app`) runs are 249 375–257 500, p50
+  252 375. Every U run sat there too: 256 375–261 167 in procedure 1, 260 291–261 000 in
+  procedure 2. Row 2's `off-hft` sat at the lower level, 150 416–151 125. The acceptor's own wire
+  figure does not show the two levels (K wire p50 27 778 / 28 402). This is a bimodality of the
+  harness or the Mac side, **cause unknown**, and nothing here isolates it. Not judged: the
+  kill line reads the acceptor's wire figure.
+
+The `turn`/`density` benches were pinned to the engine core (`taskset -c 6`) from the same
+`uring` build (`turn` binary `01109e1fa106…`, `density` `79b86a555466…`), with
+`FIXBOLT_BENCH_COUNT_ONLY=1`. Each is one run per procedure, best of 7 inside the binary. Figures
+are ns per operation:
+
+| Case | p1 kernel | p1 uring | p2 kernel | p2 uring |
+|---|---|---|---|---|
+| idle loop, N = 1 | 485.3 | 303.8 | 485.3 | 331.1 |
+| idle loop, N = 16 | 7 637.0 | 929.1 | 7 627.2 | 954.4 |
+| idle loop, N = 64 | 33 880.8 | 5 764.0 | 34 156.1 | 5 772.8 |
+| busy loop, N = 1 | 14 426.6 | 16 012.7 | 15 363.1 | 17 112.6 |
+| busy loop, N = 16 | 232 760.9 | 245 377.5 | 248 362.7 | 260 613.8 |
+| busy loop, N = 64 | 963 908.3 | 1 160 350.2 | 1 024 284.4 | 1 222 130.3 |
+
+Idle N = 16, uring against kernel: `0.1217` and `0.1251`. The idle loop is about eight times
+cheaper at N = 16. The busy loop is recorded, not judged, and it is 5–20 % dearer over `io_uring`.
+
+**The verdict** (plan row 5, *Hàng 7 sẽ đo gì*; ADR-0190 decision 10), as `verdict-inputs.txt`
+prints it:
+
+```text
+clause (a) U/K p50 <= 0.97 and p99 <= 1.05, both procedures: no
+clause (b) idle N=16 uring/kernel <= 0.75 and U/K p50 <= 1.05, both procedures: no
+S beside U′, clause (a)'s arithmetic on S/U′ (cannot keep the item alone): no
+standard half: stdU/stdK p50 > 1.05 in both procedures (then UringBlock/serve_uring go): no
+```
+
+Clause (b)'s first half holds with a wide margin. Its second half, and all of clause (a), fail
+by about 29 %. **Dropped**: the `io-uring` feature, module, `w2w` flags and script runs were
+removed on the same branch (ADR-0098; ADR-0190 *Result*).
+
+### The SQLite store against `FileJournal` `Async` (phase-4 row 4, step 4b)
+
+Command: `BOOT_ROOT=/home/tmt/Projects/fb-p4-boot scripts/boot-p4.sh run`, block C. Both arms use
+**one** binary: `sqlite` build, `w2w` sha256 `74616b230e61…`, features `affinity,sqlite`. The only
+difference is `--journal file-async` against `--journal sqlite-async` (ADR-0202 decision 1).
+Path `app`. Every one of the 80 listen files read `allocs 0`. The `sqlite-async` label counts
+the engine thread (and the observer thread in `hft`). **The SQLite writer thread and SQLite's C
+heap are not counted.**
+
+| Procedure | Arm | Runs qualified | p50 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| 1 | `hft` file-async (wire) | 9 / 10 | 30 282 | 36 130 | 38 922 |
+| 1 | `hft` sqlite-async (wire) | 10 / 10 | 30 366 | 36 502 | 39 658 |
+| 2 | `hft` file-async (wire) | 10 / 10 | 30 358 | 36 158 | 39 358 |
+| 2 | `hft` sqlite-async (wire) | 10 / 10 | 30 210 | 36 442 | 39 630 |
+| 1 | `standard` file-async (Mac side) | 10 / 10 | 258 604 | 277 563 | 302 291 |
+| 1 | `standard` sqlite-async (Mac side) | 10 / 10 | 258 458 | 277 833 | 305 042 |
+| 2 | `standard` file-async (Mac side) | 10 / 10 | 258 625 | 277 604 | 305 187 |
+| 2 | `standard` sqlite-async (Mac side) | 10 / 10 | 258 479 | 277 646 | 302 500 |
+
+All figures are in ns. The band lines (`compare/p{1,2}-{hft,std}-file-vs-sqlite.txt`):
+`hft` wire p50 `diff 0.277%` (p1) and `0.490%` (p2), `std` p50 `diff 0.056%` in both, and every
+p99 and p99.9 was `reproduced` too. `sqlite/file` computed in `verdict-inputs.txt`: `hft` 1.0028 and
+0.9951, `standard` 0.9994 and 0.9994. **Step 4b passes in both procedures and in both modes.** With step 4a below and the
+alloc bench (step 4), the store's kill line passes, and the crate is kept (store plan 4c, ADR-0180
+*Result*).
+
+### The SQLite store at 50 000 msg/s for 60 s (phase-4 row 4, step 4a)
+
+`[measured 2026-09-27]` Same desk, same boot, after the two scripts above. The grub line was
+the §9 line, cmdline `BOOT_IMAGE=/boot/vmlinuz-7.0.0-34-generic … isolcpus=6,7,14,15
+rcu_nocbs=6,7,14,15 processor.max_cstate=1 …`, and the runtime settings were still on.
+`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` read `pass 17 fail 0 unknown 0` before and after.
+The build was `cargo build --release -p fixbolt-store-sqlite --example soak` from the worktree at
+`3f97383`, with the default toolchain 1.98.0. It is not pinned; the soak is a count, not a latency
+figure. `--dir target/soak` sat on ext4 on NVMe and was deleted after each run. The logs stayed
+on the desk under `target/p4-4a/` of that worktree.
+
+```text
+soak: fs ext4 synchronous normal rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 51 max_batch 6138 wal_bytes_max 4148872 db_bytes 648429568 pace_missed 0
+soak: fs ext4 synchronous normal rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 48 max_batch 5826 wal_bytes_max 4144752 db_bytes 648429568 pace_missed 0
+soak: fs ext4 synchronous full rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 28 max_batch 2978 wal_bytes_max 4185952 db_bytes 648429568 pace_missed 0
+```
+
+The first two lines are the verdict's two `normal` runs. Both exited 0, both lost nothing, and
+the pace never slipped. **Step 4a passes.** The third, `full`, is recorded only. It too lost
+nothing. Its writer fell less far behind (28 ms against 48–51 ms) in smaller batches (2 978
+against about 6 000). Read that as one run each, not a finding about `FULL`.
+
+### The metrics exporter under a 10 Hz scrape (phase-4 row 2)
+
+Command: the script in the metrics plan's *Sửa 2*, saved verbatim as `row2/row2.sh`, run as
+`bash row2.sh > row2.log 2>&1` after the driver exited. It used the `uring` build's `w2w` (sha256
+`ae0e860f…`, the same binary as the driver's K arm) and path `admin`. The on arms add
+`--metrics 127.0.0.1:19464` and a `scripts/scrape-loop.sh` 10 Hz loop pinned to
+`taskset -c 0-5,8-13`. In the table, `off` is column 1 of `compare/*-off-vs-on.txt` and `on` is
+column 2.
+
+| Procedure | Arm | Runs qualified | p50 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| 1 | `hft` off (wire) | 9 / 10 | 28 378 | 34 026 | 37 314 |
+| 1 | `hft` on (wire) | 8 / 10 | 28 622 | 34 786 | 38 094 |
+| 2 | `hft` off (wire) | 9 / 10 | 28 450 | 34 178 | 36 954 |
+| 2 | `hft` on (wire) | 9 / 10 | 28 498 | 34 778 | 38 314 |
+| 1 | `standard` off (Mac side) | 10 / 10 | 260 750 | 281 125 | 325 062 |
+| 1 | `standard` on (Mac side) | 9 / 10 | 260 667 | 280 667 | 320 625 |
+| 2 | `standard` off (Mac side) | 10 / 10 | 260 583 | 281 187 | 324 750 |
+| 2 | `standard` on (Mac side) | 9 / 10 | 260 625 | 281 208 | 324 417 |
+
+All figures are in ns. Off against on: `hft` wire p50 `diff 0.860%` (p1) and `0.169%` (p2), wire
+p99 `2.234%` and `1.756%`. `standard` p50 `0.032%` and `0.016%`. Every line `reproduced`. The on
+arm is the slower one in every `hft` row. Each arm against itself across procedures is also
+`reproduced` (`compare/{off,on}-{hft,std}-p1-vs-p2.txt`, p50 at most 0.435 %). Every listen
+file read `allocs 0`, and every on-arm label names the exporter thread. Every on-arm listen file
+(36) has `metrics: 127.0.0.1:19464`, and no off-arm file has it. All 36 `metrics-thread: cpus`
+masks read `[0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13]`. Every scrape chunk read `bad 0` at
+9.7 Hz. **The exporter passes its kill line in both procedures** (metrics plan *Đọc vạch bỏ*,
+rules 1–5).
+
+Three things the table does not show:
+
+- **Disqualified runs.** The scrape loop's own load disqualified runs in the on arms only:
+  `DISQUALIFIED, 10% busy` (p1 `hft` run 10), `9% busy` (p2 `hft` run 10), `13%` and `12% busy`
+  (`standard` run 5 in p1 and p2). Other runs were disqualified for NIC stamps, off arms included:
+  `hw-tx-missing … exceeds 0.1%` (p1 off run 1, p1 on run 8, p2 off run 3). The plan names this
+  trap — the loop forks ten `curl` a second — and says to record it without loosening the rule.
+  The on arms are therefore medians of 8 or 9 runs, not 10.
+- **How often the exporter was up.** The loop runs in 60 s chunks across the whole arm, including
+  the gaps between `w2w` runs. Scrapes answered per chunk: 203, 168 and 0 (`hft`, p1); 228, 231 and
+  57 (`standard`, p1). About a third of the scrapes reached an exporter. In each `hft` arm the last
+  chunk found no exporter listening at any point (`ok 0 … unanswered 600`) and printed `scrape-loop: FAIL — no scrape reached an
+  exporter`. The plan expects a chunk with no `ok` when no exporter is listening. Rule 4 asks for
+  `bad 0` everywhere and at least one chunk with `ok > 0` at ≥ 9.0 Hz, and both hold.
+- **What p50 and p99 cannot show.** At 10 Hz only about ten scrapes fall inside one 20 000-request
+  window (*estimated, not measured*). So p50 and p99 show the steady cost of having an exporter,
+  not the stall a single scrape causes. Non-negotiable 4 is not checked here in split mode: the
+  listen half prints no `engine-ctxt`.

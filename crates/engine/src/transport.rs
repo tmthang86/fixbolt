@@ -17,14 +17,6 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::rc::Rc;
 
-// ADR-0190 decision 1, non-negotiable 6: the feature gates the `mod`
-// declaration itself, not only the manifest. `target_os = "linux"` on top,
-// because `io_uring` is a Linux interface and the `io-uring` dependency is
-// Linux-only — elsewhere the module does not exist, so code written against
-// it fails to compile rather than failing at startup.
-#[cfg(all(feature = "io-uring", target_os = "linux"))]
-pub mod uring;
-
 /// What one read or write did.
 ///
 /// Fieldless but for the byte count and an `ErrorKind`, both `Copy` — nothing
@@ -173,7 +165,7 @@ impl TlsMode {
 }
 
 /// What carries a connection's received bytes to its `recv` — the kernel's
-/// `read(2)`, or completions reaped from an `io_uring`.
+/// `read(2)`, or something else.
 ///
 /// `[2026-09-24]` phase 4 row 5, ADR-0190. **Reported, not inferred**, for the
 /// reason [`TlsMode`] is: a figure measured over one receive path and labelled
@@ -185,9 +177,6 @@ pub enum Carrier {
     /// `recv` is a non-blocking `read(2)` on a kernel TCP socket —
     /// [`TcpTransport`], and the TLS transport over it.
     Kernel,
-    /// `recv` copies completions an idle strategy reaped from an `io_uring` —
-    /// `uring::UringTransport`, behind the `io-uring` feature.
-    Uring,
     /// Anything else — [`Loopback`], or a transport outside this crate that
     /// says nothing. The default.
     Other,
@@ -209,14 +198,44 @@ pub trait Transport {
     /// Whether this transport's bytes arrive only when an idle strategy
     /// **reaps** them.
     ///
-    /// `false` for every transport whose `recv` asks the kernel itself.
-    /// `true` for `uring::UringTransport` (behind the `io-uring` feature):
-    /// its `recv` makes no system call and reads what
-    /// [`crate::wait::Waiting::idle`] moved out of the completion queue, so
-    /// under a strategy that does not reap — [`crate::wait::Spin`],
-    /// `block::Block` — it would compile, run, and never receive a byte.
-    /// [`crate::Engine::new`] refuses that pairing when it is compiled:
-    /// `!T::NEEDS_REAPER || W::REAPS` (ADR-0190 decision 1).
+    /// `false` for every transport whose `recv` asks the kernel itself — every
+    /// transport in this crate. `true` for one whose `recv` makes no system
+    /// call and reads what [`crate::wait::Waiting::idle`] moved out of a
+    /// completion queue: under a strategy that does not reap —
+    /// [`crate::wait::Spin`], `block::Block` — it would compile, run, and
+    /// never receive a byte. [`crate::Engine::new`] refuses that pairing when
+    /// it is compiled: `!T::NEEDS_REAPER || W::REAPS` (ADR-0190 decision 1).
+    /// No transport in this crate sets it; this doctest keeps the refusal
+    /// proven with a transport of its own:
+    ///
+    /// ```compile_fail,E0080
+    /// # struct App;
+    /// # impl fixbolt_session::Application for App {
+    /// #     fn on_message(&mut self, _m: &[u8], _h: fixbolt_session::Header<'_>, _o: &mut [u8])
+    /// #         -> Option<core::ops::Range<usize>> { None }
+    /// # }
+    /// use fixbolt_engine::{Engine, clock::SystemClock, wait::Spin};
+    /// use fixbolt_engine::{dispatch::InlineDispatch, journal::Store};
+    /// use fixbolt_engine::transport::{Io, Transport};
+    ///
+    /// struct Reaped;
+    /// impl Transport for Reaped {
+    ///     const NEEDS_REAPER: bool = true;
+    ///     fn recv(&mut self, _buf: &mut [u8]) -> Io { Io::Idle }
+    ///     fn send(&mut self, _buf: &[u8]) -> Io { Io::Idle }
+    /// }
+    ///
+    /// let _engine: Engine<
+    ///     Reaped, fixbolt_session::Acceptor, InlineDispatch<App>,
+    ///     SystemClock, Spin, Store, 256, 4096, 8192,
+    /// > = Engine::new(
+    ///     fixbolt_session::Config::acceptor(b"FIX.4.4", b"ISLD", b"TEST"),
+    ///     InlineDispatch::new(App),
+    ///     SystemClock,
+    ///     Spin,
+    ///     4,
+    /// );
+    /// ```
     ///
     /// Defaulted, so no transport outside this crate changes a line.
     const NEEDS_REAPER: bool = false;

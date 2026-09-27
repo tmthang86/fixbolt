@@ -244,12 +244,56 @@ echo "check-semver-against-tag: workspace version ${CURRENT_VERSION}, baseline's
 # for the same reason scripts/check-release-versions.sh names them: a crate
 # switched to publish = false by mistake must fail this check, not silently
 # vanish from what it looks for.
+#
+# `fixbolt-metrics` and `fixbolt-store-sqlite` joined the published set on
+# 2026-09-27 (ADR-0170 decision 10, ADR-0182 decision 3) and are NOT listed:
+# neither is in the baseline tag `v0.1.0`, so there is nothing to compare them
+# against until a tag that carries them exists. Add them here in the commit
+# after the first such tag.
 PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt)
+
+# A publishable member whose manifest is not in the baseline tag cannot be
+# compared, and `cargo semver-checks --workspace` does not skip it: it stops
+# the whole run (`[measured 2026-09-27]`, 0.50.0: "package `fixbolt-metrics`
+# not found in …/git-v0_1_0/…", exit 101) — so the six real comparisons never
+# get their verdict. Such a member is excluded BY NAME and printed; a member
+# of PUBLISHED missing from the tag is a FAIL, never an exclusion.
+NEW_SINCE_TAG=()
+while IFS=$'\t' read -r new_name new_dir; do
+  [[ -n "${new_name}" ]] || continue
+  if ! git cat-file -e "${TAG}:${new_dir}/Cargo.toml" 2>/dev/null; then
+    for p in "${PUBLISHED[@]}"; do
+      if [[ "${p}" == "${new_name}" ]]; then
+        echo "check-semver-against-tag: FAIL — ${new_name} is one of the crates this check compares, and ${TAG} has no ${new_dir}/Cargo.toml" >&2
+        exit 1
+      fi
+    done
+    NEW_SINCE_TAG+=("${new_name}")
+  fi
+done < <(python3 - "${ROOT}" <<'PY'
+import pathlib, sys, tomllib
+root = pathlib.Path(sys.argv[1])
+with open(root / "Cargo.toml", "rb") as f:
+    members = tomllib.load(f).get("workspace", {}).get("members", [])
+for m in members:
+    with open(root / m / "Cargo.toml", "rb") as f:
+        package = tomllib.load(f).get("package", {})
+    if package.get("publish") is not False:
+        print(f"{package.get('name', m)}\t{m}")
+PY
+)
+EXCLUDE_ARGS=()
+for n in "${NEW_SINCE_TAG[@]}"; do
+  EXCLUDE_ARGS+=(--exclude "${n}")
+done
+if [[ "${#NEW_SINCE_TAG[@]}" -gt 0 ]]; then
+  echo "check-semver-against-tag: not in ${TAG}, excluded (nothing to compare against): ${NEW_SINCE_TAG[*]}"
+fi
 
 log="$(mktemp)"
 trap 'rm -f "${log}"' EXIT
 
-echo "== cargo semver-checks --workspace --baseline-rev ${TAG} =="
+echo "== cargo semver-checks --workspace ${EXCLUDE_ARGS[*]} --baseline-rev ${TAG} =="
 # `--color never`: CARGO_TERM_COLOR=always (ci.yml's own workflow-level
 # setting) wraps `Checking`/`Checked` in ANSI escapes that the plain-text
 # regex below never matches — every crate then reads as "did not appear in
@@ -258,7 +302,7 @@ echo "== cargo semver-checks --workspace --baseline-rev ${TAG} =="
 # overrides the environment variable; see docs/reference/cargo-output-
 # colour-defeats-plain-text-parsing.md, the trap scripts/stranger-check.sh's
 # `--from git` mode and scripts/check-indexing-debt.sh both paid for too.
-cargo semver-checks --workspace --baseline-rev "${TAG}" --color never >"${log}" 2>&1
+cargo semver-checks --workspace "${EXCLUDE_ARGS[@]}" --baseline-rev "${TAG}" --color never >"${log}" 2>&1
 cargo_status=$?
 cat "${log}"
 

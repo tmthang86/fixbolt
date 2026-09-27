@@ -1,5 +1,11 @@
 # An unsubmitted `RecvMulti` SQE can land on a reused descriptor
 
+> `[2026-09-27]` **The code this page is about was removed**, with its guarding tests: the
+> `io_uring` transport failed its kill line on the §9 desk
+> ([ADR-0190](../decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
+> *Result*). The trap stays recorded for whoever builds on `io_uring` again. The files and tests
+> named below exist only in the history, up to `383acc3`.
+
 `[2026-09-24]` phase 4 row 5, the `io_uring` transport plan, named in step 2's commit and
 guarded before it could show as a bug — [ADR-0190](../decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
 decision 1, decision 8.

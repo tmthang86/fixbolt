@@ -234,3 +234,24 @@ for SQLite with `synchronous=NORMAL` in WAL and per-row blobs of FIX size.
 - **`open` on the engine thread costs a database read** in the single-engine `serve*` loops, as
   a file journal's open already does; the sharded runtime moves it to the acceptor thread.
 - **C in the build** of anyone who opts in (ADR-0182).
+
+## Result
+
+**Kept — the kill line passed, written 2026-09-27** (store plan steps 4a–4c; ADR-0182 decision 3
+applied in the same commit). The line (ADR-0098 item 4) is engine-thread allocations 0, wire p50
+within the band of `FileJournal` `Async`, and 50 000 msg/s for 60 s with no record lost:
+
+- **4a, the soak** `[measured 2026-09-27]`. Desk `tmt-B450-I-AORUS-PRO-WIFI` (AMD Ryzen 7 3700X,
+  ext4 on NVMe), the §9 grub line (`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15
+  processor.max_cstate=1`, `check-machine.sh` `pass 17 fail 0 unknown 0` before and after),
+  `target/release/examples/soak --rate 50000 --seconds 60 --synchronous normal|full --dir
+  target/soak`. Both `normal` runs read `unwritten 0 rows 3000000 mismatched 0 … pace_missed 0`
+  and exited 0. The `full` run did the same; it is recorded, not judged.
+- **4b, the `w2w` pair** `[measured 2026-09-27]`, the §9 boot `20260927T042832Z`, one `sqlite`
+  binary with `--journal file-async` against `--journal sqlite-async`. `hft` wire p50 was within
+  `0.277 %` and `0.490 %`, and `standard` p50 as the Mac sees it within `0.056 %` in both
+  procedures. `allocs 0` in all 80 listen files.
+- **Step 4, the alloc bench**: `sqlite-* 0` (plan delivery log, steps 4–6).
+
+Figures, commands and the soak's other columns are in
+[measured-costs](../reference/measured-costs.md), *Phase 4's §9 boot, 2026-09-27*.

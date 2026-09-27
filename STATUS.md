@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-24** — **phase 2 closed (#101); phase 3 built to the owner's `cargo publish` (#97–#100, #102–#104 on `main`, merge `fc89d36`); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-23, later** — **phases 3 and 4 are scoped and accepted by the owner (ADR-0097, ADR-0098–0100); the positioning sentence now carries a second, labelled bypass row (ADR-0099)**. Branch `plan/phase-3-prd`, PR [#96](https://github.com/tmthang86/fixbolt/pull/96), docs only. See *Start here* below. Before that: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
+Last updated: **2026-09-27** — **phase 4 row 7's §9 boot ran to its end: the exporter and the SQLite store are kept and join the release family, io_uring failed its kill line and is removed (PR [#124](https://github.com/tmthang86/fixbolt/pull/124)); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-24** — **phase 2 closed (#101); phase 3 built to the owner's `cargo publish` (#97–#100, #102–#104 on `main`, merge `fc89d36`); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-23, later** — **phases 3 and 4 are scoped and accepted by the owner (ADR-0097, ADR-0098–0100); the positioning sentence now carries a second, labelled bypass row (ADR-0099)**. Branch `plan/phase-3-prd`, PR [#96](https://github.com/tmthang86/fixbolt/pull/96), docs only. See *Start here* below. Before that: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
 built but has not run**: PRs [#87](https://github.com/tmthang86/fixbolt/pull/87) (merge `a451831`,
 closing commit `ed03886`, run
 [`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), 14 of 14) and
@@ -90,6 +90,112 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
 
+## Start here — 2026-09-27: row 7's §9 boot ran to its end — the exporter and the SQLite store are kept and join the release family; io_uring failed its kill line and is removed
+
+Branch `plan/p4-boot-7b` (worktree `/home/tmt/Projects/fb-p4-7b`, from `origin/main` `3f7a0a3`).
+Gate for this change: `scripts/check-boot-p4-driver.sh`, `python3 scripts/check-links.py`. CI run
+for the closing commit `bf5afd5`: [`36305450557`](https://github.com/tmthang86/fixbolt/actions/runs/36305450557), 21 jobs of 21.
+
+### What closed
+
+* **Row 7b.1–7b.2: the boot.** The desk ran on the §9 line (`7.0.0-34-generic`,
+  `isolcpus=6,7,14,15`, no Onload). `check-machine.sh` read `pass 17 fail 0 unknown 0` at every
+  gate. Steps are logged in `target/boot-p4-evidence/first-actions.txt` on the desk. The driver ran
+  three times. Attempt 1 was refused (exit 2) on two **user** timers. Attempt 2 stopped (exit 3)
+  before p1 B, when `anacron.timer`, whose `next` had been empty at step 5, re-armed. Attempt 3,
+  **`target/boot-p4-evidence/20260927T042832Z/`**, exited 0. Every arm was OK, the gap was
+  1800 s, and `MANIFEST.txt` read OK before and after.
+* **Row 2, the exporter's scrape pair**, ran in the same boot after the driver (`…/row2/`, exit 0).
+  **Kept** ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)
+  *Result*). `hft` wire p50 off → on moved 0.860 % and 0.169 %, and wire p99 moved 2.234 % and
+  1.756 %. `standard` p50 moved 0.032 % and 0.016 %. Allocs were 0 everywhere. The exporter
+  thread's mask was `[0-5, 8-13]` in all 36 on-arm runs.
+* **The SQLite store is kept** ([ADR-0180](docs/decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md)
+  *Result*). Step 4b passed in both procedures and both modes (`hft` wire p50 0.277 % and
+  0.490 %, `standard` 0.056 % in both, allocs 0). Step 4a ran on the same boot after the scrape
+  pair: `unwritten 0 rows 3000000 mismatched 0 … pace_missed 0` in both `synchronous normal` runs,
+  and the same in the recorded `full` run.
+* **Both crates joined the tagged release family** (ADR-0170 decision 10, ADR-0182 decision 3).
+  `publish = false` was removed. Both crates are now in `PUBLISHED` of `check-release-versions.sh`,
+  `check-package-contents.sh` and `check-packaged-build.sh` (20 cases, from 15). The family is
+  eight crates. `check-semver-against-tag.sh` excludes by name the publishable crates that
+  `v0.1.0` does not contain, because `cargo semver-checks --workspace` exited 101 on them —
+  [trap](docs/reference/cargo-semver-checks-stops-on-a-crate-the-baseline-does-not-have.md).
+* **Two surprises fixed** (boot plan *Sửa 5*). `boot-p4.sh run` now refuses while any timer unit,
+  system or user, is active. The driver now hands `w2w-baseline.sh` its settings through `env`,
+  because `ENGINE_CORE` had been silently dropped in all 20 arms; the engine stayed on core 6 only
+  because 6 is the child's default. Trap pages:
+  [a-timer-with-no-next-elapse-can-still-fire](docs/reference/a-timer-with-no-next-elapse-can-still-fire.md)
+  and [a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs](docs/reference/a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs.md).
+  The guard is `scripts/check-boot-p4-driver.sh`, in the CI job *script-logic*, and its
+  reversals went red on the named assertions.
+* [ADR-0202](docs/decisions/ADR-0202-phase-4s-one-s9-boot-is-pre-built-driven-by-a-committed-script-and-onload-lives-only-inside-its-block.md)
+  is Accepted. The figures are in `measured-costs.md`, *Phase 4's §9 boot, 2026-09-27*.
+
+### Where the work is — phase 4
+
+| Row | State |
+|---|---|
+| 1 exporter | kept; in the tagged release family (ADR-0170 decision 10) |
+| 3 / 4 store | kept (4a, 4b, 4c); in the tagged release family (ADR-0182 decision 3) |
+| 5 io_uring | **dropped and removed** — clauses (a) and (b) both `no` (U/K wire p50 1.303, 1.289); feature, module, `w2w` flags, script arms and CI job gone; ADR-0190 *Result*, ADR-0191/0192 Deprecated; pairs in `measured-costs.md` |
+| 7 boot | done — 7b.4: one senior review (no blocking finding; seven should-fix/notes fixed in `bf5afd5`), merged, desktop grub line restored (`/etc/default/grub.fixbolt-desktop-20260925`), `fixbolt-machine off`, desk powered off on the owner's order |
+| 8–9 SIMD | not started |
+| 10 close phase 4 | not started |
+
+**Phase 5 PR [#123](https://github.com/tmthang86/fixbolt/pull/123)** (`library/custom-dictionary`,
+draft) is open and **owned by another session**. Do not stage its files.
+
+### Next — the first executable action
+
+Verify this entry's merge on `origin/main` and its `push` run (`gh run list --branch main --limit 1`).
+The desk comes back on the **desktop** grub line (no `isolcpus`) with every timer re-enabled by the
+boot. Then rows 8–9 (SIMD) of phase 4, and row 10 (close the phase).
+
+**Owed to the owner, not done by the manager:** `CLAUDE.md` §2 *Machine checks* row 4 still names
+the removed uring arms. Three sentences are now false: "the three scripts also run each mode over
+`--transport uring` when `tools/w2w` is built with `--features io-uring`"; "`io_uring_enter` is
+judged by its `min_complete` — 0 is not a sleep, anything else or an unreadable argument is
+([ADR-0191]…)"; "a build without `io-uring` prints the uring arms *SKIPPED, NOT PASSED*, and the
+SQPOLL arm runs only where `FIXBOLT_SQPOLL_CORE` is set". Proposed: drop the first and third, and
+read the second as "`io_uring_enter` is a sleeper by name (ADR-0191 Deprecated with the transport,
+ADR-0190 *Result*)". The io_uring plan leaves this edit to the owner.
+
+### Do not
+
+* Do not stop only the timers that have a `next`, or only system timers: an active timer with an
+  empty `next` fired mid-boot. Stop every active timer unit of both managers (boot plan *Sửa 5*).
+* Do not pass a readonly shell variable as a command prefix. Bash drops it, prints one line, and
+  runs the command anyway. Use `env`.
+* Do not rebuild anything in `fb-p4-boot/`: a rebuild drops the file capabilities and the driver
+  refuses. Do not run a capability-carrying binary from `/tmp` or the scratchpad (`nosuid`).
+* Do not re-run `scripts/boot-p4.sh` as it stands: its arms pass `--transport uring`, which
+  `tools/w2w` now refuses. It is the historical driver of the 2026-09-27 boot.
+* Do not add `fixbolt-metrics` or `fixbolt-store-sqlite` to `check-semver-against-tag.sh`'s
+  `PUBLISHED` before a tag carries them: `cargo semver-checks` exits 101 on a crate the baseline
+  does not have.
+* Do not read a `scrape-loop: FAIL — no scrape reached an exporter` chunk as an exporter failure.
+  It is a chunk with no exporter listening. The rule reads `bad 0` and at least one chunk with
+  `ok > 0`.
+
+### Not proven
+
+* The two new crates have not yet been released under a tag. `v0.1.0` does not contain them, so
+  the semver check does not compare them until the next tag.
+* Rule 4 for the exporter in split mode: the listen half prints no `engine-ctxt`.
+* The cost of one scrape on one request: only about ten scrapes fall inside a 20 000-request
+  window (*estimated*).
+* `check-boot-p4-driver.sh` cannot see the driver's top-level refusal loop, only the functions
+  that loop calls.
+* Whether the hooks the io_uring transport added outside its feature should stay is not
+  decided: *Open items* 115. `Carrier::Uring` itself was removed.
+* The Mac-side `hft` round trip is **bimodal, cause unknown**, and not an `io_uring` property.
+  Per-run p50s sit near 150 µs or near 250–260 µs. p1 K's runs span `149208 .. 258916`
+  (258 916, 255 000 and 243 583 among 149–150 µs), and p2 K has one run at 261 792 among nine at
+  150 334–150 792. The kernel-TCP store `hft-file` arm sat at 249 375–257 500 throughout, and every
+  U run at 256–261 µs. The acceptor wire figure the kill lines read does not show it
+  (`measured-costs.md`, *Phase 4's §9 boot*).
+
 ## Start here — 2026-09-25: phase 4 rows 1, 3, 5, 6 are merged; the desk reboots into the §9 line for row 7's one boot
 
 Phase 4 ([ADR-0098](docs/decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)),
@@ -135,10 +241,12 @@ desktop line), rows 8–9 (SIMD), row 10 (close the phase).
 
 ### Not proven
 
-* No phase-4 item has a §9 verdict yet: io_uring (ADR-0190 decision 10), the store pair (plan 4b as read by ADR-0202),
+* ~~No phase-4 item has a §9 verdict yet: io_uring (ADR-0190 decision 10), the store pair (plan 4b as read by ADR-0202),
   the exporter's scrape pair (row 2, by hand in the same boot per the metrics plan's *Sửa 2*; its commands were
-  checked with `bash -n` only).
-* The SQPOLL flush-expiry path has no test of its own (it shares the tested flush()==false branch).
+  checked with `bash -n` only).~~ `[struck 2026-09-27]` The boot ran (`20260927T042832Z`). The exporter's pair passed
+  and row 2's script ran green on the desk. The store's 4b passed. The io_uring verdict is a separate step (see the
+  2026-09-27 entry).
+* ~~The SQPOLL flush-expiry path has no test of its own (it shares the tested flush()==false branch).~~ `[moot 2026-09-27]` the io_uring transport was removed (ADR-0190 *Result*).
 * Rule 4 for the exporter in split mode: the listen half prints no `engine-ctxt` line, so row 2's pair does not check
   that the hft engine thread never sleeps with the exporter attached (the loopback ctxt script did, row 1 step 5).
 
@@ -6509,6 +6617,9 @@ against hardware that does not exist.
 | 112 | ~~**`scripts/check-no-kernel-sleep-by-ctxt.sh` prints "GREEN ok … 0 voluntary" when w2w fails to run**: `read … <<<"$(run_and_read hft)" \|\| exit 1` swallows the function's failure and an empty value compares as 0; the script still exits red through its other half. Found building phase 4 row 3.~~ **Closed 2026-09-24** on `plan/p4-store-sqlite` (#109): `read_half` captures before reading and refuses a failed or non-numeric run; guard `scripts/check-ctxt-gate-refuses-a-failed-run.sh` (script-logic CI job). | trap page `a-shell-read-heredoc-swallows-a-failed-functions-exit-status.md` on `plan/p4-store-sqlite` |
 | 113 | **`crates/engine/tests/buffer_size.rs` can fail "the logon was not answered"**: it picks a port with `free_port()` and binds it later, a window another test binary can take; red once on CI run 36031961599 (fix50sp2 group), green on re-run and 20/20 on the desk. | `buffer_size.rs:229` |
 | 114 | **Kernel bypass waits for a rented pair of cloud VMs: a later-phase candidate, not phase 4.** Dropped at G1 on the desk's I211 (ADR-0203); the owner kept it for later and chose (2026-09-26) two rented VMs, a commodity NIC over AF_XDP, no Solarflare, no Mac as counterparty, and accepted a VM figure as publishable. Candidate platform GCP `gve` (AWS `ena`, Azure `mana` excluded); reopens only on a named pair that passed ADR-0204 decision 3's gate. A VM figure is published only under ADR-0205's label, never beside the desk's. **Owed by the first VM plan:** `scripts/check-machine.sh`'s `GUEST` text still says *"no latency figure from it is publishable"* — ADR-0205 decision 5. [kernel-bypass-needs-a-machine-this-project-does-not-have](docs/reference/kernel-bypass-needs-a-machine-this-project-does-not-have.md). | ADR-0204, ADR-0205 (Accepted); `PRD.md` §2 *Later phases*; `DESIGN.md` §9 *A figure from a cloud VM* |
+| 115 | **`[2026-09-27]` Do the hooks the `io_uring` transport added outside its feature stay public?** `Transport::NEEDS_REAPER`, `Waiting::REAPS` (with the `const` refusal in `Engine::new`), `Transport::carrier` and `Engine::carrier` ship as new public API in the next tag. No transport or strategy in this crate sets either constant to `true`. `Carrier` is now `Kernel`/`Other`, and `tools/w2w`'s `transport: kernel` line and `w2w-baseline.sh` read it. The refusal is held by one `compile_fail,E0080` doctest. Removing them after a tag carries them is a major break; before, it costs nothing. PR #124 (ADR-0190 *Result*) | a question for the architect, before the next tag |
+| 116 | **`[2026-09-27]` `tools/w2w` ignores the `--flag=value` spelling silently.** `--mode=standard` runs `hft`, and `--transport=uring` runs the kernel path instead of being refused. Only `W2W_EXTRA` through `scripts/w2w-baseline.sh` is guarded (`extra_flag_refusal`, `--journal=`/`--log=`). This predates PR #124. Found by its senior review | no plan yet |
+| 117 | **`[2026-09-27]` `check-semver-against-tag.sh` does not compare `fixbolt-metrics` or `fixbolt-store-sqlite`.** They joined the published set in PR #124, and `v0.1.0` does not contain them, so they are excluded by name. Once a tag carries them, they must be added to the script's `PUBLISHED`. **Nothing enforces that** — the exclusion is automatic, so they would stay silently uncompared ([trap](docs/reference/cargo-semver-checks-stops-on-a-crate-the-baseline-does-not-have.md)) | the commit after the first tag that carries them |
 | 65 | ~~**A TLS test that is green 20 times here is red on GitHub's runner, and PR [#61](https://github.com/tmthang86/fixbolt/pull/61) is blocked on it.**~~ — **CLOSED 2026-09-12.** Diagnosed as (a) — the test asserted a scheduling outcome, the engine loses nothing — then fixed by **construction**: the counterparty is now driven on the acceptor's own thread (`InThreadClient`), so `hello` is queued into rustls *before* the flush that carries `Finished` and no scheduler decides what this engine sees. 30/30 green here; the gate runs the binary 3× and `--no-fail-fast`. **Reversal R2 went red on an assertion the approved plan did not predict**, and the predicted one stayed green: `Pending` is reported both when there is nothing to do and when the peer has not answered, so it never was a discriminator — [a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md](docs/reference/a-red-reversal-does-not-prove-the-assertion-you-wrote-it-for.md), `[to testing-skills]`. `[measured 2026-09-12]` commit `31fc0ec`, runs [`34666630103`](https://github.com/tmthang86/fixbolt/actions/runs/34666630103) and [`34666631877`](https://github.com/tmthang86/fixbolt/actions/runs/34666631877), five repetitions each with `--nocapture`: **every probe that read `early 0` also read `late_ciphertext 27`** — the peer's record, 27 bytes being a TLS 1.3 record carrying 5 of plaintext, **arrived after `pump` reported `Done`**. Nothing was dropped; nothing had arrived. So **no line of `crates/engine/src/tls.rs` changes**, and the fix belongs in the test. **This row was wrong in three ways and each mattered.** (1) *One* failing test: there were **two** — `crates/engine/tests/tls.rs:150`'s `pendings > 0` failed alongside `:236`, and it is the same shape, an assertion about the scheduler. It did **not** reproduce in 10 repetitions on 2026-09-12, which makes it the longer fuse, not the smaller problem. (2) *5 tests ran*: the job reported **6**. (3) **Not recorded at all: the same commit `aa4f46e` produced one GREEN run** ([`34510700732`](https://github.com/tmthang86/fixbolt/actions/runs/34510700732), `push`) **and one red** ([`34510705777`](https://github.com/tmthang86/fixbolt/actions/runs/34510705777), `pull_request`) **on the same runner**, so this was never *green here, red there* — it is flaky on the runner itself, and *re-run and it went green* is evidence of nothing. **And the gate is a false green today**: `[measured 2026-09-12]` 3 of 5 repetitions in run `…103` were red while the job finished **green**, because the gate step runs the flaky test exactly once and hit a good roll. **What closed for free**: `--no-fail-fast` read `6 + 4 + 1`, so `tls_wire.rs` and `tls_mode.rs` have now run on a machine other than this desk, both green — the earlier `cargo test` stopped at the first failing binary and hid them. Fix planned as step 7 of [the-tls-tests-have-no-ci](docs/plans/2026-09-10-the-tls-tests-have-no-ci.md) *Sửa 1* | PR #61, and `crates/engine/tests/tls.rs:150` + `:236` |
 | 64 | **CLOSED 2026-09-12.** `DropReason::NeverTicked`, plan [an-obligation-nothing-checks](docs/plans/2026-09-12-an-obligation-nothing-checks.md) §D, commit `a85c5b3`. `judge` refuses with a fieldless `Refusal::NeverTicked` when `now_ms == 0`, before the first rule that reads the clock — the obligation D1 moves to the caller is **named at the boundary** rather than assumed, and the session layer stays pure (non-negotiable 2). **Not the `debug_assert!` this item proposed**: `[measured 2026-09-12]` `clippy::panic = "deny"` does not see `debug_assert!` — a `panic` the lint guarding non-negotiable 7 is blind to, gone in release where item 63 happened, and a way to kill the engine thread over a policy error ([reference](docs/reference/a-debug-assertion-is-a-panic-the-lint-cannot-see.md), `[to testing-skills]`). **No existing test needed a tick added**, because after this guard a session cannot reach `LoggedOn` without ticking. **What it does not close, measured rather than assumed**: the guard closes `now_ms == 0` and nothing else — a caller ticking in Unix-epoch milliseconds still reads about −1 970 years and still blames the counterparty, the mistake D13 and `GUIDE.md` §5 warn about. The four-row table is in `docs/SESSION-BEHAVIOUR.md`, and a senior review put it there by refuting the absolute sentence this branch first wrote. **The text this item was opened with, unedited:** **Nothing guarantees a tick ran before a message is judged, and the session's clock starts at zero.** `[researched 2026-09-10]` `Session::now_ms` is initialised to `0` (`crates/session/src/lib.rs:1414`) and written **only** by `tick_inner` (`:2092`); `received_with` takes **no time argument** (`:2241-2247`), so every time-dependent judgement — `SendingTime` skew first among them — is made against whatever the last tick left behind. **Item 63 is one instance and there is no reason to believe it is the only one.** A five-engine survey says this shape is unique to fixbolt: QuickFIX C++ (`labs(m_timestamper() - sendingTime)`, `Session.h:242`), QuickFIX/J (`SystemTime.currentTimeMillis()`) and quickfix-go (`time.Since`) all read a **live clock inside the check**; nanofix does not check `SendingTime` at all. **This is a consequence of D1, not an oversight** — the session layer is pure and cannot call a clock — and the purity is worth keeping: it is what makes the 59 definitions runnable with no socket and no clock. **What it moves is the obligation**, and nothing holds it today: no test, no lint and no assertion says *a judgement path was reached after a tick*. **The cheapest honest fix is probably a debug assertion** that `now_ms != 0` when a message is judged, which would have caught item 63 the first time it ran. Not attempted here; opened so it is not rediscovered from a second symptom | [prior-art.md](docs/reference/prior-art.md), and non-negotiable 2's purity |
 | 63 | ~~**A connection this engine refused for its own reasons accused the counterparty of a protocol fault.**~~ — **CLOSED 2026-09-10**, [ADR-0060](docs/decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md). `[measured 2026-09-10]` `TlsRequireKernel=Y` meeting a handshake that landed in userspace reported **`Ended(SendingTimeOutOfRange)`**, with `Session::last_skew_ms` reading about **two thousand years** — an operator would have gone to check NTP on the counterparty's host for a decision taken entirely on this side. **Two causes, both fixed, each proven by putting it back.** (a) `Connection::turn`'s `if !self.closing` block guards only the tick-and-send half; the socket read and the loop that judges what arrived sit **after** it and ran whatever `closing` said — so a refused connection still parsed the `Logon`, and with no tick having run judged its `52=` against a session clock still at **zero** (item 64). (b) No reason was recorded at the moment of refusal. **The reversals name the two failure modes exactly**: removing the early return returns `Ended(SendingTimeOutOfRange)`; removing `note_drop_reason` returns `Ended(TransportClosed)` — the *"blaming the network for a policy decision"* shape that `Session::disconnect_with`'s own comment records from `[measured 2026-09-02]`. **Found by an assertion that was missing**: the test was called `…_is_ended_…` and only checked an event, so a reversal deleting the ending left it green. `DropReason::RefusedByDeployment` is named for the class rather than for TLS, because `crates/session` is pure and knows no transports; the preceding event says which policy. **Not a divergence** — this enum already carried `DuplicateIdentity`, `SlowConsumer` and `EngineShutdown`, and Artio, the only other engine with such a type, mixes both kinds across 26 variants | closed |

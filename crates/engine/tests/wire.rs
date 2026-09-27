@@ -146,8 +146,9 @@ struct Client {
 /// **Generic over the engine's transport `T` and the `wrap` that makes one
 /// from an accepted socket** — the shape `pump`'s own `wrap` has in
 /// `lib.rs`. The kernel arm wraps with `Some`, which is what this harness did
-/// before it had the parameter; the `io_uring` arm registers the socket on a
-/// ring (phase 4 row 5, ADR-0190).
+/// before it had the parameter. The parameter was added for an `io_uring` arm
+/// (phase 4 row 5, ADR-0190) that registered each socket on a ring; that arm
+/// was removed on 2026-09-27 with the `io-uring` feature (ADR-0190 *Result*).
 struct Wire<T: Transport, W: Waiting, Wr: FnMut(TcpTransport) -> Option<T>> {
     acceptor: Acceptor,
     engine: Counted<T, W>,
@@ -613,74 +614,6 @@ fn the_fifty_nine_definitions_pass_in_standard_mode_too() {
     assert_eq!(
         report.passed, 59,
         "blocking between steps must not change what the protocol does:\n{report}"
-    );
-    assert_eq!(
-        lifelines, 0,
-        "a step settled on the 5 s lifeline instead of on a counted record"
-    );
-}
-
-/// The ring the two `io_uring` cases run on: 8 buffers of 4 KiB per
-/// connection (ADR-0192, `tools/w2w`'s size), four connections — the corpus
-/// opens at most two at once.
-#[cfg(all(feature = "io-uring", target_os = "linux"))]
-fn uring_config() -> fixbolt_engine::transport::uring::UringConfig {
-    fixbolt_engine::transport::uring::UringConfig::new(8, 4096, 4).expect("a valid ring size")
-}
-
-/// The same 59, **`hft` over `io_uring`**: every accepted socket is registered
-/// on a ring, and the idle turn is `UringSpin` — the reaper — rather than
-/// `Yield`. Phase 4 row 5, ADR-0190; non-negotiable 3 for the new transport.
-///
-/// One ring per scenario, because the engine is one per scenario: a ring is
-/// `!Send` and belongs to the engine thread that reaps it.
-#[cfg(all(feature = "io-uring", target_os = "linux"))]
-#[test]
-fn the_fifty_nine_definitions_pass_over_io_uring_in_hft() {
-    use fixbolt_engine::transport::uring::{HftArm, Uring};
-    let report = run(|s| {
-        let (uring, spin) = Uring::hft(uring_config(), HftArm::Enter)
-            .unwrap_or_else(|e| panic!("Uring::hft refused: {e}"));
-        Wire::over(spin, move |t| uring.register(t), &s.file)
-    })
-    .unwrap_or_else(|e| panic!("{e}"));
-    let lifelines = LIFELINE_HITS.load(Ordering::Relaxed);
-    println!("lifeline hit: {lifelines}");
-    assert_eq!(
-        report.passed, 59,
-        "hft over io_uring: {} / 59\n{report}",
-        report.passed
-    );
-    assert_eq!(
-        lifelines, 0,
-        "a step settled on the 5 s lifeline instead of on a counted record"
-    );
-}
-
-/// The same 59, **`standard` over `io_uring`**: the engine blocks in
-/// `io_uring_enter` between steps, woken by a completion, by the listener's
-/// one-shot `POLL_ADD`, or by its own 5 ms timeout — the timeout the kernel
-/// arm's `standard` case uses.
-#[cfg(all(feature = "io-uring", feature = "standard", target_os = "linux"))]
-#[test]
-fn the_fifty_nine_definitions_pass_over_io_uring_in_standard_mode() {
-    use fixbolt_engine::transport::uring::Uring;
-    let report = run(|s| {
-        let (uring, block) = Uring::standard(uring_config())
-            .unwrap_or_else(|e| panic!("Uring::standard refused: {e}"));
-        Wire::over(
-            block.with_timeout_ms(5),
-            move |t| uring.register(t),
-            &s.file,
-        )
-    })
-    .unwrap_or_else(|e| panic!("{e}"));
-    let lifelines = LIFELINE_HITS.load(Ordering::Relaxed);
-    println!("lifeline hit: {lifelines}");
-    assert_eq!(
-        report.passed, 59,
-        "standard over io_uring: {} / 59\n{report}",
-        report.passed
     );
     assert_eq!(
         lifelines, 0,
