@@ -96,7 +96,7 @@ Branch `plan/p4-simd` (worktree `/home/tmt/Projects/fb-p4-simd`), draft PR
 [#126](https://github.com/tmthang86/fixbolt/pull/126). Plan
 [2026-09-27-p4-simd](docs/plans/2026-09-27-p4-simd.md), revised by *Sửa 1*
 ([ADR-0212](docs/decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md)).
-The handoff commit and its CI run id are in the plan's *Nhật ký giao hàng*, last entry.
+Last code commit closed by CI: `2453850`, run [`36319670763`](https://github.com/tmthang86/fixbolt/actions/runs/36319670763), 21/21. The handoff is the branch tip; its `pull_request` run is the newest on the branch (`gh run list --branch plan/p4-simd --limit 1`).
 
 ### What closed
 
