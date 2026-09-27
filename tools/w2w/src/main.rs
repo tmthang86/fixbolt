@@ -406,7 +406,7 @@ use fixbolt_codec::{FieldIndex, Template, TemplateBuilder, Validation, parse_int
 use fixbolt_dict::Fix44;
 use fixbolt_engine::dispatch::{ConnId, InlineDispatch};
 use fixbolt_engine::msglog::MessageLog;
-use fixbolt_engine::transport::{Carrier, Interest, TcpTransport, TlsMode, Transport};
+use fixbolt_engine::transport::{Interest, TcpTransport, TlsMode, Transport};
 use fixbolt_engine::wait::{Spin, Waiting, Yield};
 use fixbolt_engine::{Acceptor, Engine};
 use fixbolt_session::{Application, Config};
@@ -474,37 +474,56 @@ impl Tls {
     }
 }
 
-/// What the engine's transport reported as its [`Carrier`] after the first
-/// logon — `0` until then. Stored next to [`TLS_SEEN`], by the same thread, for
-/// the same reason: the `transport:` line is **read back from the engine**,
-/// never echoed from a flag. `[2026-09-27]` Only `kernel` can be asked for
-/// since the `io-uring` feature was removed (ADR-0190 *Result*); the line and
-/// its check stay, because `scripts/w2w-baseline.sh` requires `transport:
-/// kernel` from every run.
-static CARRIER_SEEN: AtomicU8 = AtomicU8::new(0);
-
-const fn carrier_code(c: Option<Carrier>) -> u8 {
-    match c {
-        Some(Carrier::Kernel) => 1,
-        Some(Carrier::Other) => 2,
-        None => 3,
-    }
+/// What carries the received bytes of the transport type the engine is built
+/// over — the `transport:` line.
+///
+/// `[2026-09-27]` [ADR-0210] decision 3. The line used to be read back from the
+/// engine (`Engine::carrier`, ADR-0190); that report left the public API before
+/// the next tag, and with one receive path in this binary the answer is a
+/// property of the **type**, not of the run. So each transport type the engine
+/// thread is built over names itself here, and [`pump`] stores the name through
+/// its transport type parameter: a second transport type in `w2w` does not
+/// compile until it says what it is. The test
+/// `the_transport_line_names_the_kernel_for_every_engine_side` pins today's
+/// answers.
+///
+/// **What this cannot see:** a transport whose receive path is not decided by
+/// its type — an `LD_PRELOAD` bypass under `TcpTransport` is the example. A
+/// transport like that must bring back a report read from the engine, not a
+/// name here.
+///
+/// [ADR-0210]: ../../../docs/decisions/ADR-0210-the-reaper-pair-and-the-carrier-report-leave-the-public-api-before-the-next-tag.md
+trait Named {
+    /// The word after `transport:`. `scripts/w2w-baseline.sh` requires
+    /// `kernel` from every run.
+    const NAME: &'static str;
 }
 
-const fn carrier_name(code: u8) -> &'static str {
-    match code {
-        1 => "kernel",
-        2 => "other",
-        _ => "unknown",
-    }
+/// `recv` is a non-blocking `read(2)` on a kernel TCP socket.
+impl Named for TcpTransport {
+    const NAME: &'static str = "kernel";
 }
 
-/// The `transport:` line: what the engine reported, from [`CARRIER_SEEN`].
+/// Received bytes come from `read(2)` on the kernel TCP socket underneath,
+/// whichever [`TlsMode`] decrypts them — so a TLS arm reads `transport: kernel`.
+#[cfg(all(feature = "tls", target_os = "linux"))]
+impl<S: fixbolt_engine::tls::Side> Named for fixbolt_engine::tls::TlsTransport<S> {
+    const NAME: &'static str = "kernel";
+}
+
+/// The engine thread's [`Named::NAME`], stored after the first logon — before
+/// [`TLS_SEEN`], by the same thread, which is what the client waits on. Unset
+/// until then, and printed as `unknown`. A `OnceLock` of a `&'static str`:
+/// setting it copies a pointer, and nothing on the engine thread allocates or
+/// locks to do it.
+static TRANSPORT_SEEN: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// The `transport:` line, from [`TRANSPORT_SEEN`].
 /// `scripts/w2w-baseline.sh` reads it back.
 fn transport_line() -> String {
     format!(
         "transport: {}",
-        carrier_name(CARRIER_SEEN.load(Ordering::Relaxed))
+        TRANSPORT_SEEN.get().copied().unwrap_or("unknown")
     )
 }
 
@@ -1949,7 +1968,7 @@ fn both_halves(
     println!("     mode   {:>9}", mode.name());
     println!("     path   {:>9}", path.name());
     print_figures(&mut samples, &run, late);
-    // Read back from the engine (`Engine::carrier`), never from a flag.
+    // Named by the engine's transport type (`Named`, ADR-0210), never by a flag.
     println!("{}", transport_line());
     // Which threads `allocs` counted — every one this process ran in the
     // window, the journal's and the log's writers included. With no flag it
@@ -2130,15 +2149,8 @@ fn engine_half(
             seen_name(seen),
         )));
     }
-    // And the receive path, read back the same way.
+    // And the receive path, named by the engine's transport type (`Named`).
     println!("{}", transport_line());
-    let carrier = carrier_name(CARRIER_SEEN.load(Ordering::Relaxed));
-    if carrier != "kernel" {
-        return Err(std::io::Error::other(format!(
-            "w2w: --listen requires the engine to report transport 'kernel', \
-             and it reports '{carrier}'"
-        )));
-    }
 
     if APP_REACHED.load(Ordering::Relaxed) {
         return Err(std::io::Error::other(
@@ -2612,16 +2624,6 @@ fn measure<C: Wire>(
                 tls.wants(),
                 seen_name(seen),
                 tls.name(),
-            )));
-        }
-        // The same judgement for the receive path: the engine said which one
-        // carried the logon, and only `kernel` is built.
-        let carrier = carrier_name(CARRIER_SEEN.load(Ordering::Relaxed));
-        if carrier != "kernel" {
-            return Err(std::io::Error::other(format!(
-                "w2w: the engine must report transport 'kernel', and it reports \
-                 '{carrier}'. Nothing measured below would be about kernel TCP, so \
-                 nothing is measured."
             )));
         }
     }
@@ -3255,7 +3257,7 @@ fn serve<A: Application, S: Journals, L: MessageLog, const UNTIL_CLOSED: bool>(
 #[allow(clippy::too_many_arguments)]
 fn run<
     A: Application,
-    T: Transport,
+    T: Transport + Named,
     F: FnMut(TcpTransport) -> Option<T>,
     S: Journals,
     L: MessageLog,
@@ -3389,7 +3391,7 @@ impl ListenerCadence {
 fn pump<
     A: Application,
     W: Waiting,
-    T: Transport,
+    T: Transport + Named,
     F: FnMut(TcpTransport) -> Option<T>,
     S: Journals,
     L: MessageLog,
@@ -3457,10 +3459,7 @@ fn pump<
         }
         if engine.logons() > 0 {
             // Before `TLS_SEEN`, which is what the client waits on.
-            CARRIER_SEEN.store(
-                carrier_code(first.and_then(|id| engine.carrier(id))),
-                Ordering::Relaxed,
-            );
+            let _ = TRANSPORT_SEEN.set(<T as Named>::NAME);
             TLS_SEEN.store(
                 tls_code(first.and_then(|id| engine.tls_mode(id))),
                 Ordering::Relaxed,
@@ -5286,6 +5285,17 @@ fn civil(days: u64) -> (u64, u64, u64) {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// ADR-0210 decision 3: `scripts/w2w-baseline.sh` requires `transport:
+    /// kernel` from every run, and that line is now the engine's transport
+    /// type naming itself. Every type the engine thread is built over answers
+    /// `kernel`.
+    #[test]
+    fn the_transport_line_names_the_kernel_for_every_engine_side() {
+        assert_eq!(<TcpTransport as Named>::NAME, "kernel");
+        #[cfg(all(feature = "tls", target_os = "linux"))]
+        assert_eq!(<fixbolt_engine::tls::TlsTransport as Named>::NAME, "kernel");
+    }
 
     fn argv(s: &str) -> Vec<String> {
         std::iter::once("w2w")

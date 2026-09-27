@@ -45,16 +45,6 @@ pub trait Waiting {
     /// getting the list wrong still yields a working engine.
     const NEEDS_SOURCES: bool;
 
-    /// Whether [`Self::idle`] is what moves a
-    /// [`crate::transport::Transport::NEEDS_REAPER`] transport's bytes into
-    /// reach of its `recv` (ADR-0190 decision 1). No strategy in this crate
-    /// reaps.
-    ///
-    /// Defaulted to `false`, so no strategy outside this crate changes a line;
-    /// [`crate::Engine::new`] refuses a reaping transport under a strategy
-    /// that answers `false` here, at compile time.
-    const REAPS: bool = false;
-
     /// One idle turn.
     ///
     /// `interests` is every source the caller currently cares about, rebuilt
