@@ -187,8 +187,9 @@ ADR-0190 *Result*)". The io_uring plan leaves this edit to the owner.
   window (*estimated*).
 * `check-boot-p4-driver.sh` cannot see the driver's top-level refusal loop, only the functions
   that loop calls.
-* Whether the hooks the io_uring transport added outside its feature should stay is not
-  decided: *Open items* 115. `Carrier::Uring` itself was removed.
+* ~~Whether the hooks the io_uring transport added outside its feature should stay is not
+  decided: *Open items* 115. `Carrier::Uring` itself was removed.~~ Decided 2026-09-27 by
+  [ADR-0210](docs/decisions/ADR-0210-the-reaper-pair-and-the-carrier-report-leave-the-public-api-before-the-next-tag.md): removed before any tag, item 115 closed.
 * The Mac-side `hft` round trip is **bimodal, cause unknown**, and not an `io_uring` property.
   Per-run p50s sit near 150 µs or near 250–260 µs. p1 K's runs span `149208 .. 258916`
   (258 916, 255 000 and 243 583 among 149–150 µs), and p2 K has one run at 261 792 among nine at

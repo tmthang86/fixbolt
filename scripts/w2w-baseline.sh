@@ -459,7 +459,8 @@ extra_val() { # extra_val <flag> <extra args...>
 }
 JOURNAL_WANT=$(extra_val --journal "${EXTRA_ARGS[@]}")
 LOG_WANT=$(extra_val --log "${EXTRA_ARGS[@]}")
-# The receive path, read back like `journal:` (phase 4 row 5, ADR-0190): every
+# The receive path (phase 4 row 5, ADR-0190; since ADR-0210 `tools/w2w` names it
+# from its own transport type, not read back from the engine): every
 # run must SAY `transport: kernel` — a run with no `transport:` line at all is a
 # binary that predates the check, not a pass. `[2026-09-27]` the `uring` arm
 # this also judged was removed with the `io-uring` feature (ADR-0190 *Result*);

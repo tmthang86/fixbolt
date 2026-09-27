@@ -2,7 +2,8 @@
 
 - **Status**: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18.
   **Result 2026-09-27: the transport failed decision 10's kill line and was removed** (see
-  *Result* at the end). Accepted text follows;
+  *Result* at the end). **The hooks *Result* kept (`NEEDS_REAPER`, `REAPS`, `carrier`,
+  `Carrier`) were removed before any tag by [ADR-0210](ADR-0210-the-reaper-pair-and-the-carrier-report-leave-the-public-api-before-the-next-tag.md) (2026-09-27).** Accepted text follows;
   **revised in place 2026-09-24** (Revision 1, R1–R4, and Revision 2, R5, at the end of this
   ADR — decisions 4, 5 and 7 changed while it was still Proposed, after steps 1–4 and 6 were
   built). **Decision 2's shared buffer pool is superseded by
