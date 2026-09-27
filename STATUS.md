@@ -90,7 +90,7 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
 
-## Start here — 2026-09-27: row 7's §9 boot ran to its end — the exporter and the SQLite store are kept and join the release family; the io_uring removal is next
+## Start here — 2026-09-27: row 7's §9 boot ran to its end — the exporter and the SQLite store are kept and join the release family; io_uring failed its kill line and is removed
 
 Branch `plan/p4-boot-7b` (worktree `/home/tmt/Projects/fb-p4-7b`, from `origin/main` `3f7a0a3`).
 Gate for this change: `scripts/check-boot-p4-driver.sh`, `python3 scripts/check-links.py`. CI run
@@ -138,8 +138,8 @@ for the closing commit: `<CI run id>`.
 |---|---|
 | 1 exporter | kept; in the tagged release family (ADR-0170 decision 10) |
 | 3 / 4 store | kept (4a, 4b, 4c); in the tagged release family (ADR-0182 decision 3) |
-| 5 io_uring | fails its kill line (manager's reading of `verdict-inputs.txt`: clauses (a) and (b) both `no`); removal is Part B on this branch |
-| 7 boot | 7b.1–7b.3 done except the io_uring removal; 7b.4 (desktop grub line, review, merge) open |
+| 5 io_uring | **dropped and removed** — clauses (a) and (b) both `no` (U/K wire p50 1.303, 1.289); feature, module, `w2w` flags, script arms and CI job gone; ADR-0190 *Result*, ADR-0191/0192 Deprecated; pairs in `measured-costs.md` |
+| 7 boot | 7b.1–7b.3 done; 7b.4 (desktop grub line, senior review, merge) open |
 | 8–9 SIMD | not started |
 | 10 close phase 4 | not started |
 
@@ -148,10 +148,9 @@ draft) is open and **owned by another session**. Do not stage its files.
 
 ### Next — the first executable action
 
-Verify this entry's commit and CI run id on the branch. Then remove `io_uring` (Part B,
-[ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
-decision 10), restore the desktop grub line (7b.4), and take rows 8–9 (SIMD) and row 10 (close
-phase 4).
+Verify this entry's commit and CI run id on the branch. Then 7b.4: one senior review of the
+branch (the removal touched `engine` and `tools/w2w`), restore the desktop grub line on the
+owner's word, and merge. After that, rows 8–9 (SIMD) and row 10 (close phase 4).
 
 ### Do not
 
@@ -161,6 +160,8 @@ phase 4).
   runs the command anyway. Use `env`.
 * Do not rebuild anything in `fb-p4-boot/`: a rebuild drops the file capabilities and the driver
   refuses. Do not run a capability-carrying binary from `/tmp` or the scratchpad (`nosuid`).
+* Do not re-run `scripts/boot-p4.sh` as it stands: its arms pass `--transport uring`, which
+  `tools/w2w` now refuses. It is the historical driver of the 2026-09-27 boot.
 * Do not add `fixbolt-metrics` or `fixbolt-store-sqlite` to `check-semver-against-tag.sh`'s
   `PUBLISHED` before a tag carries them: `cargo semver-checks` exits 101 on a crate the baseline
   does not have.
@@ -177,6 +178,12 @@ phase 4).
   window (*estimated*).
 * `check-boot-p4-driver.sh` cannot see the driver's top-level refusal loop, only the functions
   that loop calls.
+* Whether the hooks the io_uring transport added outside its feature — `Transport::NEEDS_REAPER`,
+  `Waiting::REAPS`, `Carrier`, `Engine::carrier` — should stay is not decided. They are kept,
+  used by no transport here except as `Carrier::Kernel`, and the refusal is held by one
+  `compile_fail` doctest.
+* The Mac-side `hft` round trip over `io_uring` sat at 260 µs, against 150 µs for kernel TCP.
+  It is recorded and not explained.
 
 ## Start here — 2026-09-25: phase 4 rows 1, 3, 5, 6 are merged; the desk reboots into the §9 line for row 7's one boot
 
@@ -228,7 +235,7 @@ desktop line), rows 8–9 (SIMD), row 10 (close the phase).
   checked with `bash -n` only).~~ `[struck 2026-09-27]` The boot ran (`20260927T042832Z`). The exporter's pair passed
   and row 2's script ran green on the desk. The store's 4b passed. The io_uring verdict is a separate step (see the
   2026-09-27 entry).
-* The SQPOLL flush-expiry path has no test of its own (it shares the tested flush()==false branch).
+* ~~The SQPOLL flush-expiry path has no test of its own (it shares the tested flush()==false branch).~~ `[moot 2026-09-27]` the io_uring transport was removed (ADR-0190 *Result*).
 * Rule 4 for the exporter in split mode: the listen half prints no `engine-ctxt` line, so row 2's pair does not check
   that the hft engine thread never sleeps with the exporter attached (the loopback ctxt script did, row 1 step 5).
 

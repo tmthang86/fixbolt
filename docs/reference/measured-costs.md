@@ -5021,8 +5021,8 @@ now watches for it on any future NIC, is
 `[measured 2026-09-27]` One §9 boot. Two scripts ran on it, from binaries built before the reboot
 (ADR-0090 decision 2, ADR-0202 decision 1). Evidence stays on the desk and is not committed:
 `target/boot-p4-evidence/20260927T042832Z/` for the driver, and its `row2/` for the exporter pair.
-The same boot's `io_uring` A/B is recorded by the step that applies its verdict (phase-4 row 5,
-ADR-0190 decision 10), not here.
+The same boot's `io_uring` A/B is the first subsection. It failed its kill line, and the
+transport was removed (ADR-0190 *Result*).
 
 **Machine:** host `tmt-B450-I-AORUS-PRO-WIFI`, AMD Ryzen 7 3700X, NIC Intel I211 (`igb`, `enp9s0`,
 `combined 2`, `rx-usecs 0`, EEE off, IRQs on cores 0–4), kernel `7.0.0-34-generic`, mitigations
@@ -5041,6 +5041,86 @@ runs (`scripts/w2w-baseline.sh`). `hft` rows are the **acceptor wire figure** (e
 stamps, NIC in → NIC out). `standard` rows are the **round trip as the Mac sees it**, because
 `w2w-baseline.sh` refuses NIC stamps for `standard` (Q10); they are **not** wire figures. The 5 %
 band is ADR-0068 decision 2, computed on the smaller figure by `scripts/compare-w2w-procedures.sh`.
+
+### The `io_uring` transport against kernel TCP (phase-4 row 5) — failed, removed
+
+Command: `BOOT_ROOT=/home/tmt/Projects/fb-p4-boot scripts/boot-p4.sh run`, blocks A and B. All six
+`w2w` arms come from **one** binary, the `uring` build (`w2w` sha256 `ae0e860f…`, features
+`affinity,io-uring`). The arms differ only in `W2W_EXTRA`:
+
+| Arm | `W2W_EXTRA` | Observer core |
+|---|---|---|
+| K | *(empty)* | 7 |
+| U | `--transport uring` | 7 |
+| U′ | `--transport uring` | 5 |
+| S | `--transport uring --uring-arm sqpoll --sqpoll-core 7` | 5 |
+| stdK | *(empty)*, `--mode standard` | — |
+| stdU | `--transport uring`, `--mode standard` | — |
+
+Path `admin`, `hft` arms with acceptor stamps. Every run's `transport:` line was read back from
+the engine, for example `transport: uring arm=enter cqes=22002 bytes=1803868 enobufs=0 unarmed=0
+cq-overflow=0 enter-errors=0` (U, p1 run 1). `allocs 0` in every listen file.
+
+| Procedure | Arm | Runs qualified | `hft` wire p50 / p99 / p99.9 | Mac-side p50 / p99 / p99.9 |
+|---|---|---|---|---|
+| 1 | K | 9 / 10 | 27 778 / 33 146 / 36 026 | 150 000 / 287 375 / 291 958 |
+| 1 | U | 9 / 10 | 36 194 / 41 410 / 45 130 | 260 708 / 281 042 / 323 333 |
+| 1 | U′ | 8 / 10 | 36 158 / 41 538 / 44 506 | 260 917 / 283 937 / 324 625 |
+| 1 | S | 10 / 10 | 35 730 / 40 986 / 45 054 | 261 229 / 282 604 / 323 854 |
+| 1 | stdK | 10 / 10 | — | 260 750 / 280 104 / 323 541 |
+| 1 | stdU | 10 / 10 | — | 260 729 / 280 666 / 313 979 |
+| 2 | K | 10 / 10 | 28 402 / 33 926 / 36 734 | 150 604 / 287 042 / 291 604 |
+| 2 | U | 10 / 10 | 36 606 / 42 082 / 45 050 | 260 729 / 282 791 / 324 167 |
+| 2 | U′ | 10 / 10 | 36 722 / 42 258 / 44 970 | 260 792 / 282 833 / 324 312 |
+| 2 | S | 10 / 10 | 36 250 / 41 510 / 44 510 | 261 167 / 282 104 / 323 833 |
+| 2 | stdK | 10 / 10 | — | 260 750 / 280 854 / 324 729 |
+| 2 | stdU | 10 / 10 | — | 260 708 / 280 979 / 303 479 |
+
+All figures are in ns. Every arm reproduced itself across the two procedures
+(`compare/<arm>-p1-vs-p2.txt`). K's wire p50 moved `2.246%`, the largest move. The pairs:
+
+- **K against U**: wire p50 `diff 30.297%` (p1) and `28.885%` (p2), wire p99 `24.932%` and
+  `24.041%`, all `not reproduced`, and U is the slower one. `verdict-inputs.txt`: `U/K wire p50
+  1.3030` and `1.2889`, `U/K wire p99 1.2493` and `1.2404`.
+- **U′ against S**: wire p50 `1.198%` and `1.302%`, reproduced. S is slightly faster, but
+  `S/U′ wire p50 0.9882` and `0.9871`, while S/K is 1.29 (35 730 / 27 778). S burns core 7.
+- **stdK against stdU**: p50 `0.008%` (p1) and `0.016%` (p2), and `stdU/stdK counterparty p50
+  0.9999` and `0.9998`. The p99.9 moved `3.045%` (p1) and `7.002%` (p2). The p2 move is
+  `not reproduced`, and `compare/p2-stdK-vs-stdU.txt` exits 1 on it. p99.9 is not judged.
+- **Mac-side, `hft`**: the K arms answered at 150 µs p50 as the Mac sees them. Every `io_uring`
+  `hft` arm answered at 260–261 µs, which is the `standard` level. Recorded, **not explained**:
+  no run here isolates why.
+
+The `turn`/`density` benches were pinned to the engine core (`taskset -c 6`) from the same
+`uring` build (`turn` binary `01109e1fa106…`, `density` `79b86a555466…`), with
+`FIXBOLT_BENCH_COUNT_ONLY=1`. Each is one run per procedure, best of 7 inside the binary. Figures
+are ns per operation:
+
+| Case | p1 kernel | p1 uring | p2 kernel | p2 uring |
+|---|---|---|---|---|
+| idle loop, N = 1 | 485.3 | 303.8 | 485.3 | 331.1 |
+| idle loop, N = 16 | 7 637.0 | 929.1 | 7 627.2 | 954.4 |
+| idle loop, N = 64 | 33 880.8 | 5 764.0 | 34 156.1 | 5 772.8 |
+| busy loop, N = 1 | 14 426.6 | 16 012.7 | 15 363.1 | 17 112.6 |
+| busy loop, N = 16 | 232 760.9 | 245 377.5 | 248 362.7 | 260 613.8 |
+| busy loop, N = 64 | 963 908.3 | 1 160 350.2 | 1 024 284.4 | 1 222 130.3 |
+
+Idle N = 16, uring against kernel: `0.1217` and `0.1251`. The idle loop is about eight times
+cheaper at N = 16. The busy loop is recorded, not judged, and it is 5–20 % dearer over `io_uring`.
+
+**The verdict** (plan row 5, *Hàng 7 sẽ đo gì*; ADR-0190 decision 10), as `verdict-inputs.txt`
+prints it:
+
+```text
+clause (a) U/K p50 <= 0.97 and p99 <= 1.05, both procedures: no
+clause (b) idle N=16 uring/kernel <= 0.75 and U/K p50 <= 1.05, both procedures: no
+S beside U′, clause (a)'s arithmetic on S/U′ (cannot keep the item alone): no
+standard half: stdU/stdK p50 > 1.05 in both procedures (then UringBlock/serve_uring go): no
+```
+
+Clause (b)'s first half holds with a wide margin. Its second half, and all of clause (a), fail
+by about 29 %. **Dropped**: the `io-uring` feature, module, `w2w` flags and script runs were
+removed on the same branch (ADR-0098; ADR-0190 *Result*).
 
 ### The SQLite store against `FileJournal` `Async` (phase-4 row 4, step 4b)
 

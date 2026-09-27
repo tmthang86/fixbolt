@@ -47,7 +47,8 @@ pub trait Waiting {
 
     /// Whether [`Self::idle`] is what moves a
     /// [`crate::transport::Transport::NEEDS_REAPER`] transport's bytes into
-    /// reach of its `recv` — the `io_uring` strategies, ADR-0190 decision 1.
+    /// reach of its `recv` — written for the `io_uring` strategies (ADR-0190
+    /// decision 1), removed on 2026-09-27; no strategy in this crate reaps.
     ///
     /// Defaulted to `false`, so no strategy outside this crate changes a line;
     /// [`crate::Engine::new`] refuses a reaping transport under a strategy

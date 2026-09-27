@@ -89,7 +89,8 @@ to depth 4 with **0 allocations** walking all four levels.
 The counts are the default build's, read off each bench's own assertions `[2026-09-26]`:
 `crates/codec/benches/alloc.rs` asserts eight cases, `crates/session/benches/alloc.rs` asserts
 `[0; 17]` and `crates/engine/benches/alloc.rs` asserts `[0; 35]`. Features add cases on top:
-`fix50sp2` one in `codec` and four in `session`, `io-uring` on Linux one in `engine`. This table
+`fix50sp2` one in `codec` and four in `session`. `[2026-09-27]` `io-uring`'s one case in
+`engine` went with the feature (ADR-0190 *Result*). This table
 read 6, 16 and 24 until then, each counted before later cases were added.
 
 Each case asserts that its own path is live, so a case that stopped exercising its path fails

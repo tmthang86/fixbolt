@@ -1,5 +1,12 @@
 # A benchmark harness's default iteration count can run for hours on the wrong case
 
+> `[2026-09-27]` **The code this page's example comes from was removed**, with its tests. The
+> trap itself is general and still applies. The
+> `io_uring` transport failed its kill line on the §9 desk
+> ([ADR-0190](../decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
+> *Result*). The files and tests
+> named below exist only in the history, up to `383acc3`.
+
 `[measured 2026-09-24]` phase 4 row 5, `crates/engine/benches/density.rs`'s `busy_loop` module,
 named in the `io_uring` transport plan's row 5 step 5 commit.
 

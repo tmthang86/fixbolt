@@ -97,8 +97,7 @@ pass of the loop), then the doors: `serve`, `serve_hft`, `connect_and_serve` and
 By concern:
 
 - I/O: `transport` (`Transport`, `TcpTransport`), `frame` (`Framer`), `wait` (the idle strategy
-  per mode), `poll`/`block`/`waker` (`standard` only), `transport::uring` (feature `io-uring`),
-  `tls` (feature `tls`).
+  per mode), `poll`/`block`/`waker` (`standard` only), `tls` (feature `tls`).
 - Before a session exists: `presession` (`PendingSet`, `Registry`, `Table`, `Limits`, `Route`).
 - Delivery: `dispatch` (`Dispatch`, `InlineDispatch`, `RingDispatch`), `ring`, `backpressure`.
 - State kept: `journal` (`MemJournal`, `FileJournal`), `recovery` (`Recovery`), `msglog`
@@ -112,8 +111,8 @@ in `standard` it **must** block when idle (D8,
 CLAUDE.md §2 item 4. Check: `scripts/check-no-kernel-sleep.sh`,
 `scripts/check-no-kernel-sleep-by-ctxt.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh`
 (`standard`) — each traces a prebuilt `tools/w2w`, so first run
-`cargo build -p fixbolt-w2w --release --features tls,io-uring` as the CI jobs do, or the io_uring
-arms print *SKIPPED, NOT PASSED* — and the test
+`cargo build -p fixbolt-w2w --release --features tls` as the CI jobs do, or the TLS arms print
+*SKIPPED, NOT PASSED* — and the test
 `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits`; `hft` under TLS is unchecked.
 
 **Architecture Invariant:** no heap allocation on the session or dispatch path, on either
@@ -121,7 +120,7 @@ thread. Rule: CLAUDE.md §2 item 1. Check: `crates/engine/benches/alloc.rs` in t
 `tools/w2w`, which asserts zero allocations on both threads over its timed window.
 
 **Architecture Invariant:** a feature gates the `mod` declaration itself — `standard`,
-`affinity`, `tls` and `io-uring` compile to nothing when off — and no `build.rs` calls an external
+`affinity` and `tls` compile to nothing when off — and no `build.rs` calls an external
 toolchain unless its feature is on. Rule: CLAUDE.md §2 item 6 (D5). Check: the
 `no-default-features` job and `scripts/check-no-optional-deps.sh`, per crate
 ([why per crate](docs/reference/feature-flags-unify-across-a-workspace.md)).
@@ -168,7 +167,7 @@ panicking index. Rule: CLAUDE.md §2 item 7 (D6). Check: `scripts/check-lint-con
 **`unsafe`.** In library code, only in `engine`, in modules behind a feature: `poll` and `waker`
 (`standard`), `affinity` (`affinity`,
 [ADR-0019](docs/decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md)),
-`transport::uring` (`io-uring`); `sbe` forbids it. Outside library code, the counting allocators in
+`sbe` forbids it. Outside library code, the counting allocators in
 `crates/*/benches/alloc.rs` and `tools/w2w` (`unsafe impl GlobalAlloc`), `engine/benches/wakeup.rs`
 and some tests use it too.
 **Architecture Invariant:** every `unsafe` block has a plan and a comment naming what proves it
@@ -184,5 +183,5 @@ are [DESIGN.md §6](docs/DESIGN.md#6-gates). A performance figure needs its benc
 hand-check); the budget is [§8](docs/DESIGN.md#8-latency-budget-on-kernel-tcp), recorded figures
 [measured-costs.md](docs/reference/measured-costs.md).
 
-**Platforms.** `hft`, `affinity`, `shard`, kTLS and `io-uring` are Linux-only and do not compile
+**Platforms.** `hft`, `affinity`, `shard` and kTLS are Linux-only and do not compile
 on macOS, so a local `cargo check` on a Mac does not see them — CI on Linux does.

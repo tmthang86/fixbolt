@@ -699,5 +699,12 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
   có tám crate. `check-semver-against-tag.sh` bỏ qua theo tên hai crate chưa có trong `v0.1.0`,
   vì `cargo semver-checks` dừng với exit 101 trên chúng. `io_uring` bỏ, việc gỡ là phần B.
 
+- `[2026-09-27, phần B]` **7b.3 xong: `io_uring` bị bỏ và code đã gỡ** (7b bước 10: "`io_uring`
+  bỏ → senior developer gỡ feature `io-uring`"). Cặp K/U/U′/S/stdK/stdU của hai procedure và các
+  cặp bench `idle`/`busy` N = 1/16/64 đã ghi vào `measured-costs.md` trước khi gỡ. Driver
+  `scripts/boot-p4.sh` giữ nguyên như bản đã chạy boot, để làm lịch sử. Nó vẫn nói
+  `--transport uring`, mà `tools/w2w` nay từ chối, nên **không chạy lại được y nguyên**.
+  `scripts/check-boot-p4-driver.sh` vẫn xanh. CI run id: `<CI run id>`.
+
 *(Điền tiếp khi từng hàng đóng: đã dựng gì, ở đâu, gate nào xanh, CI run id, cái chưa làm
 và vì sao. Handoff trước reboot (7a) và sau boot (7b) ghi ở đây và ở `STATUS.md` cùng commit.)*

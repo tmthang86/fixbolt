@@ -136,37 +136,19 @@ against that tag rather than a published baseline.
   row 4).
   Not a dependency of `fixbolt-engine` or of `fixbolt`; usage is
   [GUIDE.md §6d](docs/GUIDE.md), settings are [CONFIGURATION.md §6](docs/CONFIGURATION.md).
-- **A second `Transport`, `io_uring`, behind the off-by-default `io-uring` feature (`engine`,
-  `library`, Linux only, kernel ≥ 6.1)** — receive is a multishot `recv` into a provided buffer
-  ring, reaped by the idle strategy instead of one `read(2)` per socket per turn
-  ([DESIGN.md D5, D8](docs/DESIGN.md),
-  [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md),
-  [ADR-0191](docs/decisions/ADR-0191-the-hft-sleeper-list-reads-io-uring-enter-by-its-min-complete.md)).
-  **`fixbolt_engine::transport::uring`**: `Uring` (the ring, `hft`/`standard` constructors
-  `Uring::hft`/`Uring::standard`, `Uring::register`), `UringConfig` (buffers per connection,
-  buffer length, connections — no hidden default, refused by `UringConfigError`; each connection
-  draws from its own provided-buffer ring, [ADR-0192](docs/decisions/ADR-0192-each-io-uring-connection-draws-from-its-own-provided-buffer-ring.md)), `UringTransport`,
-  `UringSpin` (`hft`'s idle strategy and reaper) and `UringBlock` (`standard`'s, behind
-  `standard` too), `HftArm` (`Enter`, and — behind `affinity` — `Sqpoll { pin: CorePin }`,
-  never a default), `UringArm`, `UringReport` (counts only: `cqes`, `bytes`, `enobufs`,
-  `rearms`, `stale`, `enter_errors`, `unarmed`, `cq_overflow`, `unisolated`, `unflushed`,
-  `drop_conflicts`, `enobufs_slots`, `buffer_bytes`), and
-  `UringRefused` (`Disabled { sysctl }`, `Blocked`, `NotInKernel`, `KernelTooOld`,
-  `TooSmall { have, need }`, `Other`) — a blocked or too-old kernel refuses at startup, named,
-  before any socket is bound, and this transport never falls back to `read(2)`.
-  **`fixbolt_engine::{serve_hft_uring, serve_uring}`** are the new entry points;
-  **`ServeError::Uring(UringRefused)`** is the error they add. **`Transport::NEEDS_REAPER`**
-  and **`Waiting::REAPS`** are new defaulted associated constants (both default `false`, so no
-  implementation outside this crate changes), asserted compatible by a `const` block in
-  `Engine::new` — pairing `UringTransport` with `Spin` or `block::Block` is now a compile error.
-  **`Transport::carrier(&self) -> Carrier`** (defaulted to `Carrier::Other`) and
-  **`Engine::carrier(&self, ConnId) -> Option<Carrier>`** report which receive path is carrying
-  a connection's bytes, read back after the fact rather than assumed from what was asked for —
-  the same shape `TlsMode` already has. `Carrier` is `Kernel`, `Uring` or `Other`.
-  `tools/w2w` gains `--transport kernel|uring`, `--uring-arm enter|sqpoll` and
-  `--sqpoll-core <cpu>` under the same feature, printing its `transport:` line from
-  `Engine::carrier` rather than from the flag
-  ([CONFIGURATION.md](docs/CONFIGURATION.md), [GUIDE.md §9](docs/GUIDE.md)).
+- **`fixbolt-engine`: two defaulted hooks on the transport and the waiting strategy.**
+  **`Transport::NEEDS_REAPER`** and **`Waiting::REAPS`** are defaulted associated constants,
+  both `false`, so no implementation outside this crate changes. A `const` block in
+  `Engine::new` refuses a transport that needs a reaper under a strategy that does not reap, as a
+  compile error. **`Transport::carrier(&self) -> Carrier`** (defaulted to `Carrier::Other`) and
+  **`Engine::carrier(&self, ConnId) -> Option<Carrier>`** report which receive path carries a
+  connection's bytes, read back after the fact. `Carrier` is `Kernel`, `Uring` or `Other`, and
+  no transport in this crate reports `Uring`. `tools/w2w` prints it as `transport: kernel`.
+- **Not in this release: an `io_uring` transport.** It was built behind an off-by-default
+  `io-uring` feature (2026-09-24) and removed on 2026-09-27, before any tag carried it. On the §9
+  desk its `hft` wire p50 was 29–30 % slower than kernel TCP, which fails its kill line
+  ([ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
+  *Result*). `tools/w2w` refuses `--transport`, `--uring-arm` and `--sqpoll-core` by name.
 
 ## Conditions to reach `1.0`
 

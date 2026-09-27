@@ -516,3 +516,27 @@ việc này là Revision 3, R6.
 
 *(Manager ghi vào đây khi đóng từng bước: commit, gate đã chạy, CI run id, cái gì chưa chứng
 minh.)*
+
+- `[2026-09-27]` **Hàng 7 đã đo: hạng mục bị BỎ, code đã gỡ trên nhánh `plan/p4-boot-7b`.**
+  Boot §9 `20260927T042832Z`, tất cả số đọc từ `verdict-inputs.txt`:
+  - U/K wire p50 là 1,3030 (procedure 1) và 1,2889 (procedure 2); U/K wire p99 là 1,2493 và
+    1,2404. Nghĩa là `io_uring` chậm hơn kernel TCP khoảng 29–30 %.
+  - Vòng rảnh N = 16, uring/kernel: 0,1217 và 0,1251, tức rẻ hơn khoảng tám lần.
+  - Vế (a) `no`. Vế (b) `no`: vòng rảnh qua, nhưng p50 không qua.
+  - S/U′ 0,988, và S một mình không giữ được hạng mục.
+  - stdU/stdK 0,9999, tức `standard` không đổi.
+
+  Đã gỡ, theo mục *Hàng 7 sẽ đo gì*:
+  - feature `io-uring`, dependency và `Cargo.lock`;
+  - `transport::uring`, `serve_hft_uring`, `serve_uring`, `ServeError::Uring`;
+  - `tests/uring.rs` và hai ca 59 định nghĩa chạy qua ring trong `tests/wire.rs`;
+  - ca alloc `uring-exchange`, cặp bench `turn`/`density`;
+  - cờ `w2w` (nay bị từ chối kèm tên, không lặng lẽ bỏ qua);
+  - nhánh uring của ba script bất biến 4 (trả về đúng bản trước PR #110);
+  - `check-uring-refused-under-sysctl.sh` và job CI `io-uring`.
+
+  **Giữ lại** vì không nằm sau feature: `Transport::NEEDS_REAPER`, `Waiting::REAPS`, `Carrier`,
+  `Engine::carrier`. Phép từ chối lúc biên dịch nay có doctest `compile_fail,E0080` canh; đảo
+  ngược thì đỏ đúng câu `Test compiled successfully`. ADR-0190 có *Result*; ADR-0191 và
+  ADR-0192 chuyển sang Deprecated. Cặp số đầy đủ ở `measured-costs.md`. CI run id: `<CI run id>`.
+

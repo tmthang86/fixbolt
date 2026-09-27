@@ -1,6 +1,9 @@
 # ADR-0191 — The `hft` sleeper list reads `io_uring_enter` by its `min_complete`
 
-- **Status**: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18.
+- **Status**: **Deprecated — 2026-09-27**: the `io_uring` transport whose `io_uring_enter` this
+  reads was removed when phase 4 row 5 failed its kill line (ADR-0190 *Result*).
+  `scripts/check-no-kernel-sleep.sh` lists `io_uring_enter` as a sleeper by name again, as it did
+  before this ADR. Before that: Accepted — 2026-09-24, by the manager under the owner's delegation of 2026-09-18.
   Written by the architect (Opus) for phase 4 row 5
   ([plan](../plans/2026-09-24-p4-io-uring-transport.md)).
 - **Date**: 2026-09-24

@@ -1,6 +1,7 @@
 # ADR-0192 — Each `io_uring` connection draws from its own provided-buffer ring
 
-- **Status**: Accepted — 2026-09-24, built in PR #110 with its red-first test
+- **Status**: **Deprecated — 2026-09-27**: the `io_uring` transport it shaped was removed when
+  phase 4 row 5 failed its kill line (ADR-0190 *Result*). Before that: Accepted — 2026-09-24, built in PR #110 with its red-first test
   (`a_connection_nobody_reads_cannot_starve_another`) and its reversal (every slot on group 0).
   Proposed 2026-09-24. Written by the architect (Opus) for phase 4 row 5, from design
   finding L3 of the senior review of PR #110. **Supersedes the shared-pool bullet of
