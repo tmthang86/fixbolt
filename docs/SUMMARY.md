@@ -337,4 +337,5 @@
 - [ADR-0207 — A custom dictionary is an overlay, generated in the user's build into the user's own type](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
 - [ADR-0210 — The reaper pair and the carrier report leave the public API before the next tag](decisions/ADR-0210-the-reaper-pair-and-the-carrier-report-leave-the-public-api-before-the-next-tag.md)
 - [ADR-0211 — Each SWAR kernel is judged on its own case, and the checksum is measured against a loop the compiler already vectorises](decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md)
+- [ADR-0212 — An A/B boot stops early only to discard: the micro-benches run a fixed twenty rounds, and the density arm gets one futility look at six](decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md)
 <!-- END GENERATED: decisions -->
