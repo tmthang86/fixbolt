@@ -44,8 +44,6 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
    one syscall builds on the next
 7. `affinity.rs` → `shard.rs` — cores, then many engines across them
 8. `tls.rs` — a second transport, read last since it assumes 1–3
-9. `transport/uring.rs` — a third transport, read last for the same reason as `tls.rs`, and
-   after `wait.rs` (`NEEDS_REAPER`/`REAPS`, the const it and `Engine::new` check between them)
 
 ## Tests that guard it
 

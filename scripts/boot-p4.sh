@@ -231,10 +231,15 @@ active_timers_verdict() { # active_timers_verdict <system|user> <systemctl list-
 }
 active_timers_check() { # active_timers_check <system|user> — reads systemd, prints the verdict line
   local json
+  # Fails closed on BOTH managers (senior review of PR #124): a `systemctl
+  # --user` that cannot answer is not a user manager with no timers — it is a
+  # question this check could not ask, and the refusal says so.
   if [ "$1" = user ]; then
-    json=$(systemctl --user list-units --type=timer --all --output=json --no-pager 2>/dev/null) || json='[]'
+    json=$(systemctl --user list-units --type=timer --all --output=json --no-pager 2>/dev/null) ||
+      { printf 'UNKNOWN\t%s: systemctl --user list-units failed\t\n' "$1"; return 0; }
   else
-    json=$(systemctl list-units --type=timer --all --output=json --no-pager 2>/dev/null) || json='null'
+    json=$(systemctl list-units --type=timer --all --output=json --no-pager 2>/dev/null) ||
+      { printf 'UNKNOWN\t%s: systemctl list-units failed\t\n' "$1"; return 0; }
   fi
   active_timers_verdict "$1" "$json"
 }
@@ -322,7 +327,7 @@ if [ "$SUB" = build ]; then
     'select(.executable != null and .target.name == $n and (.target.kind[]? == "bench")) | .executable' | tail -1; }
   turn=$(exe_of turn)
   density=$(exe_of density)
-  [ -x "$turn" ] && [ -x "$density" ] || die "cargo named no turn/density executable"
+  if [ ! -x "$turn" ] || [ ! -x "$density" ]; then die "cargo named no turn/density executable"; fi
   (cd / && sha256sum "$BOOT_ROOT/uring/target/release/w2w" "$BOOT_ROOT/sqlite/target/release/w2w" \
     "$turn" "$density") >"$BOOT_ROOT/MANIFEST.txt" || die "sha256sum failed"
   if mid=$(mac_identity 2>/dev/null) && [ -n "$mid" ]; then

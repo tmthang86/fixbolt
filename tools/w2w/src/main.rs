@@ -486,17 +486,15 @@ static CARRIER_SEEN: AtomicU8 = AtomicU8::new(0);
 const fn carrier_code(c: Option<Carrier>) -> u8 {
     match c {
         Some(Carrier::Kernel) => 1,
-        Some(Carrier::Uring) => 2,
-        Some(Carrier::Other) => 3,
-        None => 4,
+        Some(Carrier::Other) => 2,
+        None => 3,
     }
 }
 
 const fn carrier_name(code: u8) -> &'static str {
     match code {
         1 => "kernel",
-        2 => "uring",
-        3 => "other",
+        2 => "other",
         _ => "unknown",
     }
 }

@@ -165,12 +165,7 @@ impl TlsMode {
 }
 
 /// What carries a connection's received bytes to its `recv` — the kernel's
-/// `read(2)`, or completions reaped from an `io_uring`.
-///
-/// `[2026-09-27]` No transport in this crate reports [`Self::Uring`] any more:
-/// the `io-uring` feature and its transport were removed when phase 4 row 5
-/// failed its kill line (ADR-0190 *Result*). The variant stays for a transport
-/// outside this crate.
+/// `read(2)`, or something else.
 ///
 /// `[2026-09-24]` phase 4 row 5, ADR-0190. **Reported, not inferred**, for the
 /// reason [`TlsMode`] is: a figure measured over one receive path and labelled
@@ -182,9 +177,6 @@ pub enum Carrier {
     /// `recv` is a non-blocking `read(2)` on a kernel TCP socket —
     /// [`TcpTransport`], and the TLS transport over it.
     Kernel,
-    /// `recv` copies completions an idle strategy reaped from an `io_uring`.
-    /// Reported by no transport in this crate since 2026-09-27.
-    Uring,
     /// Anything else — [`Loopback`], or a transport outside this crate that
     /// says nothing. The default.
     Other,
@@ -213,9 +205,8 @@ pub trait Transport {
     /// [`crate::wait::Spin`], `block::Block` — it would compile, run, and
     /// never receive a byte. [`crate::Engine::new`] refuses that pairing when
     /// it is compiled: `!T::NEEDS_REAPER || W::REAPS` (ADR-0190 decision 1).
-    /// The `io_uring` transport this was written for was removed on
-    /// 2026-09-27 (ADR-0190 *Result*); this doctest keeps the refusal proven
-    /// with a transport of its own:
+    /// No transport in this crate sets it; this doctest keeps the refusal
+    /// proven with a transport of its own:
     ///
     /// ```compile_fail,E0080
     /// # struct App;

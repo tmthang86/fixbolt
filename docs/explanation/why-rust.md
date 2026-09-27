@@ -97,7 +97,7 @@ unsafe trait), and the bench file says what makes it sound (`crates/codec/benche
 - **`unsafe` is opt-in and can be found by search.** `fixbolt-session` and `fixbolt-sbe` declare
   `#![forbid(unsafe_code)]`; `fixbolt-codec`, `fixbolt-dict` and the `fixbolt` facade contain no
   `unsafe` block. The `unsafe` in `fixbolt-engine` is calls into the C library (`poll`, `pipe`,
-  `fcntl`, CPU affinity, `io_uring`), each module behind the feature that needs it
+  `fcntl`, CPU affinity), each module behind the feature that needs it
   ([ADR-0019](../decisions/ADR-0019-two-unsafe-blocks-and-an-error-the-enum-can-hold.md)). The ring
   that hands messages to an application thread is safe Rust by decision, at a published price
   ([ADR-0007](../decisions/ADR-0007-spsc-ring-without-unsafe.md)).
@@ -107,7 +107,7 @@ unsafe trait), and the bench file says what makes it sound (`crates/codec/benche
 ### Optional code is really optional
 
 A Cargo feature can remove a module from the build entirely: `#[cfg(feature = "…")]` on the `mod`
-declaration. TLS, `io_uring`, CPU pinning and FIX 5.0 SP2 are all gated that way, and CI builds
+declaration. TLS, CPU pinning and FIX 5.0 SP2 are all gated that way, and CI builds
 `--no-default-features` on a machine with nothing optional installed
 ([DESIGN.md §4 D5](../DESIGN.md#d5--transport-is-a-trait-tcp-is-the-only-implementation-that-ships-by-default)).
 

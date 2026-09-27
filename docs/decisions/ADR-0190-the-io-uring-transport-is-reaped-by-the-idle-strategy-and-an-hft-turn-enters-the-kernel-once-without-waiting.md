@@ -445,8 +445,9 @@ are Deprecated.
 `Waiting::REAPS` and the compile-time refusal in `Engine::new`, now held by a
 `compile_fail,E0080` doctest on `NEEDS_REAPER` with a transport of its own (reversal: the
 assertion made always true → `Test compiled successfully, but it's marked compile_fail`). Also
-kept: `transport::Carrier` (its `Uring` variant now reported by nothing in this crate),
-`Transport::carrier` and `Engine::carrier`, which `tools/w2w` prints as `transport: kernel` and
+kept: `transport::Carrier` (now `Kernel` or `Other` — its `Uring` variant was removed in the
+same pass, before any tag carried it, so removing it cost no break), `Transport::carrier` and
+`Engine::carrier`, which `tools/w2w` prints as `transport: kernel` and
 `scripts/w2w-baseline.sh` requires. Whether these hooks stay is not decided here.
 
 Full tables, the Mac-side figures and the `busy loop` pairs:

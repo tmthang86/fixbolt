@@ -138,7 +138,7 @@ the wire under either dispatch.
 
 ## D5 — Transport is a trait, and a feature gates the module itself
 
-**The problem.** Optional transports (TLS, `io_uring`, and one day kernel bypass) bring
+**The problem.** Optional transports (TLS today, one day kernel bypass) bring
 dependencies and sometimes system libraries. A crate whose optional module is declared
 unconditionally, or whose `build.rs` runs an external toolchain regardless, cannot be built by
 anyone who lacks that toolchain.
@@ -146,9 +146,10 @@ anyone who lacks that toolchain.
 **The decision.** `Transport` is a two-method trait; kernel TCP is the only implementation built by
 default. A Cargo feature gates the `mod` declaration itself, and `build.rs` runs no external
 toolchain unless its feature is on. CI builds with `--no-default-features` on a machine with
-nothing optional installed. A transport that cannot start where it was asked for (for example
-`io_uring` blocked by a container's seccomp filter) refuses at start-up with a named cause; it never
-falls back silently.
+nothing optional installed. A transport that cannot start where it was asked for (for example a
+deployment that requires kernel TLS on a kernel that cannot offload it,
+[ADR-0060](../decisions/ADR-0060-a-deployment-that-requires-the-kernel-is-refused-twice.md)) refuses
+at start-up with a named cause; it never falls back silently.
 
 **What it costs.** Little in code. The cost is in testing: Cargo unifies features across one
 invocation, so a feature combination can compile in the workspace and fail on its own

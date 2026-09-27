@@ -74,6 +74,12 @@ the two user timers of attempt 1. A fake `systemctl` first on `PATH` also exerci
 
 Both were restored to `pass 28 fail 0`.
 
+The check fails closed on both managers (senior review of PR #124). At first a `systemctl --user`
+that could not answer set the list to `[]`, so the user side read PASS. It now reads `UNKNOWN`,
+and the run is refused. A fake `systemctl` that exits 1 for `--user` must read `UNKNOWN`.
+Reversal, `|| json='[]'` put back: `FAIL  a failing systemctl --user read: PASS … user: no timer
+unit active`. Restored: `pass 30 fail 0`.
+
 **What the guard cannot see:** the refusal's top-level loop in the driver. It also cannot see
 whether a unit that is not a timer (a `.path` unit, a cron daemon) starts work mid-boot. The
 per-block `check-machine.sh` gate, whose *machine is quiet* row is re-read per run, is still what

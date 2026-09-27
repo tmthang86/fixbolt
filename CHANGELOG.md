@@ -142,8 +142,11 @@ against that tag rather than a published baseline.
   `Engine::new` refuses a transport that needs a reaper under a strategy that does not reap, as a
   compile error. **`Transport::carrier(&self) -> Carrier`** (defaulted to `Carrier::Other`) and
   **`Engine::carrier(&self, ConnId) -> Option<Carrier>`** report which receive path carries a
-  connection's bytes, read back after the fact. `Carrier` is `Kernel`, `Uring` or `Other`, and
-  no transport in this crate reports `Uring`. `tools/w2w` prints it as `transport: kernel`.
+  connection's bytes, read back after the fact. `Carrier` is `Kernel` or `Other` (its `Uring`
+  variant went with the transport, before any tag carried it). `tools/w2w` prints it as
+  `transport: kernel`. **No transport or strategy in this crate sets `NEEDS_REAPER` or `REAPS`
+  to `true`**; whether these hooks stay public is an open question for the architect
+  (`STATUS.md` *Open items*).
 - **Not in this release: an `io_uring` transport.** It was built behind an off-by-default
   `io-uring` feature (2026-09-24) and removed on 2026-09-27, before any tag carried it. On the §9
   desk its `hft` wire p50 was 29–30 % slower than kernel TCP, which fails its kill line

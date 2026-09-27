@@ -532,7 +532,7 @@ jobs:
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "Workspace members: $n"
           if [ "$n" -eq 0 ]; then
-            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members. This workspace holds six crates, so zero means a broken checkout or a broken manifest — not an empty repository. Failing rather than passing on nothing: CLAUDE.md §10, a green result that was inferred rather than observed is not a result. STATUS.md open item 26."
+            echo "::error title=Nothing to check::cargo metadata reports 0 workspace members. This workspace holds fourteen members, so zero means a broken checkout or a broken manifest — not an empty repository. Failing rather than passing on nothing: CLAUDE.md §10, a green result that was inferred rather than observed is not a result. STATUS.md open item 26."
             exit 1
           fi
 
@@ -1192,7 +1192,7 @@ jobs:
   # ADR-0160 decision 6: before the first publish, the PACKAGED SOURCES are
   # the stranger. Plan docs/plans/2026-09-23-p3-packaging-and-first-release.md
   # row 6b, ADR-0097 exit criterion 3 ("packaged as it would be at publish
-  # time"). `cargo publish --workspace --dry-run` proves the six crates build
+  # time"). `cargo publish --workspace --dry-run` proves the published crates build
   # against EACH OTHER'S packaged sources, but only with DEFAULT features —
   # docs/reference/publishing-a-workspace-to-crates-io.md trap 7 says so in
   # words, and `check-packaged-build.sh` says so by building twenty other
@@ -1200,7 +1200,7 @@ jobs:
   # above: this job's whole point is a runner that never fetched `vendor/`,
   # because a real crates.io user and docs.rs never see it either.
   package:
-    name: The six crates package, dry-run publish, and build from nothing but the .crate contents (no vendor/)
+    name: The published crates package, dry-run publish, and build from nothing but the .crate contents (no vendor/)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -1208,7 +1208,7 @@ jobs:
       - name: vendor/ must not exist on this runner
         run: |
           if [ -e vendor ]; then
-            echo "::error title=vendor/ is present::This job exists to prove the six crates package and build WITHOUT vendor/ (ADR-0160 decision 6). Something put a vendor/ directory on this runner before this step; find it and remove it rather than trusting this job's green." >&2
+            echo "::error title=vendor/ is present::This job exists to prove the published crates package and build WITHOUT vendor/ (ADR-0160 decision 6). Something put a vendor/ directory on this runner before this step; find it and remove it rather than trusting this job's green." >&2
             exit 1
           fi
       # ADR-0160 decision 3: `rust-version` — raised from "1.88" to "1.89" by
@@ -1270,7 +1270,7 @@ jobs:
   # (`baseline v0.1.0 = highest of: v0.1.0`); read it when this job is
   # green. `scripts/check-semver-against-tag.sh` wraps
   # `cargo semver-checks --workspace --baseline-rev <tag>` and additionally
-  # asserts that each of the six published crates actually ran a nonzero
+  # asserts that each crate in its PUBLISHED list (the six of v0.1.0) ran a nonzero
   # count of checks — `[measured 2026-09-24]` an unchanged `0.y.z` version
   # runs the full 196-check lint set, but a `0.y` -> `0.(y+1)` bump is read as
   # a MAJOR change and silently skips every lint while still exiting 0
@@ -1297,14 +1297,15 @@ jobs:
   # a worktree — a tag made in a worktree is a real tag of this repository)
   # are recorded in the plan's *Nhật ký giao hàng*.
   #
-  # `cargo semver-checks --workspace` with no `--exclude`
-  # `[measured 2026-09-23]` already checks exactly the six published crates
-  # and never mentions `fixbolt-conformance`, `fixbolt-sbe-gen` or
-  # `tools/*` — those are `publish = false` (ADR-0160 decision 2) and
-  # cargo-semver-checks reads that the same way `cargo publish --workspace`
-  # does. No `--exclude` is needed; if a future crate is added without
-  # `publish = false` and should stay unchecked, name it here and update
-  # docs/reference/publishing-a-workspace-to-crates-io.md.
+  # `cargo semver-checks --workspace` `[measured 2026-09-23]` never mentions
+  # `fixbolt-conformance`, `fixbolt-sbe-gen` or `tools/*` — those are
+  # `publish = false` (ADR-0160 decision 2) and cargo-semver-checks reads
+  # that the same way `cargo publish --workspace` does. `[2026-09-27]` A
+  # publishable crate the baseline tag lacks stops the whole run (exit 101),
+  # so the script passes `--exclude` for each one, by name, printed:
+  # today `fixbolt-metrics` and `fixbolt-store-sqlite`, until a tag carries
+  # them (STATUS.md open item 117;
+  # docs/reference/cargo-semver-checks-stops-on-a-crate-the-baseline-does-not-have.md).
   #
   # There is no baseline literal to move after a new tag (ADR-0162); only
   # the `stranger-git` job below and the install lines in

@@ -3,7 +3,7 @@
 # resolve a mix of them that no CI run built (ADR-0160 decisions 1 and 4).
 # Six at ADR-0160; eight since 2026-09-27, when `fixbolt-metrics` (ADR-0170
 # decision 10) and `fixbolt-store-sqlite` (ADR-0182 decision 3) passed their
-# phase-4 kill lines. "The six" below reads "every published crate".
+# phase-4 kill lines.
 #
 # WHAT IT ASSERTS, read from the manifests themselves (python `tomllib`), not
 # from `cargo metadata` — metadata resolves `version.workspace = true` to the
@@ -11,9 +11,9 @@
 # that inherits the workspace version from one that has quietly stopped:
 #
 #   1. `[workspace.package] version` exists.
-#   2. Each of the six published crates inherits it (`version.workspace = true`)
+#   2. Each published crate inherits it (`version.workspace = true`)
 #      and is not `publish = false`.
-#   3. Every internal **normal** dependency of those six — `[dependencies]`,
+#   3. Every internal **normal** dependency of those crates — `[dependencies]`,
 #      `[build-dependencies]` and their `[target.*]` forms, i.e. whatever cargo
 #      keeps in the `.crate` — carries `version = "=<workspace version>"`
 #      beside its `path`. A path-only requirement is what `cargo package`
@@ -21,8 +21,8 @@
 #      a caret requirement is what lets a stranger mix two releases.
 #   4. Every other workspace member is `publish = false` (ADR-0160 decision 2):
 #      `cargo publish --workspace` would otherwise upload it.
-#   5. `crates/<crate>/LICENSE-MIT` and `LICENSE-APACHE` exist for each of the
-#      six and are byte-identical to the root copies. Only files under a package
+#   5. `crates/<crate>/LICENSE-MIT` and `LICENSE-APACHE` exist for each
+#      published crate and are byte-identical to the root copies. Only files under a package
 #      root reach its `.crate` (ADR-0104 decision 4), so each crate carries a
 #      copy, and a copy that drifts is a second licence.
 #
@@ -37,7 +37,7 @@
 # packaged sources build (the `package` CI job); the dict's `NOTICE` pair
 # (`scripts/check-dict-spec-pin.sh` check 4 already holds that).
 #
-# The list of six is written here on purpose. Reading "the published crates"
+# The list is written here on purpose. Reading "the published crates"
 # from the manifests would make a crate that was switched to `publish = false`
 # by mistake vanish from the check instead of failing it.
 #

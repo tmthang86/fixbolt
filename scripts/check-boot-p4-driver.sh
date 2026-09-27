@@ -79,25 +79,44 @@ if grep -q 'readonly variable' <<<"$got"; then bad "bash printed 'readonly varia
 # ------------------------------------------------ 1b. the class, over the whole driver
 echo "=== no readonly name in boot-p4.sh is assigned after it is made readonly"
 # Every name a `readonly` line declares, then any later `NAME=` in command
-# position or as a prefix (start of line, or after whitespace/`;`/`(`), outside
-# comments. `env NAME=value` is an argument and is written `NAME="…"` after
-# `env`; it is allowed only on a line that also says `env` — and the check below
-# proves that allowance cannot hide the bug by testing a prefix without env.
+# position or as a prefix (start of a command, or after whitespace/`;`/`(`),
+# outside comments. Continuation lines (`\` at the end) are joined first, so a
+# prefix list spread over several lines is one command. The ONE allowed form is
+# an argument of `env`: `NAME=` whose text before it on that command is `env`
+# followed only by other `NAME=value` words (senior review of PR #124: the
+# first version exempted any line that merely contained `env`, so
+# `ENGINE_CORE=$ENGINE_CORE timeout 5 env true` passed). Reported by the line
+# the command starts on.
 readonly_scan() { # readonly_scan <file> — prints "line: NAME" for each violation
   awk '
-    { code = $0; sub(/^[[:space:]]*#.*/, "", code) }
-    code ~ /^[[:space:]]*readonly[[:space:]]/ {
-      n = split(code, w, /[[:space:]]+/)
-      for (i = 1; i <= n; i++) { nm = w[i]; sub(/=.*/, "", nm); if (nm ~ /^[A-Z_][A-Z0-9_]*$/) ro[nm] = NR }
-      next
+    function check(code, lno,   nm, rest, off, dl, pre) {
+      for (nm in ro) {
+        if (lno <= ro[nm]) continue
+        rest = code; off = 0
+        while (match(rest, "(^|[[:space:];(])" nm "=")) {
+          dl = RLENGTH - length(nm) - 1
+          pre = substr(code, 1, off + RSTART - 1 + dl)
+          if (pre !~ ENVRE) print lno ": " nm
+          off += RSTART + RLENGTH - 1
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+      }
+    }
+    BEGIN {
+      ENVRE = "(^|[[:space:]])env([[:space:]]+[A-Za-z_][A-Za-z0-9_]*=(\"[^\"]*\"|[^[:space:]\"]*))*[[:space:]]+$"
     }
     {
-      for (nm in ro) {
-        if (NR <= ro[nm]) continue
-        if (code ~ ("(^|[[:space:];(])" nm "=") && code !~ /(^|[[:space:]])env([[:space:]]|$)/ && prev !~ /(^|[[:space:]])env[[:space:]]*\\$/) print NR ": " nm
-      }
-      prev = code
-    }' "$1"
+      code = $0; sub(/^[[:space:]]*#.*/, "", code)
+      if (joined == "") start = NR
+      if (code ~ /\\$/) { sub(/\\$/, "", code); joined = joined code " "; next }
+      code = joined code; joined = ""
+    }
+    code ~ /^[[:space:]]*readonly[[:space:]]/ {
+      n = split(code, w, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) { nm = w[i]; sub(/=.*/, "", nm); if (nm ~ /^[A-Z_][A-Z0-9_]*$/) ro[nm] = start }
+      next
+    }
+    { check(code, start) }' "$1"
 }
 v=$(readonly_scan "$here/boot-p4.sh")
 if [ -z "$v" ]; then
@@ -105,14 +124,23 @@ if [ -z "$v" ]; then
 else
   bad "boot-p4.sh assigns a readonly name as a prefix or variable: $(tr '\n' ' ' <<<"$v")"
 fi
-# The scanner itself must see the shape that cost the boot.
-# shellcheck disable=SC2016 # the probe is text: $ENGINE_CORE must stay unexpanded
-printf 'readonly ENGINE_CORE=6\n  RUNS=1 ENGINE_CORE=$ENGINE_CORE \\\n    timeout 5 w2w-baseline.sh\n' >"$scratch/probe.sh"
-v=$(readonly_scan "$scratch/probe.sh")
-if [ "$v" = "2: ENGINE_CORE" ]; then
-  ok "the scanner sees a prefix ENGINE_CORE= after readonly (probe line 2)"
+# The scanner itself must see the shape that cost the boot, must still see it
+# when `env` appears later on the same command, and must let the `env` form by.
+# The probe is text (a quoted delimiter): nothing in it expands.
+cat >"$scratch/probe.sh" <<'PROBE'
+readonly ENGINE_CORE=6
+  RUNS=1 ENGINE_CORE=$ENGINE_CORE \
+    timeout 5 w2w-baseline.sh
+ENGINE_CORE=$ENGINE_CORE timeout 5 env true
+  timeout 5 env \
+    RUNS=1 ENGINE_CORE="$ENGINE_CORE" GAP=8 \
+    w2w-baseline.sh
+PROBE
+v=$(readonly_scan "$scratch/probe.sh" | tr '\n' ' ')
+if [ "$v" = "2: ENGINE_CORE 4: ENGINE_CORE " ]; then
+  ok "the scanner sees a prefix ENGINE_CORE= after readonly (probe line 2), also with env later on the command (line 4), and lets env NAME=... by (line 5)"
 else
-  bad "the scanner missed the 2026-09-27 shape: got '$v'"
+  bad "the scanner read the probe as '$v', not '2: ENGINE_CORE 4: ENGINE_CORE '"
 fi
 
 # ------------------------------------------------ 2a. active_timers_verdict, pure
@@ -160,6 +188,19 @@ line=$(PATH="$scratch/bin:$PATH" active_timers_check system)
 if [[ "$line" == FAIL*"system: anacron.timer active"* ]]; then ok "system manager read: anacron.timer"; else bad "system manager: $line"; fi
 line=$(PATH="$scratch/bin:$PATH" active_timers_check user)
 if [[ "$line" == FAIL*"user: aura-glass-update-check.timer"* ]]; then ok "user manager read: --user"; else bad "user manager: $line"; fi
+# A `systemctl --user` that cannot answer (no user bus, no manager) is not a
+# user manager with no timers: the check must fail closed, as the system side does.
+cat >"$scratch/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" --user "*) echo "Failed to connect to bus" >&2; exit 1 ;;
+  *) printf '%s' '$stopped' ;;
+esac
+EOF
+line=$(PATH="$scratch/bin:$PATH" active_timers_check user)
+if [[ "$line" == UNKNOWN*"user: "* ]]; then ok "a failing systemctl --user reads UNKNOWN, not PASS"; else bad "a failing systemctl --user read: $line"; fi
+line=$(PATH="$scratch/bin:$PATH" active_timers_check system)
+if [[ "$line" == PASS* ]]; then ok "and the system side of that fake still reads PASS"; else bad "system side of the failing-user fake: $line"; fi
 
 echo
 echo "pass $pass   fail $fail"

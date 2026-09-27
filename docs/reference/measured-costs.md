@@ -5029,8 +5029,14 @@ transport was removed (ADR-0190 *Result*).
 on. The §9 grub line: `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, no
 `nohz_full`. Runtime: `fixbolt-machine on`, so SMT is off and cores 14 and 15 are offline. Every
 timer unit of both managers was stopped (boot plan *Sửa 5*). `FIXBOLT_NIC=enp9s0
-scripts/check-machine.sh` read `pass 17 fail 0 unknown 0` before every block, in every arm's own
-summary, and at the end of both scripts. **Generator:** the Mac mini over the direct cable,
+scripts/check-machine.sh` read `pass 17 fail 0 unknown 0` before every block and at the end of
+both scripts. It read the same in every arm's own summary **but one**: procedure 1's K arm, whose
+summary reads `machine pass 16 fail 1 unknown 0`. That arm's own read, at its start, found
+`FAIL   machine is quiet       10% CPU busy over 1s — code 2% of a core  claude 2% of a core
+code 2% of a core`: processes named `code` and `claude`, read after the driver's own gate for
+block A had read 17/0. `w2w-baseline.sh` re-reads *quiet* per run, and it disqualified one
+run there (9 of 10 qualified). Procedure 2's K arm reads 17/0. The verdict does not move: U/K
+wire p50 is 1.2889 in procedure 2, on a clean arm, as well as 1.3030 in procedure 1. **Generator:** the Mac mini over the direct cable,
 `w2w` sha256 `2826bbc19267…` at commit `1dd99bd`, unpinned. **Build:** commit `1dd99bd` (the
 7a merge), `rustc 1.98.0`, `RUSTFLAGS=-C llvm-args=-align-all-functions=6`. `MANIFEST.txt`
 read `OK` 4 of 4 before and after both scripts. **Settings of every arm:** `RUNS=10`,
@@ -5087,9 +5093,17 @@ All figures are in ns. Every arm reproduced itself across the two procedures
 - **stdK against stdU**: p50 `0.008%` (p1) and `0.016%` (p2), and `stdU/stdK counterparty p50
   0.9999` and `0.9998`. The p99.9 moved `3.045%` (p1) and `7.002%` (p2). The p2 move is
   `not reproduced`, and `compare/p2-stdK-vs-stdU.txt` exits 1 on it. p99.9 is not judged.
-- **Mac-side, `hft`**: the K arms answered at 150 µs p50 as the Mac sees them. Every `io_uring`
-  `hft` arm answered at 260–261 µs, which is the `standard` level. Recorded, **not explained**:
-  no run here isolates why.
+- **Mac-side, `hft`: two levels, and not an `io_uring` property.** The Mac-side round trip of
+  an `hft` run sits either near 150 µs or near 250–260 µs, and **K itself is bimodal**. Its
+  per-run p50s in procedure 1 are 150 000, 150 541, 149 333, **258 916**, **255 000**, 149 833,
+  149 208, 149 667, **243 583** (`across runs: 149208 .. 258916`). In procedure 2 they are nine
+  runs at 150 334–150 792 and one at **261 792**. Kernel-TCP `hft` arms also sat at the upper
+  level for whole arms: the store pair's `hft-file` (path `app`) runs are 249 375–257 500, p50
+  252 375. Every U run sat there too: 256 375–261 167 in procedure 1, 260 291–261 000 in
+  procedure 2. Row 2's `off-hft` sat at the lower level, 150 416–151 125. The acceptor's own wire
+  figure does not show the two levels (K wire p50 27 778 / 28 402). This is a bimodality of the
+  harness or the Mac side, **cause unknown**, and nothing here isolates it. Not judged: the
+  kill line reads the acceptor's wire figure.
 
 The `turn`/`density` benches were pinned to the engine core (`taskset -c 6`) from the same
 `uring` build (`turn` binary `01109e1fa106…`, `density` `79b86a555466…`), with

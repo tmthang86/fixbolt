@@ -74,12 +74,33 @@ the script is still wanted.
   `w2w-baseline.sh` that prints what it received; `ENGINE_CORE=6` must be there, and bash must not
   have printed `readonly variable`;
 - scans the driver's text for any name assigned after the line that made it readonly — the class,
-  not the one instance — and proves the scanner sees the 2026-09-27 shape on a three-line probe.
+  not the one instance. Continuation lines are joined first. The only form it lets by is an
+  argument of `env`: the text before `NAME=` on that command must be `env` followed only by other
+  `NAME=value` words. A seven-line probe proves three things. The 2026-09-27 shape is seen (line
+  2). `ENGINE_CORE=$ENGINE_CORE timeout 5 env true` is seen too, although `env` appears later on
+  the command (line 4). The `env` form is let by (line 5).
 
 Reversal, 2026-09-27: `run_baseline` put back to the prefix form went red on three assertions:
 `want 'ENGINE_CORE=6' … got: …boot-p4.sh: line 197: ENGINE_CORE: readonly variable
 ENGINE_CORE=<unset> …`, `bash printed 'readonly variable'`, and `boot-p4.sh assigns a readonly name
 as a prefix or variable: 197: ENGINE_CORE`. Restored: `pass 28 fail 0`.
+
+The first scanner exempted any line that merely **contained** `env`, so the line-4 probe passed
+(senior review of PR #124). Reversal of the tightened rule, putting back the old exemption:
+`FAIL  the scanner read the probe as '2: ENGINE_CORE ', not '2: ENGINE_CORE 4: ENGINE_CORE '`.
+Restored: `pass 30 fail 0`.
+
+## A trap met while guarding it: the desk's shellcheck is not CI's
+
+`[measured 2026-09-27]` CI's lint job runs `shellcheck -S info` on `boot-p4.sh` and this guard,
+with the shellcheck the runner image ships. The job's *Set up job* reads `Image: ubuntu-24.04`,
+`Version: 20260920.314.1`, and that image's readme lists `shellcheck 0.9.0-1`. The desk has
+0.11.0. On `[ -x "$turn" ] && [ -x "$density" ] || die "…"`, 0.9.0 reports SC2015 (info) and
+0.11.0 reports nothing, so the desk was green and all three commits of PR #124 were red. The
+0.9.0 binary from the upstream release (`koalaman/shellcheck` v0.9.0) reproduces CI's finding
+exactly. **Before pushing a shell script CI lints, run it through the runner's shellcheck
+version, not the desk's.** Guard: the lint job itself. `ci.yml` names no version, so the
+runner image decides.
 
 ## The general rule
 
