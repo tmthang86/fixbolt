@@ -9,8 +9,10 @@ ring — and a writer thread of its own commits to SQLite in batches (WAL,
 disk**; a deployment that must have a message on disk before it is sent keeps `FileJournal`
 with `Durability::Fsync`.
 
-Not yet part of the tagged release family (`publish = false`): it joins once its measured kill
-line passes. Depend on it by path or by git from the repository.
+Part of the tagged release family since its kill line passed on 2026-09-27: 50 000 msg/s for 60 s
+with no record lost, and a `w2w` pair within 5 % of `FileJournal` `Async`. It is released under the
+next git tag after `v0.1.0`, at the workspace version. It is not on crates.io (ADR-0161), so depend
+on it by git from the repository.
 
 ## Features
 

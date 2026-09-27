@@ -5065,9 +5065,31 @@ heap are not counted.**
 All figures are in ns. The band lines (`compare/p{1,2}-{hft,std}-file-vs-sqlite.txt`):
 `hft` wire p50 `diff 0.277%` (p1) and `0.490%` (p2), `std` p50 `diff 0.056%` in both, and every
 p99 and p99.9 was `reproduced` too. `sqlite/file` computed in `verdict-inputs.txt`: `hft` 1.0028 and
-0.9951, `standard` 0.9994 and 0.9994. **Step 4b passes in both procedures and in both modes.** The
-store's kill line also needs step 4a (50 000 msg/s for 60 s, no record lost), which has **not run**,
-so this pair alone does not keep the crate (store plan 4c).
+0.9951, `standard` 0.9994 and 0.9994. **Step 4b passes in both procedures and in both modes.** With step 4a below and the
+alloc bench (step 4), the store's kill line passes, and the crate is kept (store plan 4c, ADR-0180
+*Result*).
+
+### The SQLite store at 50 000 msg/s for 60 s (phase-4 row 4, step 4a)
+
+`[measured 2026-09-27]` Same desk, same boot, after the two scripts above. The grub line was
+the §9 line, cmdline `BOOT_IMAGE=/boot/vmlinuz-7.0.0-34-generic … isolcpus=6,7,14,15
+rcu_nocbs=6,7,14,15 processor.max_cstate=1 …`, and the runtime settings were still on.
+`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` read `pass 17 fail 0 unknown 0` before and after.
+The build was `cargo build --release -p fixbolt-store-sqlite --example soak` from the worktree at
+`3f97383`, with the default toolchain 1.98.0. It is not pinned; the soak is a count, not a latency
+figure. `--dir target/soak` sat on ext4 on NVMe and was deleted after each run. The logs stayed
+on the desk under `target/p4-4a/` of that worktree.
+
+```text
+soak: fs ext4 synchronous normal rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 51 max_batch 6138 wal_bytes_max 4148872 db_bytes 648429568 pace_missed 0
+soak: fs ext4 synchronous normal rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 48 max_batch 5826 wal_bytes_max 4144752 db_bytes 648429568 pace_missed 0
+soak: fs ext4 synchronous full rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 28 max_batch 2978 wal_bytes_max 4185952 db_bytes 648429568 pace_missed 0
+```
+
+The first two lines are the verdict's two `normal` runs. Both exited 0, both lost nothing, and
+the pace never slipped. **Step 4a passes.** The third, `full`, is recorded only. It too lost
+nothing. Its writer fell less far behind (28 ms against 48–51 ms) in smaller batches (2 978
+against about 6 000). Read that as one run each, not a finding about `FULL`.
 
 ### The metrics exporter under a 10 Hz scrape (phase-4 row 2)
 

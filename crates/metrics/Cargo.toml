@@ -9,15 +9,14 @@ description = "A Prometheus exporter for fixbolt engines: holds an Observer, all
 readme = "README.md"
 keywords = ["fix", "fix-protocol", "prometheus", "metrics", "observability"]
 categories = ["finance", "network-programming"]
-# ADR-0170 decision 10: the lockstep family's mould from the day it merges —
-# inherited version, `=`-pinned internal dependency, this allowlist, the two
-# licence copies — but OUTSIDE the release family until phase 4 row 2's `w2w`
-# pair passes ADR-0098's kill line. `scripts/check-release-versions.sh` holds
-# the mould through its "shaped, not released" list, and its rule 4 holds this
-# line. `examples/**` is left out: the examples need `fixbolt-engine`'s
-# `standard` through the path-only dev-dependency below, which the `.crate`
-# strips.
-publish = false
+# ADR-0170 decision 10: the lockstep family's mould — inherited version,
+# `=`-pinned internal dependency, this allowlist, the two licence copies. In
+# the tagged release family since 2026-09-27, the commit that records phase 4
+# row 2's `w2w` pair passing ADR-0098's kill line (ADR-0170 *Result*): no
+# `publish = false`, the same field the other published crates carry
+# (ADR-0161). `scripts/check-release-versions.sh` lists it as published.
+# `examples/**` is left out: the examples need `fixbolt-engine`'s `standard`
+# through the path-only dev-dependency below, which the `.crate` strips.
 include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 # ADR-0170 decision 9: the only runtime dependency, and taken WITHOUT its

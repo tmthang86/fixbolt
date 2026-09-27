@@ -5,10 +5,11 @@ engines. It holds an `Observer` for each engine it watches and nothing else: it 
 cannot change, stop, or speak for an engine. One thread, named `fixbolt-metrics`, wakes every
 `tick`, answers the scrapes that are waiting, and sleeps. It allocates nothing per scrape.
 
-**Not released yet.** This crate is `publish = false` and outside the tagged release family
-until its cost to a running engine is measured and found inside the kill line
+**Part of the tagged release family since 2026-09-27.** On the §9 desk, a 10 Hz scrape moved an
+`hft` engine's wire p50 and p99 by less than the 5 % kill line
 ([ADR-0170](../../docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)
-decision 10).
+decision 10 and *Result*). It is released under the next git tag after `v0.1.0`. It is not on
+crates.io (ADR-0161), so depend on it by git.
 
 ```rust,no_run
 use fixbolt_engine::observe::Handles;

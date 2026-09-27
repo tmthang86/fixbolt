@@ -226,8 +226,10 @@ The exporter thread's mask was `[0-5, 8-13]` in all 36 on-arm runs, and every sc
 read `bad 0`. The scrape loop's own load disqualified four on-arm runs (9–13 % busy), recorded
 and not excused. Evidence: `target/boot-p4-evidence/20260927T042832Z/row2/` on the desk. Full
 table: [measured-costs](../reference/measured-costs.md), *Phase 4's §9 boot, 2026-09-27*.
-Decision 10 therefore applies: the crate joins the tagged release family in the commit that
-records this result.
+Decision 10 therefore applies. The result was first recorded in `3f97383`, and the crate joined
+the tagged release family in the next commit on the same branch: `publish = false` removed, and
+the crate added to `PUBLISHED` in `check-release-versions.sh`, `check-package-contents.sh` and
+`check-packaged-build.sh`.
 
 ## Sources
 

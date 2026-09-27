@@ -90,7 +90,7 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
 
-## Start here — 2026-09-27: row 7's §9 boot ran to its end — the exporter is kept, the store's wire pair passes, and the io_uring verdict waits for its removal step
+## Start here — 2026-09-27: row 7's §9 boot ran to its end — the exporter and the SQLite store are kept and join the release family; the io_uring removal is next
 
 Branch `plan/p4-boot-7b` (worktree `/home/tmt/Projects/fb-p4-7b`, from `origin/main` `3f7a0a3`).
 Gate for this change: `scripts/check-boot-p4-driver.sh`, `python3 scripts/check-links.py`. CI run
@@ -110,8 +110,17 @@ for the closing commit: `<CI run id>`.
   *Result*). `hft` wire p50 off → on moved 0.860 % and 0.169 %, and wire p99 moved 2.234 % and
   1.756 %. `standard` p50 moved 0.032 % and 0.016 %. Allocs were 0 everywhere. The exporter
   thread's mask was `[0-5, 8-13]` in all 36 on-arm runs.
-* **Store step 4b passes** in both procedures and both modes (`hft` wire p50 0.277 % and 0.490 %,
-  `standard` 0.056 % in both, allocs 0).
+* **The SQLite store is kept** ([ADR-0180](docs/decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md)
+  *Result*). Step 4b passed in both procedures and both modes (`hft` wire p50 0.277 % and
+  0.490 %, `standard` 0.056 % in both, allocs 0). Step 4a ran on the same boot after the scrape
+  pair: `unwritten 0 rows 3000000 mismatched 0 … pace_missed 0` in both `synchronous normal` runs,
+  and the same in the recorded `full` run.
+* **Both crates joined the tagged release family** (ADR-0170 decision 10, ADR-0182 decision 3).
+  `publish = false` was removed. Both crates are now in `PUBLISHED` of `check-release-versions.sh`,
+  `check-package-contents.sh` and `check-packaged-build.sh` (20 cases, from 15). The family is
+  eight crates. `check-semver-against-tag.sh` excludes by name the publishable crates that
+  `v0.1.0` does not contain, because `cargo semver-checks --workspace` exited 101 on them —
+  [trap](docs/reference/cargo-semver-checks-stops-on-a-crate-the-baseline-does-not-have.md).
 * **Two surprises fixed** (boot plan *Sửa 5*). `boot-p4.sh run` now refuses while any timer unit,
   system or user, is active. The driver now hands `w2w-baseline.sh` its settings through `env`,
   because `ENGINE_CORE` had been silently dropped in all 20 arms; the engine stayed on core 6 only
@@ -127,10 +136,10 @@ for the closing commit: `<CI run id>`.
 
 | Row | State |
 |---|---|
-| 1 exporter | kept; joining the tagged release family (ADR-0170 decision 10) is owed in the commit that records the result |
-| 3 / 4 store | 4b passes; **4a (50 000 msg/s × 60 s soak) not run** — 4c (release family, ADR-0180 result) waits for it |
-| 5 io_uring | boot figures in `verdict-inputs.txt`; the verdict and its application are a separate step, not in this change |
-| 7 boot | 7b.1–7b.3 done except io_uring; 7b.4 (desktop grub line, review, merge) open |
+| 1 exporter | kept; in the tagged release family (ADR-0170 decision 10) |
+| 3 / 4 store | kept (4a, 4b, 4c); in the tagged release family (ADR-0182 decision 3) |
+| 5 io_uring | fails its kill line (manager's reading of `verdict-inputs.txt`: clauses (a) and (b) both `no`); removal is Part B on this branch |
+| 7 boot | 7b.1–7b.3 done except the io_uring removal; 7b.4 (desktop grub line, review, merge) open |
 | 8–9 SIMD | not started |
 | 10 close phase 4 | not started |
 
@@ -139,10 +148,10 @@ draft) is open and **owned by another session**. Do not stage its files.
 
 ### Next — the first executable action
 
-Verify this entry's commit and CI run id on the branch. Then apply the io_uring verdict (its own
-step, [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
-decision 10), run store step 4a on any grub line, restore the desktop grub line (7b.4), and then
-take rows 8–9 (SIMD) and row 10 (close phase 4).
+Verify this entry's commit and CI run id on the branch. Then remove `io_uring` (Part B,
+[ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
+decision 10), restore the desktop grub line (7b.4), and take rows 8–9 (SIMD) and row 10 (close
+phase 4).
 
 ### Do not
 
@@ -152,13 +161,17 @@ take rows 8–9 (SIMD) and row 10 (close phase 4).
   runs the command anyway. Use `env`.
 * Do not rebuild anything in `fb-p4-boot/`: a rebuild drops the file capabilities and the driver
   refuses. Do not run a capability-carrying binary from `/tmp` or the scratchpad (`nosuid`).
+* Do not add `fixbolt-metrics` or `fixbolt-store-sqlite` to `check-semver-against-tag.sh`'s
+  `PUBLISHED` before a tag carries them: `cargo semver-checks` exits 101 on a crate the baseline
+  does not have.
 * Do not read a `scrape-loop: FAIL — no scrape reached an exporter` chunk as an exporter failure.
   It is a chunk with no exporter listening. The rule reads `bad 0` and at least one chunk with
   `ok > 0`.
 
 ### Not proven
 
-* Store step 4a (50 000 msg/s for 60 s, no record lost) has not run, so the store is not kept.
+* The two new crates have not yet been released under a tag. `v0.1.0` does not contain them, so
+  the semver check does not compare them until the next tag.
 * Rule 4 for the exporter in split mode: the listen half prints no `engine-ctxt`.
 * The cost of one scrape on one request: only about ten scrapes fall inside a 20 000-request
   window (*estimated*).

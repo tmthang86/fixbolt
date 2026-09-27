@@ -692,5 +692,12 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
   Số đo ở `measured-costs.md`, mục *Phase 4's §9 boot, 2026-09-27*.
   ADR-0202 → Accepted. CI run id: `<CI run id>`.
 
+- `[2026-09-27, sau]` **Store 4a đạt, store được giữ.** Chạy trên cùng boot, dòng grub §9,
+  `check-machine.sh` `pass 17 fail 0 unknown 0` trước và sau. Hai lần `normal` ra `unwritten 0 rows
+  3000000 mismatched 0 … pace_missed 0`; lần `full` chỉ ghi lại. Áp 4c: `fixbolt-store-sqlite` và
+  `fixbolt-metrics` vào nhóm phát hành (ADR-0182 quyết định 3, ADR-0170 quyết định 10), nhóm giờ
+  có tám crate. `check-semver-against-tag.sh` bỏ qua theo tên hai crate chưa có trong `v0.1.0`,
+  vì `cargo semver-checks` dừng với exit 101 trên chúng. `io_uring` bỏ, việc gỡ là phần B.
+
 *(Điền tiếp khi từng hàng đóng: đã dựng gì, ở đâu, gate nào xanh, CI run id, cái chưa làm
 và vì sao. Handoff trước reboot (7a) và sau boot (7b) ghi ở đây và ở `STATUS.md` cùng commit.)*

@@ -244,7 +244,7 @@ crates/
   library/       package `fixbolt`: the application-facing API. One crate to depend on,
                  a Handler that receives a parsed message and answers through a Reply
   metrics/       package `fixbolt-metrics`: a Prometheus exporter holding an Observer and
-                 nothing else; allocates nothing per scrape. Not released yet (ADR-0170)
+                 nothing else; allocates nothing per scrape. Released from the next tag (ADR-0170)
   store-sqlite/  a journal whose durable copy is a SQLite database, one per session; the
                  Async journal's engine-thread cost, a writer thread commits (feature
                  `sqlite`, on by default; off, the crate is empty and compiles no C)

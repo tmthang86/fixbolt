@@ -120,6 +120,7 @@
 - [ASan's quarantine keeps a freed mapping from being re-occupied](reference/asans-quarantine-keeps-a-freed-mapping-from-being-re-occupied.md)
 - [B3 Binary EntryPoint facts, and the traps building the FIXP spike hit](reference/b3-binary-entrypoint-facts.md)
 - [cargo output colour defeats plain-text parsing](reference/cargo-output-colour-defeats-plain-text-parsing.md)
+- [cargo-semver-checks stops on a crate the baseline does not have](reference/cargo-semver-checks-stops-on-a-crate-the-baseline-does-not-have.md)
 - [Closing any file descriptor on a database file drops every POSIX lock on it, in the whole process](reference/closing-any-file-descriptor-on-a-database-file-drops-every-posix-lock-on-it-in-the-process.md)
 - [`comm` compares by locale collation, not by number](reference/comm-compares-by-locale-collation-not-number.md)
 - [`DefaultApplVerID` is spelled two different ways at the two ends](reference/default-appl-ver-id-is-spelled-two-ways.md)

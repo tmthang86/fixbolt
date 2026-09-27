@@ -60,7 +60,9 @@ fi
 # The list of six is written here on purpose — see the header above and
 # scripts/check-release-versions.sh, which gives the same reasoning for the
 # same list.
-PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt)
+# Eight since 2026-09-27: `fixbolt-metrics` (ADR-0170 decision 10) and
+# `fixbolt-store-sqlite` (ADR-0182 decision 3) joined after their kill lines.
+PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt fixbolt-metrics fixbolt-store-sqlite)
 
 # Required in every one of the six.
 COMMON_REQUIRED=(README.md LICENSE-MIT LICENSE-APACHE)
@@ -163,6 +165,8 @@ published = {
     "fixbolt-engine",
     "fixbolt-sbe",
     "fixbolt",
+    "fixbolt-metrics",
+    "fixbolt-store-sqlite",
 }
 
 with open(root / "Cargo.toml", "rb") as f:
@@ -185,7 +189,7 @@ PY
 )"
 if [[ -n "${extra_published}" ]]; then
   while IFS= read -r line; do
-    fails+=("FAIL: a seventh publishable crate — ${line}")
+    fails+=("FAIL: a publishable crate outside PUBLISHED — ${line}")
   done <<<"${extra_published}"
 fi
 

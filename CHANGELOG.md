@@ -12,8 +12,9 @@ that has not shipped does not belong here — `CLAUDE.md` §4: one rule, one pla
 
 ## [Unreleased]
 
-The six published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`,
-`fixbolt-sbe`, `fixbolt`) release in lockstep at one version
+The published crates (`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`,
+`fixbolt-sbe`, `fixbolt`, and from the next tag `fixbolt-metrics` and `fixbolt-store-sqlite`)
+release in lockstep at one version
 ([ADR-0160](docs/decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)
 decision 1), so the changes below wait for the next version rather than shipping alone. `0.1.0`
 is a git tag, not a crates.io upload (ADR-0161), so `cargo-semver-checks` for this work runs
@@ -80,7 +81,8 @@ against that tag rather than a published baseline.
   it is shaped for the lockstep release family from day one, but does not enter the tagged
   release family until phase 4 row 2 measures its `w2w` scrape-on/scrape-off kill line
   (ADR-0170 decision 10) — this line names what exists on this branch, not a release.
-- **`fixbolt-metrics` passed its kill line and joins the tagged release family** `[2026-09-27]`.
+- **`fixbolt-metrics` passed its kill line and joins the tagged release family** `[2026-09-27]`:
+  `publish = false` is gone, and it is in the release, packaging and packaged-build checks.
   On the §9 desk, a 10 Hz scrape moved the `hft` acceptor wire p50 by +0.86 % and +0.17 %, and
   the wire p99 by +2.23 % and +1.76 %, in two procedures. That is inside ADR-0068's 5 % band. The
   engine thread allocated 0 bytes
@@ -120,16 +122,18 @@ against that tag rather than a published baseline.
     `Releaser`'s owner can set it, once.
   - `ring::Idle` (`new`, `reset`, `wait`) and the constants `ring::IDLE_SPINS`,
     `ring::IDLE_SLEEP` are public: one idle rule for every writer thread.
-- **`fixbolt-store-sqlite`: a new crate, not yet released.** A `Journal` whose durable copy is a
+- **`fixbolt-store-sqlite`: a new crate, released from the next tag.** A `Journal` whose durable copy is a
   SQLite database, one file per session — `FileJournal` `Async`'s engine-thread cost with a
   writer thread that commits to SQLite in batches, joining the engine's writer bookkeeping
   through the three handles above
   ([ADR-0180](docs/decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md),
   [ADR-0182](docs/decisions/ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md)).
-  `publish = false`: born release-shaped but **outside the tagged release family** until phase 4
-  row 4's kill line (engine-thread allocations 0, wire p50 within band, 50 000 msg/s × 60 s with
-  no dropped record) is applied against it in a later pull request — see
-  [docs/plans/2026-09-24-p4-sqlite-store.md](docs/plans/2026-09-24-p4-sqlite-store.md) row 4.
+  `[2026-09-27]` **In the tagged release family**. Phase 4 row 4's kill line passed. The engine
+  thread allocated nothing. On the §9 desk, the wire p50 stayed within 0.5 % of `FileJournal`
+  `Async` in two procedures. 50 000 msg/s for 60 s lost no record: `unwritten 0 rows 3000000
+  mismatched 0`, twice, with `synchronous = NORMAL`. `publish = false` is gone (ADR-0182
+  decision 3, ADR-0180 *Result*, [docs/plans/2026-09-24-p4-sqlite-store.md](docs/plans/2026-09-24-p4-sqlite-store.md)
+  row 4).
   Not a dependency of `fixbolt-engine` or of `fixbolt`; usage is
   [GUIDE.md §6d](docs/GUIDE.md), settings are [CONFIGURATION.md §6](docs/CONFIGURATION.md).
 - **A second `Transport`, `io_uring`, behind the off-by-default `io-uring` feature (`engine`,

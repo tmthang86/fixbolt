@@ -1242,7 +1242,7 @@ jobs:
   # time"). `cargo publish --workspace --dry-run` proves the six crates build
   # against EACH OTHER'S packaged sources, but only with DEFAULT features —
   # docs/reference/publishing-a-workspace-to-crates-io.md trap 7 says so in
-  # words, and `check-packaged-build.sh` says so by building fifteen other
+  # words, and `check-packaged-build.sh` says so by building twenty other
   # combinations from the exact same bytes. Same shape as `dict-no-vendor`
   # above: this job's whole point is a runner that never fetched `vendor/`,
   # because a real crates.io user and docs.rs never see it either.
