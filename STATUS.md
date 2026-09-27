@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-27** — **phase 4 row 7's §9 boot ran to its end: the exporter and the SQLite store are kept and join the release family, io_uring failed its kill line and is removed (PR [#124](https://github.com/tmthang86/fixbolt/pull/124)); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-24** — **phase 2 closed (#101); phase 3 built to the owner's `cargo publish` (#97–#100, #102–#104 on `main`, merge `fc89d36`); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-23, later** — **phases 3 and 4 are scoped and accepted by the owner (ADR-0097, ADR-0098–0100); the positioning sentence now carries a second, labelled bypass row (ADR-0099)**. Branch `plan/phase-3-prd`, PR [#96](https://github.com/tmthang86/fixbolt/pull/96), docs only. See *Start here* below. Before that: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
+Last updated: **2026-09-27, night** — **phase 4 rows 8–9 (SIMD) built and pinned, item 115 closed (#127); the desk powers off on the §9 grub line for the staged boot**. See *Start here* below. Before that: **2026-09-27** — **phase 4 row 7's §9 boot ran to its end: the exporter and the SQLite store are kept and join the release family, io_uring failed its kill line and is removed (PR [#124](https://github.com/tmthang86/fixbolt/pull/124)); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-24** — **phase 2 closed (#101); phase 3 built to the owner's `cargo publish` (#97–#100, #102–#104 on `main`, merge `fc89d36`); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-23, later** — **phases 3 and 4 are scoped and accepted by the owner (ADR-0097, ADR-0098–0100); the positioning sentence now carries a second, labelled bypass row (ADR-0099)**. Branch `plan/phase-3-prd`, PR [#96](https://github.com/tmthang86/fixbolt/pull/96), docs only. See *Start here* below. Before that: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
 built but has not run**: PRs [#87](https://github.com/tmthang86/fixbolt/pull/87) (merge `a451831`,
 closing commit `ed03886`, run
 [`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), 14 of 14) and
@@ -89,6 +89,73 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 **`[2026-09-09, merged]` §9's last box, closed on the commit it asks about.** PR [#54](https://github.com/tmthang86/fixbolt/pull/54) merged as **`94b325d`**, no-ff. **CI green on the merge commit itself**, run [`34340173659`](https://github.com/tmthang86/fixbolt/actions/runs/34340173659), **13 jobs of 13** — the three neither desk can run for itself, `interop`, `bench` and `deny`, among them. The merged head `301cd2e` was **26 of 26** check runs across [`34320263926`](https://github.com/tmthang86/fixbolt/actions/runs/34320263926) and [`34320266574`](https://github.com/tmthang86/fixbolt/actions/runs/34320266574), and **`git diff 301cd2e 94b325d` is empty**, so the branch's green transfers to the merge exactly rather than by assumption.
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
+
+## Start here — 2026-09-27, night: phase 4 rows 8–9 are built and pinned; the desk powers off on the §9 grub line and the staged SWAR boot runs next
+
+Branch `plan/p4-simd` (worktree `/home/tmt/Projects/fb-p4-simd`), draft PR
+[#126](https://github.com/tmthang86/fixbolt/pull/126). Plan
+[2026-09-27-p4-simd](docs/plans/2026-09-27-p4-simd.md), revised by *Sửa 1*
+([ADR-0212](docs/decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md)).
+The handoff commit and its CI run id are in the plan's *Nhật ký giao hàng*, last entry.
+
+### What closed
+
+* **Item 115**: the io_uring hooks left the public API before any tag (ADR-0210), PR
+  [#127](https://github.com/tmthang86/fixbolt/pull/127) merged as `eb6f8ab`, CI `36317457650` 21/21.
+* **Steps 1–3 of the SIMD plan**: checksum-only bench `d0e4f4e`; SWAR SOH scan `f7d855f`; SWAR
+  checksum `2453850` (CI `36319670763` 21/21). No `unsafe`. Miri host + s390x, fuzz 600 s each.
+* **Step 5, the boot's preparation**, on the desktop line: four pre-built trees under
+  `/home/tmt/Projects/fb-simd-arms/` — `A` `d0e4f4e`, `S` `f7d855f`, `C` `2e426b0` (local branch
+  `simd-arm-c` = A + cherry-pick of step 3, not pushed), `SC` `2453850`. sha256 of the 16 timed
+  binaries equal before and after the rehearsal. `objdump`: A's checksum loop has 184 `paddb`,
+  C's none. `bench-instructions.sh`: every A→X pair `work-changed` on `density`; A→S `same-work`
+  on `checksum` (as it must). Rehearsal, one round: stage 1 **43 s**, stage 2 **731 s**. Evidence
+  `fb-p4-simd/target/simd-evidence/prep/`.
+* [ADR-0211](docs/decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md)
+  and ADR-0212 are Accepted by the manager under the owner's delegation of 2026-09-27.
+
+### Where the work is — phase 4
+
+| Row | State |
+|---|---|
+| 1–7 | as the entry below |
+| 8–9 SIMD | built, pinned, **unmeasured** — the staged §9 boot (plan steps 6–9) is next |
+| 10 close phase 4 | not started; `CLAUDE.md` §2 row 4's uring sentences are rewritten here under the owner's delegation (entry below, *Next*) |
+
+### Next — the first executable action
+
+The desk was powered off with `/etc/default/grub` = `grub.fixbolt-s9-p4boot-20260927`
+(`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`), `update-grub` run. Desktop line
+backup: `grub.fixbolt-desktop-20260925`.
+
+1. Check: `cat /proc/cmdline` shows `isolcpus=6,7,14,15`; `git -C /home/tmt/Projects/fb-p4-simd log
+   --oneline -1` equals `origin/plan/p4-simd`; the sha256 in
+   `fb-p4-simd/target/simd-evidence/prep/sha256-after.txt` still match (`sha256sum -c` after
+   reshaping, or re-hash and `diff`).
+2. Runtime toggles (lost at every power-off): `sudo -n /usr/local/sbin/fixbolt-machine on`; stop
+   **every** active timer unit, system and `--user`, whatever its `next`; enp9s0 IRQs → CPUs 0–5,
+   `ethtool -C enp9s0 rx-usecs 0`, EEE off; then `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` →
+   `pass 17 fail 0 unknown 0`.
+3. Run the plan's *Trong boot* block, stage by stage, from `/home/tmt/Projects/fb-p4-simd`
+   (the ready ARMS lines are in the delivery log). Stage 1 ≈ 17 min, 2a ≈ 73 min, 2b ≈ 4.5 h
+   (rehearsal-based). Expected: both kernels miss their codec line, so the boot is ~1 h.
+4. Then plan steps 7–9 (apply the verdict, docs, senior review, merge), then row 10.
+
+### Do not
+
+* Do not rebuild anything in `fb-simd-arms/`: the pinned binaries are the "before" and "after".
+* Do not make tool calls while `ab-rotation.sh` runs (ADR-0202 decision 2): launch, then wait for
+  the notification.
+* Do not use `FIXBOLT_TIMER_WINDOW=0` in the boot: it was used only for the throwaway rehearsal on
+  the desktop line; the boot stops the timers instead.
+* Do not read a stage-2a number as a keep: 2a can only discard (ADR-0212).
+
+### Not proven
+
+* Every SWAR timing. Desktop-line rehearsal numbers (checksum SWAR 3–8× slower; instructions
+  +290.75 %) are not citable.
+* Fuzz property 4 of `parse` has no reversal.
+* `checksum_of_the_bench_new_order_single_is_097` was not added (plan deviation, delivery log).
 
 ## Start here — 2026-09-27: row 7's §9 boot ran to its end — the exporter and the SQLite store are kept and join the release family; io_uring failed its kill line and is removed
 
