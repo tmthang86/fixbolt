@@ -335,4 +335,6 @@
 - [ADR-0205 — A latency figure from a cloud VM is published under its own label, beside a kernel-TCP twin from the same VM boot, and never compared with the desk](decisions/ADR-0205-a-latency-figure-from-a-cloud-vm-is-published-under-its-own-label-beside-a-same-boot-kernel-twin-and-never-compared-with-the-desk.md)
 - [ADR-0206 — The documentation is an mdBook over `docs/` in place, organised by Diátaxis, and no cited file moves](decisions/ADR-0206-the-documentation-is-an-mdbook-over-docs-in-place-split-by-diataxis-and-no-cited-file-moves.md)
 - [ADR-0207 — A custom dictionary is an overlay, generated in the user's build into the user's own type](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+- [ADR-0210 — The reaper pair and the carrier report leave the public API before the next tag](decisions/ADR-0210-the-reaper-pair-and-the-carrier-report-leave-the-public-api-before-the-next-tag.md)
+- [ADR-0211 — Each SWAR kernel is judged on its own case, and the checksum is measured against a loop the compiler already vectorises](decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md)
 <!-- END GENERATED: decisions -->
