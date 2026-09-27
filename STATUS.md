@@ -3,7 +3,7 @@
 One screen. A pointer, not a store. Detail lives in the ADRs and the plan files.
 **A stale status page is worse than none.**
 
-Last updated: **2026-09-24** — **phase 2 closed (#101); phase 3 built to the owner's `cargo publish` (#97–#100, #102–#104 on `main`, merge `fc89d36`); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-23, later** — **phases 3 and 4 are scoped and accepted by the owner (ADR-0097, ADR-0098–0100); the positioning sentence now carries a second, labelled bypass row (ADR-0099)**. Branch `plan/phase-3-prd`, PR [#96](https://github.com/tmthang86/fixbolt/pull/96), docs only. See *Start here* below. Before that: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
+Last updated: **2026-09-27** — **phase 4 row 7's §9 boot ran to its end: the exporter and the SQLite store are kept and join the release family, io_uring failed its kill line and is removed (PR [#124](https://github.com/tmthang86/fixbolt/pull/124)); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-24** — **phase 2 closed (#101); phase 3 built to the owner's `cargo publish` (#97–#100, #102–#104 on `main`, merge `fc89d36`); the desk powered off on its desktop line**. See *Start here* below. Before that: **2026-09-23, later** — **phases 3 and 4 are scoped and accepted by the owner (ADR-0097, ADR-0098–0100); the positioning sentence now carries a second, labelled bypass row (ADR-0099)**. Branch `plan/phase-3-prd`, PR [#96](https://github.com/tmthang86/fixbolt/pull/96), docs only. See *Start here* below. Before that: **2026-09-23, boot F** — **items 51, 85, 89, 96, 99, 100 closed, `bench.sh --strict` green on the §9 desk for the first time since 2026-09-15, item 96 closed (≥ 7 021.6 ns inclusive), item 101 opened; the desk goes back to the desktop line and powers off after the merge**. Branch `plan/bench-strict-on-the-desk`, PR [#95](https://github.com/tmthang86/fixbolt/pull/95). See *Start here* below. Before that: **2026-09-23** — **phase 2 ran on the §9 line: items 93, 95, 97 closed, baselines re-recorded once (ADR-0095 ledger), items 99 and 100 opened, item 96 still open with a lower bound**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22, night** — **phase 1 of the closing plan is done on the desktop line: item 93 has five verdicts and its fix is on `main` (#94), 7a reads by machine, the timer row and the Mac reversal are seen, and the desk reboots into §9 for phase 2 with everything prebuilt**. Branch `plan/closing-the-open-items-desk-free-then-s9`, PR [#93](https://github.com/tmthang86/fixbolt/pull/93). See *Start here* below. Before that: **2026-09-22** — **boot D is measured end to end, and the senior review found the result the first write-up had missed: PR A's band is met at 22 of 22, item 52 and item 93's segment (3) close, and two comparisons produced open items 95 and 96 rather than numbers**. Branch `plan/boot-d-numbers`, PR [#90](https://github.com/tmthang86/fixbolt/pull/90). See *Start here* below. Before that: **2026-09-21** — **the §9 grub line is restored, the desk is rebooting into boot D, and nothing has been measured**: `main` is `8093ed8` with no open pull request, the 13 pre-built worktrees under `../fb-boot-d/` verify 37 of 37 binaries against `MANIFEST.txt`, and `git diff 76e53cb origin/main -- crates/` is empty so none needs rebuilding. See *Start here* below. Before that: **2026-09-20, later** — **four items closed, one refused to reproduce, and boot D is
 built but has not run**: PRs [#87](https://github.com/tmthang86/fixbolt/pull/87) (merge `a451831`,
 closing commit `ed03886`, run
 [`35494930920`](https://github.com/tmthang86/fixbolt/actions/runs/35494930920), 14 of 14) and
@@ -94,7 +94,7 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 Branch `plan/p4-boot-7b` (worktree `/home/tmt/Projects/fb-p4-7b`, from `origin/main` `3f7a0a3`).
 Gate for this change: `scripts/check-boot-p4-driver.sh`, `python3 scripts/check-links.py`. CI run
-for the closing commit: `<CI run id>`.
+for the closing commit `bf5afd5`: [`36305450557`](https://github.com/tmthang86/fixbolt/actions/runs/36305450557), 21 jobs of 21.
 
 ### What closed
 
@@ -139,7 +139,7 @@ for the closing commit: `<CI run id>`.
 | 1 exporter | kept; in the tagged release family (ADR-0170 decision 10) |
 | 3 / 4 store | kept (4a, 4b, 4c); in the tagged release family (ADR-0182 decision 3) |
 | 5 io_uring | **dropped and removed** — clauses (a) and (b) both `no` (U/K wire p50 1.303, 1.289); feature, module, `w2w` flags, script arms and CI job gone; ADR-0190 *Result*, ADR-0191/0192 Deprecated; pairs in `measured-costs.md` |
-| 7 boot | 7b.1–7b.3 done; 7b.4 (desktop grub line, senior review, merge) open |
+| 7 boot | done — 7b.4: one senior review (no blocking finding; seven should-fix/notes fixed in `bf5afd5`), merged, desktop grub line restored (`/etc/default/grub.fixbolt-desktop-20260925`), `fixbolt-machine off`, desk powered off on the owner's order |
 | 8–9 SIMD | not started |
 | 10 close phase 4 | not started |
 
@@ -148,9 +148,18 @@ draft) is open and **owned by another session**. Do not stage its files.
 
 ### Next — the first executable action
 
-Verify this entry's commit and CI run id on the branch. Then 7b.4: one senior review of the
-branch (the removal touched `engine` and `tools/w2w`), restore the desktop grub line on the
-owner's word, and merge. After that, rows 8–9 (SIMD) and row 10 (close phase 4).
+Verify this entry's merge on `origin/main` and its `push` run (`gh run list --branch main --limit 1`).
+The desk comes back on the **desktop** grub line (no `isolcpus`) with every timer re-enabled by the
+boot. Then rows 8–9 (SIMD) of phase 4, and row 10 (close the phase).
+
+**Owed to the owner, not done by the manager:** `CLAUDE.md` §2 *Machine checks* row 4 still names
+the removed uring arms. Three sentences are now false: "the three scripts also run each mode over
+`--transport uring` when `tools/w2w` is built with `--features io-uring`"; "`io_uring_enter` is
+judged by its `min_complete` — 0 is not a sleep, anything else or an unreadable argument is
+([ADR-0191]…)"; "a build without `io-uring` prints the uring arms *SKIPPED, NOT PASSED*, and the
+SQPOLL arm runs only where `FIXBOLT_SQPOLL_CORE` is set". Proposed: drop the first and third, and
+read the second as "`io_uring_enter` is a sleeper by name (ADR-0191 Deprecated with the transport,
+ADR-0190 *Result*)". The io_uring plan leaves this edit to the owner.
 
 ### Do not
 

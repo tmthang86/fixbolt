@@ -690,7 +690,7 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
   Hai bất ngờ thành *Sửa 5*: timer có `next` rỗng vẫn chạy, và `ENGINE_CORE` readonly bị bash bỏ.
   Sửa bằng hai trang bẫy và `scripts/check-boot-p4-driver.sh`, đảo ngược đỏ đúng chỗ rồi xanh lại.
   Số đo ở `measured-costs.md`, mục *Phase 4's §9 boot, 2026-09-27*.
-  ADR-0202 → Accepted. CI run id: `<CI run id>`.
+  ADR-0202 → Accepted. CI run id: `36305450557` (`bf5afd5`, 21/21).
 
 - `[2026-09-27, sau]` **Store 4a đạt, store được giữ.** Chạy trên cùng boot, dòng grub §9,
   `check-machine.sh` `pass 17 fail 0 unknown 0` trước và sau. Hai lần `normal` ra `unwritten 0 rows
@@ -704,7 +704,12 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
   cặp bench `idle`/`busy` N = 1/16/64 đã ghi vào `measured-costs.md` trước khi gỡ. Driver
   `scripts/boot-p4.sh` giữ nguyên như bản đã chạy boot, để làm lịch sử. Nó vẫn nói
   `--transport uring`, mà `tools/w2w` nay từ chối, nên **không chạy lại được y nguyên**.
-  `scripts/check-boot-p4-driver.sh` vẫn xanh. CI run id: `<CI run id>`.
+  `scripts/check-boot-p4-driver.sh` vẫn xanh. CI run id: `36305450557` (`bf5afd5`, 21/21).
+
+- `[2026-09-27]` **7b.4 xong.** Senior review (context mới): không có lỗi chặn; bảy mục nên sửa/ghi chú đã sửa ở
+  `bf5afd5` (CI 36305450557, 21/21) — trong đó lint `SC2015` chỉ shellcheck 0.9.0 của CI thấy. Merge PR #124; dòng
+  grub desktop trả lại từ `grub.fixbolt-desktop-20260925`, `fixbolt-machine off`, tắt máy theo lệnh chủ dự án.
+  Còn nợ chủ dự án: sửa `CLAUDE.md` §2 dòng 4 (ba câu về uring, xem `STATUS.md` *Next*).
 
 *(Điền tiếp khi từng hàng đóng: đã dựng gì, ở đâu, gate nào xanh, CI run id, cái chưa làm
 và vì sao. Handoff trước reboot (7a) và sau boot (7b) ghi ở đây và ở `STATUS.md` cùng commit.)*

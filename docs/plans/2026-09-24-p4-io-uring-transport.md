@@ -538,5 +538,5 @@ minh.)*
   **Giữ lại** vì không nằm sau feature: `Transport::NEEDS_REAPER`, `Waiting::REAPS`, `Carrier`,
   `Engine::carrier`. Phép từ chối lúc biên dịch nay có doctest `compile_fail,E0080` canh; đảo
   ngược thì đỏ đúng câu `Test compiled successfully`. ADR-0190 có *Result*; ADR-0191 và
-  ADR-0192 chuyển sang Deprecated. Cặp số đầy đủ ở `measured-costs.md`. CI run id: `<CI run id>`.
+  ADR-0192 chuyển sang Deprecated. Cặp số đầy đủ ở `measured-costs.md`. CI run id: `36305450557` (`bf5afd5`, 21/21).
 
