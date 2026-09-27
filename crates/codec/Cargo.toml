@@ -58,6 +58,12 @@ harness = false
 name = "decimal"
 harness = false
 
+# ADR-0211, plan 2026-09-27-p4-simd step 1: a target of its own, so the `parse`
+# and `serialize` binaries stay byte-identical.
+[[bench]]
+name = "checksum"
+harness = false
+
 [lints]
 workspace = true
 
