@@ -116,10 +116,11 @@ impl Default for Validation {
     }
 }
 
+/// Eight bytes at a time: `scan.rs` (ADR-0211), tested there against the byte
+/// loop this used to be.
 #[inline]
 fn find_soh(buf: &[u8], from: usize) -> Option<usize> {
-    let tail = buf.get(from..)?;
-    tail.iter().position(|&b| b == SOH).map(|i| i + from)
+    crate::scan::find_soh(buf, from)
 }
 
 /// Read a tag and return it with the offset of its value's first byte.

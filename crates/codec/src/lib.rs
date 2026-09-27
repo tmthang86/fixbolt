@@ -14,6 +14,7 @@ pub mod encoding;
 pub mod group;
 pub mod index;
 pub mod parse;
+mod scan;
 pub mod template;
 pub mod timestamp;
 
