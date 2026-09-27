@@ -205,6 +205,30 @@ measurement of any exporter's effect on a co-located low-latency thread.
 - **The exporter inherits its spawner's affinity.** Only documentation guards it; a pinned
   engine thread that spawns the exporter puts both on one isolated core.
 
+## Result
+
+**Passed the kill line — written 2026-09-27.** `[measured 2026-09-27]` Phase 4 row 2's
+scrape-off / scrape-on pair ran on the §9 desk (AMD Ryzen 7 3700X, `7.0.0-34-generic`,
+`isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, `check-machine.sh`
+`pass 17 fail 0 unknown 0` in all eight arms). It used the prebuilt `w2w` at `1dd99bd`
+(sha256 `ae0e860f…`), `hft:admin` with acceptor NIC stamps and `standard:admin` measured from the
+Mac, `--metrics 127.0.0.1:19464` under a 10 Hz scrape, two procedures 1800 s apart. The four
+numbers the line reads, off → on, in ns:
+
+| Procedure | `hft` wire p50 | `hft` wire p99 |
+|---|---|---|
+| 1 | 28 378 → 28 622 (0.860 %) | 34 026 → 34 786 (2.234 %) |
+| 2 | 28 450 → 28 498 (0.169 %) | 34 178 → 34 778 (1.756 %) |
+
+Every line is `reproduced` within ADR-0068's 5 % band. The `standard` p50 moved `0.032 %` and
+`0.016 %`. Every listen file read `allocs 0`, and every on-arm label names the exporter thread.
+The exporter thread's mask was `[0-5, 8-13]` in all 36 on-arm runs, and every scrape chunk
+read `bad 0`. The scrape loop's own load disqualified four on-arm runs (9–13 % busy), recorded
+and not excused. Evidence: `target/boot-p4-evidence/20260927T042832Z/row2/` on the desk. Full
+table: [measured-costs](../reference/measured-costs.md), *Phase 4's §9 boot, 2026-09-27*.
+Decision 10 therefore applies: the crate joins the tagged release family in the commit that
+records this result.
+
 ## Sources
 
 The table under *Research*. In-repository: the file and line references in *Context*, read at

@@ -360,6 +360,34 @@ merge trên `origin/main` → handoff → reboot (7a bước 3–7).
    **trước** `build`, để `BUILD-INFO.txt` ghi `mac_head` / `mac_w2w_sha256`. `run` từ chối nếu HEAD
    hay sha256 của Mac khác `BUILD-INFO.txt`.
 
+**Sửa 5 — 2026-09-27: hai chỗ boot thật tìm ra** (bằng chứng ở
+`target/boot-p4-evidence/`, lần chạy đạt là `20260927T042832Z`). Không viết lại các bước cũ ở trên
+và dưới; bước 5 của 7b chỉ thêm một dòng trỏ về đây.
+
+1. **Bước 5 của 7b chỉ dừng timer có `next`, và chỉ timer hệ thống.** Lần 1 bị driver từ chối
+   (exit 2) vì hai timer **người dùng** (`aura-glass-update-check`,
+   `snap.firmware-updater.firmware-notifier`) sắp đến hạn. Lần 2 dừng giữa chừng (exit 3, trước
+   khối B của procedure 1): lúc bước 5 chạy, `next` của `anacron.timer` đang rỗng nên nó không bị
+   dừng; 15 phút sau nó có `next` nằm trong cửa sổ. Timer có `next` rỗng **vẫn có thể chạy**. Cách
+   đã chạy được ở lần 3: **dừng mọi timer đang bật**, cả hệ thống lẫn `--user`, không nhìn `next`.
+   Bước 5 từ nay là:
+   `systemctl list-units --type=timer --all --output=json | jq -r '.[] | select(.active != "inactive" and .active != "failed") | .unit' | xargs -r sudo -n systemctl stop`
+   rồi cùng lệnh đó với `systemctl --user … | xargs -r systemctl --user stop`. Vẫn là `stop`, không
+   `disable`. Driver (`scripts/boot-p4.sh run`) nay cũng **từ chối (exit 2) khi còn bất kỳ timer
+   nào đang bật**, ở cả hai trình quản lý, và in lệnh dừng từng cái. Kiểm tra cũ "timer đến hạn
+   trong cửa sổ" vẫn giữ. Bẫy:
+   [a-timer-with-no-next-elapse-can-still-fire](../reference/a-timer-with-no-next-elapse-can-still-fire.md);
+   test canh: `scripts/check-boot-p4-driver.sh` (CI job *script-logic*).
+2. **`ENGINE_CORE` không bao giờ tới `w2w-baseline.sh`.** Driver khai `readonly ENGINE_CORE=6` rồi
+   truyền `ENGINE_CORE=$ENGINE_CORE` đứng trước lệnh. Bash từ chối gán tên readonly: nó in
+   `ENGINE_CORE: readonly variable` rồi **vẫn chạy lệnh**, chỉ thiếu biến đó. 20 arm của boot đều
+   in dòng này. Engine vẫn ở lõi 6 ở mọi arm, nhưng chỉ vì mặc định của `w2w-baseline.sh` cũng là 6
+   (cả 20 `summary.txt` ghi `pinned  engine cpu6`), nên số đo không sai. Sửa: driver truyền mọi
+   thiết lập qua `env` trong một hàm `run_baseline`. Script của hàng 2 (plan metrics *Sửa 2*) không
+   khai `readonly`, nên không bị. Bẫy:
+   [a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs](../reference/a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs.md);
+   test canh: `scripts/check-boot-p4-driver.sh`.
+
 **7a — trước reboot (một phiên):**
 
 1. `scripts/boot-p4.sh` — driver chạy trọn boot không cần người (ADR-0202 quyết định 2): trước mỗi
@@ -423,7 +451,9 @@ nguyên văn; mỗi bước quote output vào `target/boot-p4-evidence/first-act
    của U′ và S, không nhận ngắt NIC):
    `for i in $(awk -F: '/enp9s0/ {gsub(/ /,"",$1); print $1}' /proc/interrupts); do echo 0-4 | sudo -n tee /proc/irq/$i/smp_affinity_list; done`;
    `sudo -n ethtool -C enp9s0 rx-usecs 0`.
-5. **Dừng mọi timer đang có lịch** (*Sửa 4* điều 3, review PR #113): `check-machine.sh` đo cửa sổ 12
+5. *(Sửa 5 điều 1, 2026-09-27: lệnh dưới đây chưa đủ. Dùng lệnh ở Sửa 5 để dừng mọi timer đang
+   bật, cả hệ thống lẫn `--user`.)*
+   **Dừng mọi timer đang có lịch** (*Sửa 4* điều 3, review PR #113): `check-machine.sh` đo cửa sổ 12
    giờ **từ lúc mỗi lần kiểm chạy**, nên một timer bước vào cửa sổ giữa boot dài ~2 giờ (cụm nửa đêm:
    `dpkg-db-backup`, `sysstat-rotate`, `logrotate`, `sysstat-summary`; `apt-daily` có độ trễ ngẫu
    nhiên) sẽ làm driver dừng giữa chừng. Nên dừng **tất cả** timer có `next`, không chỉ cái đang
@@ -545,6 +575,8 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
 | `w2w` build sẵn không có file capability → mọi arm có dấu NIC hỏng `socket(AF_PACKET): Operation not permitted`; build lại thì mất (*Sửa 4*) | `boot-p4.sh build` chạy `setcap` và đọc lại; `run` kiểm `getcap` trước khi chạy (exit 2) và trước mỗi arm (exit 3) — [trang bẫy](../reference/a-pre-built-w2w-needs-its-file-capabilities-and-a-rebuild-drops-them.md) |
 | Binary trên mount `nosuid` (`/tmp`, scratchpad): `getcap` thấy capability nhưng kernel không cấp (*Sửa 4*) | `run` từ chối binary trên mount `nosuid`, exit 2 — [trang bẫy](../reference/a-nosuid-mount-shows-file-capabilities-it-does-not-grant.md) |
 | Danh sách timer viết tay thiếu → `no timer due` đỏ, driver dừng trước khối A (*Sửa 4*) | 7b bước 5 dừng mọi timer có lịch, đọc từ `systemctl list-timers`; bước 6 đọc lại dòng |
+| Timer có `next` rỗng hoặc timer người dùng không bị bước 5 dừng, rồi chạy giữa boot (*Sửa 5*, đã gặp: lần 1 exit 2, lần 2 exit 3) | bước 5 dừng mọi timer đang bật ở cả hai trình quản lý; driver từ chối khi còn timer đang bật — `scripts/check-boot-p4-driver.sh` |
+| Tên `readonly` truyền làm tiền tố của lệnh bị bash bỏ, lệnh vẫn chạy (*Sửa 5*, đã gặp: `ENGINE_CORE`) | `run_baseline` truyền qua `env`; `scripts/check-boot-p4-driver.sh` kiểm cái script con nhận được và quét cả driver |
 | Tắt EEE làm link nhảy, carrier lên trước ssh → driver thấy Mac không trả lời (*Sửa 4*) | 7b bước 3 chờ ssh (≤ 120 s), trước cài đặt NIC và trước driver |
 | Dùng `grub.fixbolt-s9` (có `nohz_full`) | 7a bước 7 `grep` không thấy `nohz_full` |
 | Bật dấu NIC bằng hai cách khác nhau giữa các plan (`W2W_EXTRA` vs `WIRE_NIC`) → hai thước | một cách duy nhất `WIRE_NIC`/`OBSERVER_CORE` (Sửa 3); `standard` không có `WIRE_NIC` (plan store *Sửa 1*) |
@@ -639,6 +671,26 @@ Mỗi hàng một commit xanh; manager chạy lại gate và commit.
   store một binary (đọc *4b* qua ADR-0202); build do driver làm, Mac build tay, `run` kiểm Mac với
   `BUILD-INFO.txt`. 7a bước 3, 7b bước 1–8, hàng 7a.2/7b.1/7b.2, ADR-0202 quyết định 1 sửa theo; hai
   trang bẫy mới. **Cần báo architect hàng 4**: *4b* của plan store viết hai binary.
+
+- `[2026-09-27]` **7b.1–7b.2 xong, 7b.3 đang làm.** Boot §9 trên máy bàn: `7.0.0-34-generic`,
+  `isolcpus=6,7,14,15`, không có Onload, `check-machine.sh` `pass 17 fail 0 unknown 0`. Nhật ký
+  từng bước ở `target/boot-p4-evidence/first-actions.txt`. Driver chạy **ba lần**:
+  - lần 1 bị từ chối (exit 2): hai timer người dùng sắp đến hạn;
+  - lần 2 dừng (exit 3) trước khối B của procedure 1: `anacron.timer` có lại `next`;
+  - lần 3 là `20260927T042832Z`, thoát 0. Mọi arm OK, khoảng chờ 1800 s, `MANIFEST.txt` OK trước
+    và sau.
+
+  Cặp scrape của hàng 2 chạy cùng boot, ngay sau driver (`row2/`), và thoát 0. Kết quả:
+  - **Exporter: qua vạch.**
+  - **Cặp store 4b: đạt ở cả hai procedure, cả hai mode.** Riêng 4a chưa chạy, nên store chưa
+    được giữ.
+  - **`io_uring`**: phán quyết và việc áp nó là một bước riêng, chưa ghi ở đây. Số đầu vào ở
+    `verdict-inputs.txt` của lần chạy.
+
+  Hai bất ngờ thành *Sửa 5*: timer có `next` rỗng vẫn chạy, và `ENGINE_CORE` readonly bị bash bỏ.
+  Sửa bằng hai trang bẫy và `scripts/check-boot-p4-driver.sh`, đảo ngược đỏ đúng chỗ rồi xanh lại.
+  Số đo ở `measured-costs.md`, mục *Phase 4's §9 boot, 2026-09-27*.
+  ADR-0202 → Accepted. CI run id: `<CI run id>`.
 
 *(Điền tiếp khi từng hàng đóng: đã dựng gì, ở đâu, gate nào xanh, CI run id, cái chưa làm
 và vì sao. Handoff trước reboot (7a) và sau boot (7b) ghi ở đây và ở `STATUS.md` cùng commit.)*

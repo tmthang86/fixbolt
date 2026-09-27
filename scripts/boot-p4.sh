@@ -133,7 +133,9 @@
 #     pairs print (ADR-0102 decision 2) — no baseline is judged here.
 #   * It computes the ratios each kill line reads; it does not apply them.
 set -uo pipefail
-cd "$(dirname "$0")/.." || exit 2
+# BASH_SOURCE, not $0: scripts/check-boot-p4-driver.sh sources this file
+# (BOOT_P4_SOURCE_ONLY=1, below) and $0 is then the sourcing script.
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 REPO=$(pwd -P)
 
 SUB=${1:-run}
@@ -179,6 +181,70 @@ readonly MIN_REAL_GAP_S=1800 MIN_REAL_RUNS=10 REAL_MESSAGES=20000
 # ~15 s instead of never; every call is also under `timeout` (mac() below).
 SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 readonly SSH_OPTS MAC_TIMEOUT_S=60
+
+# One arm's w2w-baseline.sh, with every setting handed over through `env`.
+# `[measured 2026-09-27]` the phase-4 boot: the call used to be a list of
+# command-prefix assignments, one of them `ENGINE_CORE=$ENGINE_CORE` — and
+# ENGINE_CORE is readonly above. Bash refuses a readonly name as a prefix
+# assignment, prints "ENGINE_CORE: readonly variable", and RUNS THE COMMAND
+# ANYWAY without it (a readonly variable is not exported), so every arm fell
+# back to w2w-baseline.sh's own default. That default was 6, so the boot's
+# figures were taken on the right core by luck — docs/reference/
+# a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs.md.
+# `env NAME=value` is an argument list, not a shell assignment, so no name here
+# can collide with a readonly one. Guard: scripts/check-boot-p4-driver.sh.
+run_baseline() { # run_baseline <w2w-baseline.sh> <ARMS> <WIRE_NIC> <OBSERVER_CORE> <W2W_EXTRA> <OUT_DIR>
+  timeout --kill-after=30 "$ARM_TIMEOUT_S" env \
+    RUNS="$RUNS" MESSAGES="$MESSAGES" ENGINE_CORE="$ENGINE_CORE" ALLOW_UNISOLATED="$ALLOW_UNISOLATED" \
+    PIN="$W2W_PIN" WARMUP="$W2W_WARMUP" GAP="$W2W_GAP" CLIENT_CORE="$W2W_CLIENT_CORE" \
+    LISTEN="$LISTEN" GENERATOR_SSH="$GENERATOR_SSH" GENERATOR_W2W="$GENERATOR_W2W" \
+    FIXBOLT_NIC="$NIC" WIRE_NIC="$3" OBSERVER_CORE="$4" \
+    ARMS="$2" W2W_EXTRA="$5" OUT_DIR="$6" \
+    "$1"
+}
+
+# Any ACTIVE timer unit refuses the run, whatever its `next` reads now.
+# `[measured 2026-09-27]` the phase-4 boot's second attempt: plan step 5
+# stopped the timers whose `next` was set; anacron.timer's `next` was empty at
+# that moment, so it was left running, and 15 minutes later it had a `next`
+# inside the window and the gate before p1 B stopped the boot (exit 3). A
+# timer with no `next` is not a timer that cannot fire. So the refusal asks
+# systemd which timer units are active (system and user managers), not which
+# are due — docs/reference/a-timer-with-no-next-elapse-can-still-fire.md.
+# Pure, like check-machine.sh's timers_verdict: <list-units JSON> in,
+# "PASS|FAIL|UNKNOWN<TAB>value<TAB>fix" out. Guard: scripts/check-boot-p4-driver.sh.
+active_timers_verdict() { # active_timers_verdict <system|user> <systemctl list-units --type=timer --all --output=json>
+  local units stop=(sudo -n systemctl stop)
+  [ "$1" = user ] && stop=(systemctl --user stop)
+  if ! printf '%s' "$2" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf 'UNKNOWN\t%s: malformed systemctl list-units JSON\t\n' "$1"
+    return 0
+  fi
+  units=$(printf '%s' "$2" | jq -r '.[] | select(.active != "inactive" and .active != "failed") | .unit' 2>/dev/null |
+    tr '\n' ' ')
+  units=${units% }
+  if [ -z "$units" ]; then
+    printf 'PASS\t%s: no timer unit active\t\n' "$1"
+  else
+    printf 'FAIL\t%s: %s active\t%s %s\n' "$1" "${units// /, }" "${stop[*]}" "$units"
+  fi
+}
+active_timers_check() { # active_timers_check <system|user> — reads systemd, prints the verdict line
+  local json
+  if [ "$1" = user ]; then
+    json=$(systemctl --user list-units --type=timer --all --output=json --no-pager 2>/dev/null) || json='[]'
+  else
+    json=$(systemctl list-units --type=timer --all --output=json --no-pager 2>/dev/null) || json='null'
+  fi
+  active_timers_verdict "$1" "$json"
+}
+
+# Sourced by scripts/check-boot-p4-driver.sh, which wants the functions above
+# and none of what follows (no BOOT_ROOT, no refusal, no evidence directory).
+if [ "${BOOT_P4_SOURCE_ONLY:-0}" = 1 ]; then
+  # shellcheck disable=SC2317 # reached when this file is run, not sourced
+  return 0 2>/dev/null || die "BOOT_P4_SOURCE_ONLY=1 is for sourcing this file, not running it"
+fi
 
 # `build` creates BOOT_ROOT; `run` only ever reads one that exists.
 [ "$SUB" != build ] || mkdir -p "$BOOT_ROOT" || die "cannot create BOOT_ROOT $BOOT_ROOT"
@@ -387,6 +453,29 @@ if [ -n "$timer_bad" ]; then
     echo "!!! timers due within $((TIMER_WINDOW_S / 60)) min (12 h + 1.5 × the expected ${BOOT_EXPECTED_S} s), tolerated by TOLERATE_ROWS — REHEARSAL only"
   else
     refuse "a timer is due before the boot's last gate closes its 12 h window ($((TIMER_WINDOW_S / 60)) min from now = 12 h + 1.5 × the expected ${BOOT_EXPECTED_S} s): $timer_bad — stop it first: $timer_fix"
+  fi
+fi
+# The rule above reads `next`, and a timer whose `next` is empty now can have
+# one in ten minutes (active_timers_verdict, above). So every ACTIVE timer
+# unit, system and user, refuses the run too; plan step 5 stops them all.
+act_bad=""
+act_fix=""
+for mgr in system user; do
+  IFS=$'\t' read -r tv_verdict tv_value tv_fix <<<"$(active_timers_check "$mgr")"
+  case "$tv_verdict" in
+    PASS) ;;
+    FAIL)
+      act_bad="$act_bad${act_bad:+; }$tv_value"
+      act_fix="$act_fix${act_fix:+; }$tv_fix"
+      ;;
+    *) act_bad="$act_bad${act_bad:+; }${tv_value:-$mgr: cannot read the timer units}" ;;
+  esac
+done
+if [ -n "$act_bad" ]; then
+  if tolerated "no timer due"; then
+    echo "!!! timer units active ($act_bad), tolerated by TOLERATE_ROWS — REHEARSAL only"
+  else
+    refuse "a timer unit is active, and an active timer can fire whatever its next reads now: $act_bad — stop every one first: $act_fix"
   fi
 fi
 
@@ -601,12 +690,8 @@ run_arm() { # run_arm <procedure> <block dir> <arm id>
   echo "---- p$p $id: ARMS=$arms W2W_EXTRA='$extra' wire=$wire observer=${obs:--} ($set build) $(date -u +%H:%M:%SZ)"
   local wire_nic="" obs_core=""
   if [ "$wire" = 1 ]; then wire_nic=$NIC; obs_core=$obs; fi
-  RUNS=$RUNS MESSAGES=$MESSAGES ENGINE_CORE=$ENGINE_CORE ALLOW_UNISOLATED=$ALLOW_UNISOLATED \
-    PIN=$W2W_PIN WARMUP=$W2W_WARMUP GAP=$W2W_GAP CLIENT_CORE=$W2W_CLIENT_CORE \
-    LISTEN=$LISTEN GENERATOR_SSH=$GENERATOR_SSH GENERATOR_W2W=$GENERATOR_W2W \
-    FIXBOLT_NIC=$NIC WIRE_NIC=$wire_nic OBSERVER_CORE=$obs_core \
-    ARMS=$arms W2W_EXTRA=$extra OUT_DIR=$dir \
-    timeout --kill-after=30 "$ARM_TIMEOUT_S" "$BOOT_ROOT/$set/scripts/w2w-baseline.sh" >"$dir/baseline.log" 2>&1
+  run_baseline "$BOOT_ROOT/$set/scripts/w2w-baseline.sh" "$arms" "$wire_nic" "$obs_core" "$extra" "$dir" \
+    >"$dir/baseline.log" 2>&1
   rc=$?
   bin_ok "$bin" || stop "p$p $id: $bin is not MANIFEST.txt's after the arm"
   has_caps "$bin" || stop "p$p $id: $bin lost its cap_net_raw,cap_net_admin file capability during the arm"

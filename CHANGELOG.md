@@ -80,6 +80,14 @@ against that tag rather than a published baseline.
   it is shaped for the lockstep release family from day one, but does not enter the tagged
   release family until phase 4 row 2 measures its `w2w` scrape-on/scrape-off kill line
   (ADR-0170 decision 10) — this line names what exists on this branch, not a release.
+- **`fixbolt-metrics` passed its kill line and joins the tagged release family** `[2026-09-27]`.
+  On the §9 desk, a 10 Hz scrape moved the `hft` acceptor wire p50 by +0.86 % and +0.17 %, and
+  the wire p99 by +2.23 % and +1.76 %, in two procedures. That is inside ADR-0068's 5 % band. The
+  engine thread allocated 0 bytes
+  ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)
+  *Result*, [measured-costs](docs/reference/measured-costs.md)). It is released with the other
+  crates under the next git tag, at the same workspace version. No crates.io upload is planned
+  (ADR-0161).
 - **`fixbolt-metrics`'s `Builder::with_events` now passes the engine's name**, `[2026-09-24]`
   review of PR #108 (plan *Sửa 1*, finding F2): the handler is
   `FnMut(&'static str, &Event) + Send + 'static`, the first argument being the exact string

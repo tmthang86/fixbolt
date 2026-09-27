@@ -129,7 +129,7 @@ jobs:
       # than being left out with the other scripts: they need no §9 machine
       # to prove a quoting fix changed nothing, since their pure halves are
       # already tested by check-ab-rotation.sh in the script-logic job.
-      - run: shellcheck -S info scripts/check-old-bash-is-refused.sh scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh scripts/check-sudo-names-what-root-can-find.sh scripts/check-sudo-verdicts.sh scripts/ab-rotation.sh scripts/check-ab-rotation.sh scripts/check-dict-spec-pin.sh scripts/check-dict-spec-pin-reversal.sh
+      - run: shellcheck -S info scripts/check-old-bash-is-refused.sh scripts/check-no-crate-root-allow.sh scripts/check-scratch-fixtures.sh scripts/check-feature-gated-tests-ran.sh scripts/check-sudo-names-what-root-can-find.sh scripts/check-sudo-verdicts.sh scripts/ab-rotation.sh scripts/check-ab-rotation.sh scripts/check-dict-spec-pin.sh scripts/check-dict-spec-pin-reversal.sh scripts/boot-p4.sh scripts/check-boot-p4-driver.sh
 
   # `[measured 2026-08-30]` scripts/check-ktls-available.sh printed
   # `config: CONFIG_TLS=m` and then "it was built without CONFIG_TLS" in the SAME
@@ -172,6 +172,11 @@ jobs:
       # The ctxt gate reads a w2w that failed to run as a failure, not as
       # `voluntary 0` (senior review of PR #109, L1): three fake w2w, no cargo.
       - run: scripts/check-ctxt-gate-refuses-a-failed-run.sh
+      # `[measured 2026-09-27]` the phase-4 §9 boot: scripts/boot-p4.sh never
+      # passed ENGINE_CORE (a readonly name as a command prefix is dropped and
+      # the command still runs), and a timer with no `next` fired mid-boot.
+      # Its run_baseline and active-timer refusal, sourced and fed fixtures.
+      - run: scripts/check-boot-p4-driver.sh
       # `[measured 2026-09-10]` This runner CAN offload TLS, and that answer is
       # what made the `tls` job below buildable as written: kernel
       # `6.17.0-1022-azure`, `CONFIG_TLS=m`, module loaded, `/proc/net/tls_stat`

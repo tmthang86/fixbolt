@@ -90,6 +90,81 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 
 **Both suspect jobs were read from the script's first line to its last, not off their PASS lines.** `interop` on the merge commit: `git log -1` in the job prints `94b325d`, so it really is the merge that was checked out; `7 / 7 + 8 / 8 + 6 / 6 + 6 / 6 + 6 / 6 + 9 / 9 + 5 / 5`; `interop-micros: 24-byte 52= — 12 from fixbolt, 10 from libquickfix`, `21-byte 52= — 0`, `35=3 naming tag 52 — 0`; the wire transcript carries `52=20260909-10:27:19.739317` and `122=20260909-10:27:19.748793` from this engine; **no shell-error line anywhere** — the class `reading-the-output-you-grepped-for.md` is about, and §4h added ~170 lines of new shell; and `the run added nothing git can see`. `bench`: `16 of 16 targets measuring, 0 silent, 0 invariant failures, 0 timing over baseline, 0 under the band`, plus `16 bench binaries, alignment pinned and read back`. The **47 cases without a baseline** are the runner's normal state for the whole suite and **not** something the two new `SendingTime` arms caused.
 
+## Start here — 2026-09-27: row 7's §9 boot ran to its end — the exporter is kept, the store's wire pair passes, and the io_uring verdict waits for its removal step
+
+Branch `plan/p4-boot-7b` (worktree `/home/tmt/Projects/fb-p4-7b`, from `origin/main` `3f7a0a3`).
+Gate for this change: `scripts/check-boot-p4-driver.sh`, `python3 scripts/check-links.py`. CI run
+for the closing commit: `<CI run id>`.
+
+### What closed
+
+* **Row 7b.1–7b.2: the boot.** The desk ran on the §9 line (`7.0.0-34-generic`,
+  `isolcpus=6,7,14,15`, no Onload). `check-machine.sh` read `pass 17 fail 0 unknown 0` at every
+  gate. Steps are logged in `target/boot-p4-evidence/first-actions.txt` on the desk. The driver ran
+  three times. Attempt 1 was refused (exit 2) on two **user** timers. Attempt 2 stopped (exit 3)
+  before p1 B, when `anacron.timer`, whose `next` had been empty at step 5, re-armed. Attempt 3,
+  **`target/boot-p4-evidence/20260927T042832Z/`**, exited 0. Every arm was OK, the gap was
+  1800 s, and `MANIFEST.txt` read OK before and after.
+* **Row 2, the exporter's scrape pair**, ran in the same boot after the driver (`…/row2/`, exit 0).
+  **Kept** ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)
+  *Result*). `hft` wire p50 off → on moved 0.860 % and 0.169 %, and wire p99 moved 2.234 % and
+  1.756 %. `standard` p50 moved 0.032 % and 0.016 %. Allocs were 0 everywhere. The exporter
+  thread's mask was `[0-5, 8-13]` in all 36 on-arm runs.
+* **Store step 4b passes** in both procedures and both modes (`hft` wire p50 0.277 % and 0.490 %,
+  `standard` 0.056 % in both, allocs 0).
+* **Two surprises fixed** (boot plan *Sửa 5*). `boot-p4.sh run` now refuses while any timer unit,
+  system or user, is active. The driver now hands `w2w-baseline.sh` its settings through `env`,
+  because `ENGINE_CORE` had been silently dropped in all 20 arms; the engine stayed on core 6 only
+  because 6 is the child's default. Trap pages:
+  [a-timer-with-no-next-elapse-can-still-fire](docs/reference/a-timer-with-no-next-elapse-can-still-fire.md)
+  and [a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs](docs/reference/a-readonly-name-as-a-command-prefix-is-dropped-and-the-command-still-runs.md).
+  The guard is `scripts/check-boot-p4-driver.sh`, in the CI job *script-logic*, and its
+  reversals went red on the named assertions.
+* [ADR-0202](docs/decisions/ADR-0202-phase-4s-one-s9-boot-is-pre-built-driven-by-a-committed-script-and-onload-lives-only-inside-its-block.md)
+  is Accepted. The figures are in `measured-costs.md`, *Phase 4's §9 boot, 2026-09-27*.
+
+### Where the work is — phase 4
+
+| Row | State |
+|---|---|
+| 1 exporter | kept; joining the tagged release family (ADR-0170 decision 10) is owed in the commit that records the result |
+| 3 / 4 store | 4b passes; **4a (50 000 msg/s × 60 s soak) not run** — 4c (release family, ADR-0180 result) waits for it |
+| 5 io_uring | boot figures in `verdict-inputs.txt`; the verdict and its application are a separate step, not in this change |
+| 7 boot | 7b.1–7b.3 done except io_uring; 7b.4 (desktop grub line, review, merge) open |
+| 8–9 SIMD | not started |
+| 10 close phase 4 | not started |
+
+**Phase 5 PR [#123](https://github.com/tmthang86/fixbolt/pull/123)** (`library/custom-dictionary`,
+draft) is open and **owned by another session**. Do not stage its files.
+
+### Next — the first executable action
+
+Verify this entry's commit and CI run id on the branch. Then apply the io_uring verdict (its own
+step, [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
+decision 10), run store step 4a on any grub line, restore the desktop grub line (7b.4), and then
+take rows 8–9 (SIMD) and row 10 (close phase 4).
+
+### Do not
+
+* Do not stop only the timers that have a `next`, or only system timers: an active timer with an
+  empty `next` fired mid-boot. Stop every active timer unit of both managers (boot plan *Sửa 5*).
+* Do not pass a readonly shell variable as a command prefix. Bash drops it, prints one line, and
+  runs the command anyway. Use `env`.
+* Do not rebuild anything in `fb-p4-boot/`: a rebuild drops the file capabilities and the driver
+  refuses. Do not run a capability-carrying binary from `/tmp` or the scratchpad (`nosuid`).
+* Do not read a `scrape-loop: FAIL — no scrape reached an exporter` chunk as an exporter failure.
+  It is a chunk with no exporter listening. The rule reads `bad 0` and at least one chunk with
+  `ok > 0`.
+
+### Not proven
+
+* Store step 4a (50 000 msg/s for 60 s, no record lost) has not run, so the store is not kept.
+* Rule 4 for the exporter in split mode: the listen half prints no `engine-ctxt`.
+* The cost of one scrape on one request: only about ten scrapes fall inside a 20 000-request
+  window (*estimated*).
+* `check-boot-p4-driver.sh` cannot see the driver's top-level refusal loop, only the functions
+  that loop calls.
+
 ## Start here — 2026-09-25: phase 4 rows 1, 3, 5, 6 are merged; the desk reboots into the §9 line for row 7's one boot
 
 Phase 4 ([ADR-0098](docs/decisions/ADR-0098-phase-4-is-the-owners-five-items-each-entering-behind-a-measurement-that-can-kill-it.md)),
@@ -135,9 +210,11 @@ desktop line), rows 8–9 (SIMD), row 10 (close the phase).
 
 ### Not proven
 
-* No phase-4 item has a §9 verdict yet: io_uring (ADR-0190 decision 10), the store pair (plan 4b as read by ADR-0202),
+* ~~No phase-4 item has a §9 verdict yet: io_uring (ADR-0190 decision 10), the store pair (plan 4b as read by ADR-0202),
   the exporter's scrape pair (row 2, by hand in the same boot per the metrics plan's *Sửa 2*; its commands were
-  checked with `bash -n` only).
+  checked with `bash -n` only).~~ `[struck 2026-09-27]` The boot ran (`20260927T042832Z`). The exporter's pair passed
+  and row 2's script ran green on the desk. The store's 4b passed. The io_uring verdict is a separate step (see the
+  2026-09-27 entry).
 * The SQPOLL flush-expiry path has no test of its own (it shares the tested flush()==false branch).
 * Rule 4 for the exporter in split mode: the listen half prints no `engine-ctxt` line, so row 2's pair does not check
   that the hft engine thread never sleeps with the exporter attached (the loopback ctxt script did, row 1 step 5).
