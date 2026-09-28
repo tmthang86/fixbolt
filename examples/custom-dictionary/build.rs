@@ -7,7 +7,9 @@
 //! names both sides of a conflict. Nothing here panics: the error is returned
 //! from `main`, and cargo prints it.
 
+// region:imports
 use fixbolt_dict::codegen::{self, Paths, Source};
+// endregion:imports
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // region:generate

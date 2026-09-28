@@ -1,6 +1,6 @@
 # Tài liệu cho người nhúng fixbolt, và từ điển tuỳ biến (custom tag / từ điển riêng của sàn)
 
-> **Loại:** Plan · **Ngày:** 2026-09-26 · **Trạng thái:** Đã duyệt (2026-09-26)
+> **Loại:** Plan · **Ngày:** 2026-09-26 · **Trạng thái:** Xong (2026-09-28)
 > **Phạm vi:** hai việc trong một plan, theo quyết định của chủ dự án: (A) viết lại bộ tài liệu để
 > fixbolt đọc như một framework FIX mà lập trình viên công ty khác nhúng vào sản phẩm của họ;
 > (B) tính năng mới — tag tuỳ biến và từ điển riêng của sàn (venue dictionary). Thiết kế ở hai ADR
@@ -566,3 +566,10 @@ Chủ dự án yêu cầu (2026-09-26): mọi bước viết tài liệu chạy 
   - ADR-0207 sửa tại chỗ (đang Proposed); hàng 27, 29, mục §2 số 3, phần bằng chứng PR 6, bảng bẫy
     sửa theo.
 - **Chủ dự án duyệt lại (2026-09-28):** quy tắc field 35 — overlay tự thêm message type mới vào giá trị của `MsgType(35)`; file nguyên thiếu thì bị từ chối.
+- PR 5 (#122): merge `3f7a0a3`, run 36256707376 (22/22). Review ra 2 lỗi trung bình (một tag vừa ở header vừa ở body; DATA trong group đứng trước field độ dài) — đã sửa, kèm từ chối tag 0 và bảng quá 64 MiB.
+- PR 3 (#121): merge `722f356`, run 36255861884 (22/22).
+- PR 6 (#123): bước 25–29 xong; main đóng phase 4 và gỡ `io_uring` giữa chừng — chỉ 4 câu tài liệu phải sửa. Review cuối: không lỗi chặn; hai lỗi nhẹ (thiếu dòng `use` trong mẫu how-to — đã sửa; `D` của `Incoming` chỉ là marker — ghi GUIDE §3a và STATUS item 122).
+- **Phát hiện ghi thành open item:** 120 (test `events` đỏ trên Mac), 121 (`ValidateUserDefinedFields=N` bỏ qua cả tag dialect đã định nghĩa), 122, 123 (CLA/DCO).
+- **Theo lệnh chủ dự án:** không chạy benchmark trên laptop từ bước 27 — job `bench` của CI chạy.
+- ADR-0206 và ADR-0207 chuyển sang Accepted; `PRD.md` §2 ghi phase 5 đóng 2026-09-28.
+

@@ -643,8 +643,8 @@ fields, message types and required fields — is a type your own `build.rs` gene
 `fixbolt_dict::codegen`, from an overlay onto the shipped FIX 4.4 or from a whole file of your own
 ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)).
 The steps are [Use a venue dictionary](how-to/use-a-venue-dictionary.md); the working crate is
-[`examples/custom-dictionary`](../examples/custom-dictionary/). Four constraints come with it, and
-the compiler holds only the second:
+[`examples/custom-dictionary`](../examples/custom-dictionary/). Five constraints come with it, and
+the compiler holds only the third:
 
 - **The `App`'s dictionary and the door's encoding must be one type, and nothing checks it.** The
   dictionary appears twice: in the encoding `TagValue<Venue, N>` handed to a `_over` door, which
@@ -661,6 +661,12 @@ the compiler holds only the second:
   Closing that needs a breaking change to those signatures or a new item on the session's
   `Application` trait. Write the dictionary's name once, as a type alias, and use the alias in both
   places.
+- **A custom group is read by naming the dictionary a third time, and nothing checks that one
+  either.** `Incoming<'_, N, Venue>` carries `Venue` as a marker only: the message was parsed by
+  `App`'s `D`, but reading a repeating group is `msg.view().group::<Venue>(msg_type, counter)`, whose
+  dictionary is the call's own type argument. `group::<Fix44>` on an `Incoming<'_, N, Venue>`
+  compiles, and asks FIX 4.4's tables, which declare no venue group. Use the same alias there.
+  Writing needs no third name: `Reply<'_, P, S, Venue>` orders a reply's groups by its own `D`.
 - **The build-dependency and the dependency must be the same fixbolt version.** Your `build.rs`
   runs one copy of `fixbolt-dict` (with `codegen`) and your binary links another (through
   `fixbolt`). The generated file opens with a compile-time check of the generator's format

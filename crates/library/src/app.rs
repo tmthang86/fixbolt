@@ -47,9 +47,12 @@ use crate::reply::{Answer, Reply};
 /// is copied. `N` is how many fields the index holds; the caller picks it, as
 /// `CLAUDE.md` §6 requires, and [`Handler`]'s default is 256.
 ///
-/// `D` is the dictionary the message was read by — FIX 4.4 unless the
-/// application names its own ([`crate::dict`], ADR-0207 decision 5) — so a
-/// venue's own repeating group is indexed by that venue's tables.
+/// `D` names the dictionary [`App`] parsed the message by — FIX 4.4 unless
+/// the application names its own ([`crate::dict`], ADR-0207 decision 5). It is
+/// a marker only: nothing here reads through it. A repeating group is read as
+/// `msg.view().group::<D>(msg_type, counter)`, which names the dictionary
+/// again, and the compiler does not check that the two agree —
+/// `docs/GUIDE.md` §3a.
 pub struct Incoming<'a, const N: usize = 256, D = Fix44> {
     view: MessageView<'a, N>,
     dict: PhantomData<fn() -> D>,

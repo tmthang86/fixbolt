@@ -1,6 +1,6 @@
 # ADR-0206 — The documentation is an mdBook over `docs/` in place, organised by Diátaxis, and no cited file moves
 
-- **Status**: Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
+- **Status**: Accepted — 2026-09-28, when phase 5 closed. Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
   answers to the plan's six questions: decision 8's last two bullets (Q2), decision 9 (Q3), and the
   contributor audience in decision 4 (Q1).
   *Revised in place 2026-09-26, at plan step 4, while Proposed*: the book's search index leaves out

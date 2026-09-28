@@ -24,6 +24,7 @@ pub mod venue {
 }
 // endregion:include
 
+// region:desk
 use fixbolt::{Answer, GroupData, GroupEntryData, Handler, Incoming, Reply};
 use venue::Venue;
 
@@ -59,7 +60,6 @@ pub struct Desk {
     fills: u32,
 }
 
-// region:handler
 impl Handler<256, 64, 1024, Venue> for Desk {
     fn on_message(
         &mut self,
@@ -83,7 +83,6 @@ impl Handler<256, 64, 1024, Venue> for Desk {
         }
     }
 }
-// endregion:handler
 
 impl Desk {
     fn fill(
@@ -95,7 +94,6 @@ impl Desk {
         let mut digits = [0u8; 10];
         let exec_id = render(self.fills, &mut digits);
 
-        // region:group
         // The group, read through the venue's tables. Each entry is named here
         // in tag order — type, then amount — and goes out in `venue.xml`'s
         // declared order, amount first: the order is the dictionary's, never
@@ -114,7 +112,6 @@ impl Desk {
                 n += 1;
             }
         }
-        // endregion:group
         let entries = rows.each_ref().map(|fields| GroupEntryData {
             fields,
             groups: &[],
@@ -165,3 +162,4 @@ fn render(mut v: u32, buf: &mut [u8; 10]) -> &[u8] {
     }
     buf.get(i..).unwrap_or_default()
 }
+// endregion:desk

@@ -1,6 +1,6 @@
 # ADR-0207 — A custom dictionary is an overlay, generated in the user's build into the user's own type
 
-- **Status**: Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
+- **Status**: Accepted — 2026-09-28, when phase 5 closed. Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
   answers: decision 8 (FIX 4.4 only) and the first *Bad* consequence (rebuild accepted).
   *Revised again 2026-09-26, at plan step 17*: the module and the feature are `codegen`, not
   `gen` — `gen` is a reserved keyword in Rust edition 2024, so `pub mod gen` does not compile and

@@ -186,7 +186,15 @@ has the sources and the tests.
 ## 4. The build script
 
 `build.rs` reads the overlay, reports the size of the tables it will generate, and writes one Rust
-file into `$OUT_DIR`. The body of the example's `fn main() -> Result<(), Box<dyn std::error::Error>>`:
+file into `$OUT_DIR`. It needs one import:
+
+<!-- sample: examples/custom-dictionary/build.rs#imports -->
+```rust
+use fixbolt_dict::codegen::{self, Paths, Source};
+```
+
+and this is the body of the example's `fn main() -> Result<(), Box<dyn std::error::Error>>`, which
+ends in `Ok(())`:
 
 <!-- sample: examples/custom-dictionary/build.rs#generate -->
 ```rust
@@ -239,10 +247,46 @@ pub mod venue {
 ## 6. Write the handler over it, and serve it through a `_over` door
 
 The dictionary is the last type parameter of `Handler`, `Incoming`, `Reply` and `App`; it defaults
-to `Fix44`, so a FIX 4.4 application never writes it. The example's handler names `Venue`:
+to `Fix44`, so a FIX 4.4 application never writes it. The rest of the example's `src/lib.rs`, after
+the `venue` module — its imports, the venue's tag numbers, and a handler over `Venue`:
 
-<!-- sample: examples/custom-dictionary/src/lib.rs#handler -->
+<!-- sample: examples/custom-dictionary/src/lib.rs#desk -->
 ```rust
+use fixbolt::{Answer, GroupData, GroupEntryData, Handler, Incoming, Reply};
+use venue::Venue;
+
+/// `VenueClientID` — a custom body field, required on `NewOrderSingle`.
+pub const VENUE_CLIENT_ID: u32 = 5001;
+/// `VenueSessionTag` — a custom **header** field.
+pub const VENUE_SESSION_TAG: u32 = 5002;
+/// `NoVenueFees` — the counter of a custom repeating group.
+pub const NO_VENUE_FEES: u32 = 5003;
+/// `VenueFeeType` — a group member with its own enumerated values.
+pub const VENUE_FEE_TYPE: u32 = 5004;
+/// `VenueFeeAmt` — the group's delimiter: declared first, though its tag is
+/// the higher one.
+pub const VENUE_FEE_AMT: u32 = 5005;
+
+/// The most fee entries echoed back. Held on the stack, so a reply never
+/// allocates (non-negotiable 1, `benches/alloc.rs`); entries beyond it are not
+/// echoed.
+pub const MAX_FEES: usize = 8;
+
+/// Fills every order, echoing what the venue's dialect added to it.
+///
+/// * `NewOrderSingle (D)` → an `ExecutionReport (8)` carrying the order's
+///   `OrdType` (a custom value is echoed like any other), `VenueClientID`,
+///   `VenueSessionTag` — which the reply writes in the header, because the
+///   dictionary says it is one — and every `NoVenueFees` entry, written in the
+///   order `venue.xml` declares, whatever order it is named in here.
+/// * `VenueFeeReport (U1)`, a message type FIX 4.4 does not have → a
+///   `VenueFeeAck (U2)` naming its `ClOrdID`.
+/// * Anything else → a business reject.
+#[derive(Debug, Default)]
+pub struct Desk {
+    fills: u32,
+}
+
 impl Handler<256, 64, 1024, Venue> for Desk {
     fn on_message(
         &mut self,
@@ -266,13 +310,17 @@ impl Handler<256, 64, 1024, Venue> for Desk {
         }
     }
 }
-```
 
-A custom repeating group is read through the dialect's tables — `group::<Venue>` knows
-`NoVenueFees`' delimiter and members because the overlay declared them:
+impl Desk {
+    fn fill(
+        &mut self,
+        msg: &Incoming<'_, 256, Venue>,
+        reply: Reply<'_, 64, 1024, Venue>,
+    ) -> Answer {
+        self.fills = self.fills.wrapping_add(1);
+        let mut digits = [0u8; 10];
+        let exec_id = render(self.fills, &mut digits);
 
-<!-- sample: examples/custom-dictionary/src/lib.rs#group -->
-```rust
         // The group, read through the venue's tables. Each entry is named here
         // in tag order — type, then amount — and goes out in `venue.xml`'s
         // declared order, amount first: the order is the dictionary's, never
@@ -291,15 +339,76 @@ A custom repeating group is read through the dialect's tables — `group::<Venue
                 n += 1;
             }
         }
+        let entries = rows.each_ref().map(|fields| GroupEntryData {
+            fields,
+            groups: &[],
+        });
+
+        let mut m = reply.message(b"8");
+        m.field(6, b"0")
+            .field(11, msg.get(11).unwrap_or_default())
+            .field(14, b"0")
+            .field(17, exec_id)
+            .field(37, exec_id)
+            .field(39, b"0")
+            .field(40, msg.get(40).unwrap_or_default())
+            .field(54, msg.get(54).unwrap_or_default())
+            .field(55, msg.get(55).unwrap_or_default())
+            .field(150, b"0")
+            .field(151, msg.get(38).unwrap_or_default());
+        // region:echo
+        for tag in [VENUE_CLIENT_ID, VENUE_SESSION_TAG] {
+            if let Some(value) = msg.get(tag) {
+                m.field(tag, value);
+            }
+        }
+        // endregion:echo
+        if n == 0 {
+            return m.send();
+        }
+        m.group(NO_VENUE_FEES);
+        m.send_with_groups(&[GroupData {
+            counter: NO_VENUE_FEES,
+            entries: entries.get(..n).unwrap_or_default(),
+        }])
+    }
+}
+
+/// ASCII digits of `v`, right-aligned in `buf`, without an allocation.
+fn render(mut v: u32, buf: &mut [u8; 10]) -> &[u8] {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        if let Some(d) = buf.get_mut(i) {
+            *d = b'0' + u8::try_from(v % 10).unwrap_or(0);
+        }
+        v /= 10;
+        if v == 0 || i == 0 {
+            break;
+        }
+    }
+    buf.get(i..).unwrap_or_default()
+}
 ```
+
+A custom repeating group is read through the dialect's tables: in `fill`,
+`msg.view().group::<Venue>(b"D", NO_VENUE_FEES)` knows `NoVenueFees`' delimiter and members because
+the overlay declared them. **That is the dictionary named a second time**, by the call, and the
+compiler does not check it against the handler's `Venue` — `group::<Fix44>` there compiles too, and
+asks FIX 4.4's tables, which declare no such group ([GUIDE.md §3a](../GUIDE.md)). The reply's
+`send_with_groups` needs no name: `Reply<'_, P, S, Venue>` orders the entries by `Venue`'s declared
+order, amount first, whatever order `fill` names them in.
 
 The engine is told the dictionary through its **encoding**, `TagValue<Venue, N>`, handed to one of
 three doors that take an encoding: `serve_over` (`standard` acceptor), `serve_hft_over` (`hft`
 acceptor, same arguments) and `connect_and_serve_over` (initiator). `serve`, `serve_hft` and
-`connect_and_serve` are these doors with `TagValue<Fix44, N>` filled in. The example's `main`:
+`connect_and_serve` are these doors with `TagValue<Fix44, N>` filled in. The example's `main`, in
+`src/main.rs` (the example puts `#[cfg(all(feature = "standard", unix))]` on it, because
+`serve_over` exists only in `standard` mode on Unix):
 
 <!-- sample: examples/custom-dictionary/src/main.rs#serve -->
 ```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     use custom_dictionary::Desk;
     use custom_dictionary::venue::Venue;
     use fixbolt::dict::TagValue;
@@ -343,6 +452,9 @@ acceptor, same arguments) and `connect_and_serve_over` (initiator). `serve`, `se
         NoLog,
         handles,
     )?;
+    println!("stopped: {shutdown:?}");
+    Ok(())
+}
 ```
 
 **`Venue` is written twice, and nothing checks that the two agree.** The encoding is what the

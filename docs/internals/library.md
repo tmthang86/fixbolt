@@ -10,7 +10,8 @@ re-exports `fixbolt_sbe` as `sbe` — a codec without a session (ADR-0078, ADR-0
 no `serve_sbe` exists or will.
 
 `Handler`, `Incoming`, `Reply`, `Message` and `App` take the dictionary as a last type parameter
-`D`, defaulting to `Fix44`, and read, order and encode by it
+`D`, defaulting to `Fix44`: `app.rs` parses by it and `reply.rs` orders and encodes by it; on
+`Incoming` it is a marker, and a group is read with `view().group::<D>`, naming it again
 ([ADR-0207](../decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
 decision 5). `D` is **not** tied to the dictionary of the encoding the engine is served over — the
 session validates by that one, this crate by `D`; `GUIDE.md` §3a carries the rule and

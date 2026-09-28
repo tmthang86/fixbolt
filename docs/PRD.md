@@ -201,7 +201,7 @@ with a CI run id; the measured rows quote `scripts/check-machine.sh` from the de
 | 6 | The exporter stays off the hot path — `[2026-09-27]` **passed**: alloc 0 under a 10 Hz scrape, wire p50 / p99 within band scrape on vs off ([ADR-0170](decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md) *Result*) | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |
 | — | Phases 1–3 hold — proven at the closing commit, CI run [`36366401071`](https://github.com/tmthang86/fixbolt/actions/runs/36366401071) | 59 / 59, FIXT 179 / 180, interop 7 / 7 with both peers, `cargo semver-checks` |
 
-### Phase 5: dependable by an embedder — *approved by the owner 2026-09-26; ADR-0206 and ADR-0207 Proposed*
+### Phase 5: dependable by an embedder — **closed 2026-09-28**; ADR-0206 and ADR-0207 Accepted
 
 **Approved by the owner on 2026-09-26, not yet built.** Placed after phase 4 and before the
 kernel-bypass candidate under *Later phases*

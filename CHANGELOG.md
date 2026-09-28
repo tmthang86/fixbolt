@@ -65,7 +65,8 @@ against that tag rather than a published baseline.
 - **`fixbolt`: the facade takes a dictionary of your own** `[2026-09-28]`
   ([ADR-0207](docs/decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
   decision 5). `Handler`, `Incoming`, `Reply`, `Message` and `App` gain a last type parameter
-  `D = Fix44`, used to parse, order and encode; `fixbolt::dict` re-exports `Dictionary`, `Tables`,
+  `D = Fix44`: `App` parses by it and `Reply`/`Message` order and encode by it, while on `Incoming`
+  it is a marker only (a group is read as `view().group::<D>(…)`, naming the dictionary again); `fixbolt::dict` re-exports `Dictionary`, `Tables`,
   `FieldType`, `Fix44` and `TagValue`; `serve_over`, `serve_hft_over` and `connect_and_serve_over`
   are re-exported. **Nothing ties an `App`'s `D` to the door's encoding**: a mismatch compiles and
   validates by one table while the handler reads by another — a constraint in `docs/GUIDE.md` §3a.

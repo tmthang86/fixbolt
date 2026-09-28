@@ -13,8 +13,8 @@
 //! `serve_hft_over` is the `hft` door, with the same arguments.
 
 #[cfg(all(feature = "standard", unix))]
+// region:serve
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // region:serve
     use custom_dictionary::Desk;
     use custom_dictionary::venue::Venue;
     use fixbolt::dict::TagValue;
@@ -58,10 +58,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NoLog,
         handles,
     )?;
-    // endregion:serve
     println!("stopped: {shutdown:?}");
     Ok(())
 }
+// endregion:serve
 
 #[cfg(not(all(feature = "standard", unix)))]
 fn main() {
