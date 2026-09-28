@@ -16,6 +16,10 @@
   dictionary and the door's encoding are **not** tied in the types, and why; the *Consequences*
   bullet on the 59 definitions changes from "the corpus runs over an empty overlay" to "an empty
   overlay's type is held to `Fix44` answer for answer", which carries `Fix44`'s 59 / 59 to it.
+  *Revised again 2026-09-28, at plan step 29*, on a measurement: decision 7's last sentence said
+  `ValidateUserDefinedFields=N` governs only the tags a dialect does not define. It governs every
+  tag at or above 5000, defined or not; the sentence now says so, and changing the behaviour is left
+  to a later session-layer plan.
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);
@@ -174,8 +178,17 @@ reason.)
 7. **Settings.** `UseDataDictionary`, `DataDictionary`, `TransportDataDictionary` and
    `AppDataDictionary` in a configuration file become a named refusal, `Problem::DictionaryIsBuildTime`
    (`Problem` is `#[non_exhaustive]`), whose sentence points at the how-to — where today they are
-   *unknown key*. `ValidateUserDefinedFields` keeps its meaning: with a dialect that defines a tag,
-   that tag is defined, and the knob governs only tags the dialect does not define.
+   *unknown key*. `ValidateUserDefinedFields` keeps its meaning, **and that meaning is a range**
+   *(revision 2026-09-28, step 29)*: with the knob off, the session's field scan skips every tag at
+   or above 5000, **whether or not the dialect defines it** — a defined tag's type, value, place and
+   group count go unchecked, while a required one is still required (the required check reads the
+   dictionary's list, not the wire). `[measured 2026-09-28]`, pinned by
+   `examples/custom-dictionary/tests/venue.rs::a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped`.
+   QuickFIX C++ differs: at the vendored pin `386ce46`, `DataDictionary.cpp` 167–171 checks a
+   field's format and value (`checkValidFormat`, `checkValue`) before `shouldCheckTag` skips a
+   user-defined one. The behaviour is not changed here — that is a session-layer change and a
+   later plan's; until then `CONFIGURATION.md` §1 and the how-to tell a user of a dialect to leave the knob at `Y`
+   ([validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too](../reference/validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too.md)).
 8. **Scope of the first version: FIX 4.4 only** (owner, 2026-09-26) — an overlay onto
    `FIX44.xml`, or a whole FIX 4.4 file. Overlays onto the FIXT 1.1 + FIX 5.0 SP2 pair are out of
    scope (plan, *Ngoài phạm vi*); the generator's input type is shaped so a later plan can add

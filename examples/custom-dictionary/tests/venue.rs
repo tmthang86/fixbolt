@@ -253,8 +253,10 @@ fn an_undefined_tag_is_still_rejected_373_0() {
     );
 }
 
-/// `ValidateUserDefinedFields=N`'s meaning is unchanged by a dialect: it
-/// governs the tags the dialect does **not** define (ADR-0207 decision 7).
+/// `ValidateUserDefinedFields=N` passes a tag at or above 5000 that neither
+/// FIX 4.4 nor the dialect defines. It skips the tags the dialect **does**
+/// define as well — the next test pins that (ADR-0207 decision 7, revised
+/// 2026-09-28).
 // region:skipping
 #[test]
 fn an_undefined_user_tag_passes_when_user_defined_fields_are_skipped() {
@@ -267,6 +269,57 @@ fn an_undefined_user_tag_passes_when_user_defined_fields_are_skipped() {
     );
 }
 // endregion:skipping
+
+/// **Today's behaviour, pinned, not endorsed** (ADR-0207 decision 7, revised
+/// 2026-09-28; `docs/reference/validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too.md`).
+/// The session's field scan skips every tag at or above 5000 under
+/// `ValidateUserDefinedFields=N`, defined by the dialect or not, so a value
+/// `VenueFeeType (5004)` does not list and a `VenueFeeAmt (5005)` that is no
+/// amount both reach the handler. With the default the same two messages are
+/// `373=5` and `373=6` — the control, in the same test, so a green here says
+/// the setting made the difference. QuickFIX C++ checks a defined field's
+/// format and value before its user-defined skip; changing this is a
+/// session-layer plan of its own. A required tag is still required under the
+/// setting: `VenueClientID (5001)` missing is `373=1` either way.
+#[test]
+fn a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped() {
+    let bad_value = "5003=1\u{1}5005=0.25\u{1}5004=9\u{1}";
+    let bad_format = "5003=1\u{1}5005=abc\u{1}5004=1\u{1}";
+
+    let mut strict = Client::logged_on(checked());
+    strict.send("D", &order(bad_value));
+    let got = strict.next();
+    assert!(
+        got.contains("|35=3|") && got.contains("|371=5004|") && got.contains("|373=5|"),
+        "control: with the default, 5004=9 must be 373=5: {got}"
+    );
+    strict.send("D", &order(bad_format));
+    let got = strict.next();
+    assert!(
+        got.contains("|35=3|") && got.contains("|371=5005|") && got.contains("|373=6|"),
+        "control: with the default, 5005=abc must be 373=6: {got}"
+    );
+
+    let mut skipping = Client::logged_on(DictionaryChecks::new().skipping_user_defined_fields());
+    skipping.send("D", &order(bad_value));
+    let got = skipping.next();
+    assert!(
+        got.contains("|35=8|") && got.contains("|5004=9|"),
+        "under ValidateUserDefinedFields=N, 5004=9 is no longer passed unchecked: {got}"
+    );
+    skipping.send("D", &order(bad_format));
+    let got = skipping.next();
+    assert!(
+        got.contains("|35=8|") && got.contains("|5005=abc|"),
+        "under ValidateUserDefinedFields=N, 5005=abc is no longer passed unchecked: {got}"
+    );
+    skipping.send("D", &order("").replace("5001=ACCT-7\u{1}", ""));
+    let got = skipping.next();
+    assert!(
+        got.contains("|35=3|") && got.contains("|371=5001|") && got.contains("|373=1|"),
+        "under ValidateUserDefinedFields=N, a missing required 5001 must still be 373=1: {got}"
+    );
+}
 
 /// **The `App`'s dictionary and the door's are not tied by the types**
 /// (ADR-0207 decision 5, `GUIDE.md` §3a). An `App` over `Venue` behind a door

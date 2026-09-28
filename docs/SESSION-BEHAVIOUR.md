@@ -424,6 +424,7 @@ the dialect defines is still `373=0`. Each case below is sent over a real socket
 | a field the dialect makes required is `373=1` when missing | `a_missing_venue_required_field_is_rejected_373_1` |
 | an undefined tag below 5000 is still `373=0` | `an_undefined_tag_is_still_rejected_373_0` |
 | an undefined tag at or above 5000 passes under `ValidateUserDefinedFields=N` | `an_undefined_user_tag_passes_when_user_defined_fields_are_skipped` |
+| under `ValidateUserDefinedFields=N`, a tag the dialect defines at or above 5000 goes unchecked too (`5004=9`, `5005=abc` answered `35=8`), and a required one is still `373=1` | `a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped` |
 | an `App` over the dialect behind a FIX 4.4 door: the session refuses the venue's tag `373=0` | `a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0` |
 
 **A new message type must be a value of `MsgType (35)`, or every message of that type is `373=5`
@@ -433,8 +434,9 @@ field 35 by itself; a whole file that leaves one out is refused at build time, n
 — [a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35](reference/a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35.md).
 
 **`ValidateUserDefinedFields=N` also skips the tags at or above 5000 your dialect defines** — their
-type and value go unchecked; a required one is still required. [CONFIGURATION.md
-§1](CONFIGURATION.md#1-configuration-file-keys) has the measurement and what holds it.
+type and value go unchecked; a required one is still required
+(`a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped`;
+[the trap](reference/validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too.md)).
 
 **The 59 definitions run against `Fix44`, never against a dialect.** An overlay that adds nothing is
 held to `Fix44` answer for answer — every one of the fourteen `Dictionary` and `Tables` functions,

@@ -111,8 +111,10 @@ field — and still refuses every tag neither FIX 4.4 nor the overlay defines:
 
 `ValidateUserDefinedFields=N` keeps its meaning over your own dictionary, and that meaning is the
 range: **it also skips the tags at or above 5000 that your overlay defines.** Their type and value
-go unchecked; a required one is still required. [CONFIGURATION.md §1](../CONFIGURATION.md#1-configuration-file-keys)
-has the measurement. The setting is still useful beside a dialect — for a venue that sends
+go unchecked; a required one is still required
+(`tests/venue.rs::a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped`,
+and [the trap](../reference/validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too.md)).
+QuickFIX C++ still checks such a tag's format and value; this engine does not, for now. The setting is still useful beside a dialect — for a venue that sends
 undefined tags at or above 5000 you do not care about, which pass while your own are read
 (`an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`):
 

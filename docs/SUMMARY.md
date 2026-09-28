@@ -170,6 +170,7 @@
 - [Two branches can take the same ADR number without a conflict](reference/two-branches-can-take-the-same-adr-number-without-a-conflict.md)
 - [Two streams through one pipe have no guaranteed order](reference/two-streams-through-one-pipe-have-no-guaranteed-order.md)
 - [Two time-based rules, one observable, and the test could not tell them apart](reference/two-time-rules-share-one-observable.md)
+- [`ValidateUserDefinedFields=N` skips the tags your dialect defines, too](reference/validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too.md)
 - [`wc -l` counts an empty capture as one line](reference/wc-l-counts-an-empty-capture-as-one-line.md)
 - [Who owns the outbound header, and why `369` is not a one-line feature](reference/who-owns-the-outbound-header.md)
 - [Why the message log is not the journal](reference/why-the-message-log-is-not-the-journal.md)

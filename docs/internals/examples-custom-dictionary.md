@@ -31,7 +31,9 @@ forwarded rather than inherited from `fixbolt`'s defaults, for the reason its `C
 
 - `tests/venue.rs` — each addition over a real socket (custom tag, enum value, group in declared
   order, header field, message type, required field, undefined tag still `373=0`, undefined user
-  tag under `ValidateUserDefinedFields=N`), and
+  tag under `ValidateUserDefinedFields=N`, and a defined one left unchecked under it —
+  `a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped`, today's behaviour
+  pinned), and
   `a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0`, the
   proof that the `App`'s dictionary and the door's are not tied by the types (`GUIDE.md` §3a)
 - `tests/plain_is_fix44.rs` — `an_empty_overlay_type_answers_every_dictionary_question_as_fix44`:

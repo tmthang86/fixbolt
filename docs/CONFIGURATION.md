@@ -172,9 +172,12 @@ dialect does not list and a `VenueFeeAmt (5005)` of `abc` were both answered wit
 `ExecutionReport`, where with the knob at its default they are `373=5` and `373=6`. A required
 tag is still required: an order without the dialect's required `VenueClientID (5001)` was
 `373=1` either way, because the required-field check reads the dictionary's list, not the wire.
-Measured by a scratch socket test against `examples/custom-dictionary`, not committed; the one
-committed case is an **undefined** tag passing
-(`examples/custom-dictionary/tests/venue.rs::an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`).
+All three are pinned, each against the default as its control, by
+`examples/custom-dictionary/tests/venue.rs::a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped`; an **undefined** tag passing is
+`examples/custom-dictionary/tests/venue.rs::an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`.
+QuickFIX C++ checks a defined user tag's format and value even with the setting off, and this
+engine's behaviour is left for a later session-layer plan (ADR-0207 decision 7, revised;
+[the trap](reference/validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too.md)).
 With a dialect that defines your venue's tags, leave the key at `Y`.
 
 **Y and N, and nothing else.** `true`, `yes` and `1` are refused with their line. Reading `true`
