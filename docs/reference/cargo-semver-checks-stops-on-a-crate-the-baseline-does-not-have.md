@@ -39,7 +39,8 @@ new crates join `PUBLISHED` in the commit after the first tag that carries them.
 ## The guard
 
 This check has no fixture of its own. The script is the guard, and the CI `semver` job runs it
-on every pull request. Red: the exit 101 above, on the commit before the fix. Green after the
+in the full tier: on push to `main`, on a manual dispatch, and on a pull request labelled
+`full-ci` (ADR-0214). Red: the exit 101 above, on the commit before the fix. Green after the
 fix: the two lines above.
 
 **What it cannot see:** a crate renamed between the tag and `HEAD`. Under its new name it is

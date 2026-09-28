@@ -61,7 +61,7 @@ due?*, and the question that protects a boot is *which timers are armed?*
 
 ## The guard
 
-`scripts/check-boot-p4-driver.sh` (CI job *script-logic*) feeds `active_timers_verdict` a set of
+`scripts/check-boot-p4-driver.sh` (CI job *lint-config*, fast tier; *script-logic* until ADR-0214) feeds `active_timers_verdict` a set of
 fixtures. They include `anacron.timer` `active`/`running` with no `next` (the 2026-09-27 case) and
 the two user timers of attempt 1. A fake `systemctl` first on `PATH` also exercises
 `active_timers_check` for both managers. Reversals, 2026-09-27:

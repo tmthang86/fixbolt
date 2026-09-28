@@ -114,7 +114,7 @@ with `x="$(f)" || …`, then `read … <<<"${x}"`.
 ## Guard
 
 [scripts/check-ctxt-gate-refuses-a-failed-run.sh](../../scripts/check-ctxt-gate-refuses-a-failed-run.sh),
-run by CI's `script-logic` job. No cargo: it points the gate's `W2W_BIN` at three fake `w2w`
+run by CI's `lint-config` job (fast tier; `script-logic` until ADR-0214). No cargo: it points the gate's `W2W_BIN` at three fake `w2w`
 scripts — `healthy` (the gate must `PASS`, so the harness is not a check that is always red),
 `crash-hft` (the gate must exit 1 and say `FAIL: --mode hft produced no result`, and never
 `GREEN ok`), `crash-standard` (exit 1, `FAIL: --mode standard produced no result`). Against the

@@ -80,10 +80,10 @@ the list. Each script's header states what it cannot see; read it before trustin
 
 | Rule | Check | Note |
 |---|---|---|
-| 1 | `crates/*/benches/alloc.rs`, run by the `bench` CI job via `scripts/bench.sh`, each case asserting its own path is live; `tools/w2w` counts allocations on both threads over its timed window and asserts zero | `cargo test` does not run a `harness = false` bench — only the job does |
+| 1 | `crates/*/benches/alloc.rs`, run by the `bench` CI job (full tier) via `scripts/bench.sh`, each case asserting its own path is live; `tools/w2w` counts allocations on both threads over its timed window and asserts zero | `cargo test` does not run a `harness = false` bench — only the job does |
 | 3 | `crates/conformance`, in process and over a socket; behind `fix50sp2`, the FIXT corpus in the `gates` job, with `scripts/check-feature-gated-tests-ran.sh` proving the named tests ran | `cargo test --all` compiles none of the `fix50sp2` tests; the expected FIXT score and its one asserted divergence are in `docs/CONFORMANCE.md` §9 |
 | 3 | `scripts/check-socket-corpus-under-contention.sh 2 8` in the `gates` job: the prebuilt `wire` and `wire_fixt` binaries run `rounds × copies` times, `copies` at a time, exiting non-zero on any red ([ADR-0087](docs/decisions/ADR-0087-a-socket-harness-settles-on-counted-records-and-the-clock-waits-for-the-engine.md) decision 5) | a **count of runs**, never a latency number, and non-negotiable 10 is about the second kind; `copies` is pressure on *that* machine, so a green on a two-vCPU runner bounds nothing about the §9 desk; a test binary that runs no test exits 0, and the harness's own `lifeline hit:` line is the only signal of a slow green. **Its reversal is owed on macOS** — the race is unreachable on Linux ([ADR-0091](docs/decisions/ADR-0091-the-socket-harness-race-is-the-loopback-stacks-not-the-schedulers-and-its-reversal-runs-on-macos.md)) |
-| 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop), `scripts/check-no-kernel-sleep-by-ctxt.sh` (`hft` voluntary-context-switch count, tracer-free, [ADR-0072](docs/decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md)) | each script must also be tripped by the wrong mode; `hft` under TLS is unchecked; the strace check judges only the engine thread's serving window, setup and teardown are printed, not judged ([ADR-0152](docs/decisions/ADR-0152-non-negotiable-4-judges-the-engine-threads-serving-window-and-its-teardown-may-wait-for-its-writers.md)); `io_uring_enter` is a sleeper by name ([ADR-0191](docs/decisions/ADR-0191-the-hft-sleeper-list-reads-io-uring-enter-by-its-min-complete.md) Deprecated with the transport, [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md) *Result*) |
+| 4 | `scripts/check-no-kernel-sleep.sh` (`hft`), `scripts/check-standard-gives-the-core-back.sh` (`standard`), `the_dial_loop_sleeps_rather_than_spins_while_the_handshake_waits` (initiator dial loop), `scripts/check-no-kernel-sleep-by-ctxt.sh` (`hft` voluntary-context-switch count, tracer-free, [ADR-0072](docs/decisions/ADR-0072-a-tracer-free-check-that-the-hft-engine-thread-never-sleeps.md)) | full tier only (ADR-0214); each script must also be tripped by the wrong mode; `hft` under TLS is unchecked; the strace check judges only the engine thread's serving window, setup and teardown are printed, not judged ([ADR-0152](docs/decisions/ADR-0152-non-negotiable-4-judges-the-engine-threads-serving-window-and-its-teardown-may-wait-for-its-writers.md)); `io_uring_enter` is a sleeper by name ([ADR-0191](docs/decisions/ADR-0191-the-hft-sleeper-list-reads-io-uring-enter-by-its-min-complete.md) Deprecated with the transport, [ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md) *Result*) |
 | 6 | `no-default-features` CI job **and** `scripts/check-no-optional-deps.sh`, per crate | cargo unifies features across one invocation — [feature-flags-unify-across-a-workspace](docs/reference/feature-flags-unify-across-a-workspace.md) |
 | 7 | `scripts/check-lint-config.sh` (lints deny, proven by reversal); `scripts/check-indexing-debt.sh` (ratchet: the count may only go down); `scripts/check-no-crate-root-allow.sh` (no crate-root `allow`/`expect`, no `warn` lowering a denied lint); `scripts/check-scratch-fixtures.sh` (a scratch crate outside the tree gets the pinned toolchain) | known gaps of the scratch-fixture gate are open by decision, ADR-0061 |
 | 9 | `scripts/check-dict-spec-pin.sh`: the three shipped files match their pinned sha256, the pin matches `fetch-quickfix-assets.sh`'s `PINNED_SHA`, and the two `NOTICE` copies are identical | it cannot see a QuickFIX file committed under another name or path — `git add` is still the control |
@@ -226,7 +226,12 @@ Widening scope means **naming more cases**, never "run everything because it fee
   **Commit and push at every step that ends green.**
 - Gates must be green **for that commit**, not merely for the branch tip.
 - **CI runs on `pull_request` and on `push` to `main` only**, so a branch with no pull request has
-  no CI. **Open the pull request as a draft at the first commit of a branch.**
+  no CI. **Open the pull request as a draft at the first commit of a branch.** Two workflows, two
+  tiers ([ADR-0214](docs/decisions/ADR-0214-ci-runs-a-fast-tier-on-every-pull-request-push-a-full-tier-before-a-plan-closes-and-a-docs-only-diff-runs-only-the-docs-workflow.md)):
+  `Docs` runs on every push; `CI` skips a documentation-only diff (ADR-0214 defines "documentation")
+  and runs its **fast tier** on every pull-request push, its **full tier** on `main`, on
+  `workflow_dispatch`, and on a pull request labelled `full-ci`. **Add `full-ci` before pushing a
+  plan's closing commit**; the label removes itself after that run.
 - A push cancels the in-progress run for the same branch: wait for the closing commit's run to
   finish before pushing a handoff commit.
 - `vendor/` is gitignored. **Never commit its contents.** The only QuickFIX files in the tree are
@@ -244,8 +249,9 @@ Done only when **all** hold. Any unchecked box → report it as **not done**, an
 - [ ] An ADR exists if an architectural decision was made
 - [ ] Every performance claim names its benchmark, its machine, and its §9 settings
 - [ ] **Hot-path changes were measured on Linux**, not only on the development laptop
-- [ ] **A green CI run is named, by id, for the commit being closed.** A laptop says the gates pass
-      for you; only CI says they pass for the commit
+- [ ] **The full-tier `CI` run and the `Docs` run are named, by id, green, for the commit being
+      closed** (`scripts/ci-evidence.sh <sha>` finds both and refuses a skipped full-tier job). A
+      laptop says the gates pass for you; only CI says they pass for the commit
 
 ## 10. Evidence, not promises
 

@@ -47,7 +47,7 @@ the control is you, before `git add` (CLAUDE.md, preamble).
 
   The crates an application depends on build without either; the test suite does not.
 - **Documentation**: `python3` for the scripts under `scripts/`, and mdBook at the version the
-  `book` job in `.github/workflows/ci.yml` pins, to build the site from `book.toml`.
+  `book` job in `.github/workflows/docs.yml` pins, to build the site from `book.toml`.
 - **Linux** for anything that measures, and for the mode checks: `hft`, `affinity`, `shard`,
   kTLS code is Linux-only, and a `cargo check` on macOS does not compile it.
 
@@ -66,20 +66,31 @@ cargo test --no-default-features
 Every other row — session, hot-path, dispatch, wait-strategy and documentation changes — is in
 CLAUDE.md §7, with the command for each; the machine check behind each non-negotiable, and what
 each script cannot see, is CLAUDE.md §2 *Machine checks*. Read a script's header before trusting
-its green. CI runs them as named jobs in `.github/workflows/ci.yml`; the ones a change most often
-turns red:
+its green. CI runs them as named jobs in two workflows, `.github/workflows/docs.yml` (`Docs`) and
+`.github/workflows/ci.yml` (`CI`); the ones a change most often turns red:
 
-| CI job | What a green run proves |
-|---|---|
-| `gates` | fmt, clippy `-D warnings` and `cargo test --all`, with the FIXT corpus behind `fix50sp2` |
-| `no-default-features` | the workspace builds and tests with nothing optional installed, per crate |
-| `lint-config`, `indexing-debt` | the no-panic lints still deny, and the indexing debt only goes down |
-| `bench` | the benchmarks run, every `benches/alloc.rs` reads zero, machine-independent bounds hold |
-| `no-kernel-sleep`, `standard-blocks` | `hft` never sleeps in the kernel; `standard` gives the core back |
-| `links`, `book` | no dead internal link; the book builds without a warning and its rendered links hold |
+| CI job | Tier | What a green run proves |
+|---|---|---|
+| `gates` | fast | fmt, clippy `-D warnings` and `cargo test --all`, with the FIXT corpus behind `fix50sp2` |
+| `no-default-features` | fast | the workspace builds and tests with nothing optional installed, per crate |
+| `lint-config`, `indexing-debt` | fast | the no-panic lints still deny, and the indexing debt only goes down |
+| `bench` | full | the benchmarks run, every `benches/alloc.rs` reads zero, machine-independent bounds hold |
+| `no-kernel-sleep`, `standard-blocks` | full | `hft` never sleeps in the kernel; `standard` gives the core back |
+| `book` (`Docs`) | every PR | no dead internal link; the book builds without a warning and its rendered links hold; `docs/GETTING-STARTED.md`'s code builds against the release tag |
 
-The job names are the ones a pull request shows; the list of jobs in `ci.yml` is the complete
-one.
+The job names are the ones a pull request shows; the lists of jobs in the two workflow files are
+the complete ones. Which job runs when is [ADR-0214](docs/decisions/ADR-0214-ci-runs-a-fast-tier-on-every-pull-request-push-a-full-tier-before-a-plan-closes-and-a-docs-only-diff-runs-only-the-docs-workflow.md),
+tabled in [DESIGN.md §6](docs/DESIGN.md#6-gates):
+
+- **`Docs`** runs on every pull request and every push to `main`.
+- **`CI`'s fast tier** runs on every push to a pull request that changes anything besides
+  documentation. A pull request that changes only files under `docs/`, `*.md` at the root or
+  `book.toml` runs `Docs` alone — except `docs/CONFIGURATION.md` and `docs/reference/prior-art.md`,
+  which tests read and which therefore count as code.
+- **`CI`'s full tier** adds the other eleven jobs, on a push to `main`, a manual
+  `workflow_dispatch`, or a pull request carrying the label **`full-ci`**. The label removes
+  itself at the end of the run it caused, so the next push runs the fast tier; attach it again to
+  run the full tier again.
 
 Two habits the gates depend on (CLAUDE.md §7, §10): **read the output, not the exit status**, and
 **prove a guard by reversal** — break it, see it red on the assertion you meant, restore it.
@@ -92,12 +103,14 @@ Two habits the gates depend on (CLAUDE.md §7, §10): **read the output, not the
 2. **An ADR for a decision** that is expensive, hard to reverse or contested, in
    [docs/decisions/](docs/decisions/) (CLAUDE.md §5). An accepted ADR is superseded, never edited.
 3. **A branch per plan, never `main`.** Open the pull request **as a draft at the first commit**:
-   CI runs only on pull requests and on pushes to `main`, so a branch without one has no CI
-   (CLAUDE.md §8).
-4. **Commit and push at every step that ends green.** Gates must be green for each commit, not
-   only for the branch tip.
-5. **Review, then merge** once the plan's exit criteria are met and CI is green on the closing
-   commit, named by run id. The full checklist is CLAUDE.md §9, *Definition of Done*.
+   CI runs only on pull requests, on pushes to `main` and on a manual dispatch, so a branch
+   without a pull request has no CI (CLAUDE.md §8).
+4. **Commit and push at every step that ends green.** The fast tier must be green for each
+   commit, not only for the branch tip.
+5. **Review, then merge** once the plan's exit criteria are met and the closing commit has a green
+   **full-tier** `CI` run and a green `Docs` run: attach `full-ci` before pushing it, then name
+   both run ids with `scripts/ci-evidence.sh <sha>`, which refuses a run whose full-tier jobs were
+   skipped. The full checklist is CLAUDE.md §9, *Definition of Done*.
 
 If the plan turns out wrong partway, stop, fix the plan and get it re-approved; never diverge
 silently (CLAUDE.md §1).

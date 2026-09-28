@@ -246,7 +246,7 @@ closing commit, with a CI run id.
 | 1 | The book builds and its links resolve | `mdbook build` exits 0 with no mdBook warning in its log; `scripts/check-links.py`, and `scripts/check-links.py --rendered target/book` with anchors; CI job `book` |
 | 2 | The table of contents matches the tree | `scripts/gen-book-summary.py --check` |
 | 3 | The site is live | `pages.yml` deploys on push to `main`; on the published site, a link into `crates/` opens that file on GitHub at the commit that was built |
-| 4 | Code on a page is code CI compiles, and cited sections stay | `scripts/check-doc-samples.sh`; `scripts/check-cited-headings.sh`; job `stranger-git`, with the `stranger-check` blocks of `GETTING-STARTED.md` untouched |
+| 4 | Code on a page is code CI compiles, and cited sections stay | `scripts/check-doc-samples.sh`; `scripts/check-cited-headings.sh`; `stranger-check.sh --from git` in the `Docs` workflow's `book` job, with the `stranger-check` blocks of `GETTING-STARTED.md` untouched |
 | 5 | The pages keep their house rules | `scripts/check-doc-claims.sh`, each of its checks proven by reversal |
 | 6 | The generator moved without changing its output | the sha256 of the generated `fix44.rs` and `fixt11_fix50sp2.rs` equals the parent commit's; `crates/dict/tests/gen_matches_build.rs` |
 | 7 | The overlay merges correctly | `crates/dict/tests/overlay.rs` under `gen`, including `an_empty_overlay_emits_byte_identical_fix44` |
