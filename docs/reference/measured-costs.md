@@ -5242,6 +5242,7 @@ and `target/simd-evidence/prep/` (the pre-boot instruction counts and disassembl
 **both kernels discarded** at stage 1 — neither cleared its ADR-0211 codec line — so stage 2
 (the density look) never ran. Code reverted in `83ddd20`; the checksum bench (row 8) and the
 `checksum`/`decimal` baselines it recorded are kept in `27f4cdb`.
+**`[2026-09-28]` That directory no longer exists:** `git worktree remove ../fb-p4-simd`, run after the merge, deleted the worktree's gitignored `target/` with it — `git worktree remove` removes ignored files. The figures on this page, the commit bodies of `83ddd20` and `27f4cdb`, the two baseline binaries in `target/baseline-bins/` (`checksum-5572c3267251df8e`, `decimal-91cdb9df6d115f6a`) and the four pinned trees under `/home/tmt/Projects/fb-simd-arms/` are what survives.
 
 **Machine:** host `tmt-B450-I-AORUS-PRO-WIFI`, AMD Ryzen 7 3700X, kernel `7.0.0-34-generic`,
 `rustc 1.98.0`. The §9 grub line: `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15
