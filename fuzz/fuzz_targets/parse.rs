@@ -12,11 +12,11 @@
 //!    makes `LengthOutOfBounds` load-bearing: a DATA length is attacker-supplied.
 //! 4. Every non-DATA field ends at the **first** SOH after its `=`: its value
 //!    holds no SOH and the byte right after it is one. That is the definition
-//!    `find_soh` implements (`crates/codec/src/scan.rs`, eight bytes at a time,
-//!    ADR-0211), checked here through the public API only. A field is DATA when
-//!    the dictionary names a length tag for it (`Fix44::data_length_tag`) —
-//!    the parser's own rule — and its value may legitimately hold SOH. True of
-//!    the byte loop too, so this stays whichever `find_soh` ships.
+//!    `find_soh` implements (`crates/codec/src/parse.rs`), checked here through
+//!    the public API only. A field is DATA when the dictionary names a length
+//!    tag for it (`Fix44::data_length_tag`) — the parser's own rule — and its
+//!    value may legitimately hold SOH. True of the byte loop and of any faster
+//!    scan (ADR-0211's SWAR was one), so this stays whichever `find_soh` ships.
 //!
 //! Run: `cargo +nightly fuzz run parse -- -max_total_time=600`
 
