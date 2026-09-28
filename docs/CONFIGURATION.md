@@ -151,6 +151,32 @@ of it with one comparison in the same scan that checks everything else. There is
 pass to skip; turning it off would mean deleting the comparison, which is a different engine
 rather than a setting. Writing the key gets *"unknown key"* with its line, like any other.
 
+**QuickFIX's four dictionary keys are refused by name** `[added 2026-09-28]`. `UseDataDictionary`,
+`DataDictionary`, `TransportDataDictionary` and `AppDataDictionary` stop startup as
+`Problem::DictionaryIsBuildTime`, with the line, in `[DEFAULT]` or `[SESSION]`, whatever the value
+— `UseDataDictionary=N` too, since no value of it changes what this engine validates by. The
+sentence is *"the dictionary is chosen when the application is built, not in this file — see
+docs/how-to/use-a-venue-dictionary.md"*. They are not among the thirty-five keys above: nothing
+reads their values. A file copied from a QuickFIX deployment carries them, and *unknown key* would
+send its operator looking for a typo; this engine's dictionary is a type compiled into the
+application ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+decision 7), so a file cannot choose one. Held by
+`crates/engine/tests/settings.rs::a_data_dictionary_key_is_refused_by_name`. The way to a venue's
+dictionary is [Use a venue dictionary](how-to/use-a-venue-dictionary.md); the whole mapping from a
+QuickFIX file is [Migrate from QuickFIX](how-to/migrate-from-quickfix.md).
+
+**`ValidateUserDefinedFields=N` skips every tag at or above 5000, including one your own dictionary
+defines** `[measured 2026-09-28]`. The session's field scan does not look at such a tag at all: over
+the example crate's `Venue` dictionary, with the knob off, a `VenueFeeType (5004)` value the
+dialect does not list and a `VenueFeeAmt (5005)` of `abc` were both answered with an
+`ExecutionReport`, where with the knob at its default they are `373=5` and `373=6`. A required
+tag is still required: an order without the dialect's required `VenueClientID (5001)` was
+`373=1` either way, because the required-field check reads the dictionary's list, not the wire.
+Measured by a scratch socket test against `examples/custom-dictionary`, not committed; the one
+committed case is an **undefined** tag passing
+(`examples/custom-dictionary/tests/venue.rs::an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`).
+With a dialect that defines your venue's tags, leave the key at `Y`.
+
 **Y and N, and nothing else.** `true`, `yes` and `1` are refused with their line. Reading `true`
 as `Y` today is reading `1` as `N` tomorrow, and a flag guessed wrongly is a session that
 silently keeps or drops its numbering.
@@ -477,7 +503,7 @@ decisions 1, 3 and 7).
 | `standard` | `engine`, `library` | The blocking poller (`block.rs`, `serve`, `StandardAcceptorEngine`), through `poll(2)` via `libc` | **on** |
 | `affinity` | `engine` | Core pinning and topology checks via `libc`, Linux only. Naming a core in a build without it is a hard error | off |
 | `fix50sp2` | `codec`, `dict`, `session`, `engine` | The second dictionary: `dict`'s `build.rs` reads `FIXT11.xml` **and** `FIX50SP2.xml` into one table and emits `Fixt11Fix50Sp2Tables`, and the FIXT tests and bench cases in all four crates compile. Pulls in **no dependency** — it is generated code and build time only, and `codec`'s copy is a dev-dependency pass-through so its benches can name the table. `[measured]` the generated file goes 156 KB to 4.0 MB and a cold `dict` build 0.56 s to 5.25 s: see [a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md) | off |
-| `codegen` | `dict` | `[2026-09-26]` `pub mod codegen`: the dictionary generator as a library, for a `build.rs` of your own ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md) decision 1). It offers `fix44_tables` and, with `fix50sp2`, `fixt11_fix50sp2_tables`, which return the exact text `fixbolt-dict`'s own `build.rs` writes, and `GenError`. `[2026-09-26]` It also offers the door for a dictionary of your own. `generate(Source, type_name, Paths)` writes one Rust file holding your own type, from an overlay onto the shipped FIX 4.4 (`Source::Fix44Overlay`) or a whole FIX 4.4 file (`Source::Fix44Whole`). `merged_model(Source)` returns the merged `Model` and its `table_size()` without writing anything (§5, ADR-0207 decisions 3, 4 and 8). Pulls in `roxmltree` (`=0.20.0`, pure Rust) as a normal dependency — the same crate `fixbolt-dict` always builds with as a build-dependency, so nothing new is compiled; with the feature off it never reaches your binary. Changes no table and no behaviour of `Fix44` | off |
+| `codegen` | `dict` | `[2026-09-26]` `pub mod codegen`: the dictionary generator as a library, for a `build.rs` of your own ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md) decision 1). It offers `fix44_tables` and, with `fix50sp2`, `fixt11_fix50sp2_tables`, which return the exact text `fixbolt-dict`'s own `build.rs` writes, and `GenError`. `[2026-09-26]` It also offers the door for a dictionary of your own. `generate(Source, type_name, Paths)` writes one Rust file holding your own type, from an overlay onto the shipped FIX 4.4 (`Source::Fix44Overlay`) or a whole FIX 4.4 file (`Source::Fix44Whole`). `merged_model(Source)` returns the merged `Model` and its `table_size()` without writing anything (§5, ADR-0207 decisions 3, 4 and 8). `[2026-09-28]` The file names `::fixbolt::dict::…` by default (`Paths::facade()`), so the crate that includes it depends on `fixbolt` alone at run time and takes `fixbolt-dict` with this feature as a **build-dependency** only; [Use a venue dictionary](how-to/use-a-venue-dictionary.md) is the walk-through. Pulls in `roxmltree` (`=0.20.0`, pure Rust) as a normal dependency — the same crate `fixbolt-dict` always builds with as a build-dependency, so nothing new is compiled; with the feature off it never reaches your binary. Changes no table and no behaviour of `Fix44` | off |
 | `tls` | `engine` | `mod tls`: the userspace `rustls` handshake, the kTLS handover, `serve_tls`/`serve_tls_with`/`serve_tls_requiring`, `connect_and_serve_tls`/`connect_and_serve_tls_with`, `tls::load_pem`/`tls::load_client_pem`, and the seven `SocketUseSSL`-family settings keys (§1). Pulls in `rustls`, `ktls-core` and `libc` — the first dependencies in this crate that bring a tree of their own | off |
 | `io-uring` | `engine`, `library`, `tools/w2w` | `[2026-09-24]` `mod transport::uring`: `Uring`, `UringConfig`, `UringTransport`, `UringSpin`/`UringBlock`, `HftArm`, `UringRefused`, `UringReport`, `serve_hft_uring`/`serve_uring`, `ServeError::Uring` — a second `Transport` reaped by the idle strategy, Linux only, kernel ≥ 6.1 ([DESIGN.md D5](DESIGN.md), [ADR-0190](decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)). Pulls in `io-uring` (pinned `>= 0.7.15`, pure Rust) and the `libc` the crate already carries under `standard`/`affinity`; `HftArm::Sqpoll` exists only with `affinity` on too | off |
 | `sbe` | `library` (`fixbolt`) | The re-export `fixbolt::sbe` (= `fixbolt-sbe`): SBE 1.0 over generated tables, a codec with no session and no `serve*` of its own ([GUIDE.md §3b](GUIDE.md)) | off |
@@ -534,12 +560,15 @@ differ in what they change:
 | Declared in | The environment (a `cargo:rerun-if-env-changed` rebuilds on change) | Your `Cargo.toml` (`fixbolt-dict` with `features = ["codegen"]` as a build-dependency) and your `build.rs` |
 | Checked | The generator's refusals. `fixbolt-dict`'s own byte-identity tests (`gen_matches_build.rs`, `generated_is_pinned.rs`, and `overlay.rs`'s empty-overlay test) compare against the shipped file, so under an override they go red or compare the wrong input | The same refusals, and the overlay's own. The file checks at compile time that it was generated at the format the linked `fixbolt-dict` reads. A high custom tag's cost is reported by `merged_model(..)?.table_size()` and in the file's opening comment ([a-bitset-keyed-by-tag-scales-with-the-highest-tag](reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md)) |
 
-`[2026-09-26]` What exists is the generator. **Nothing in `fixbolt` accepts your type yet.** The
-facade's `fixbolt::dict` re-exports, which `Paths::facade()` (the default) names, and the
-`serve_over` family of doors that take a dictionary type arrive with the next pull request of
-[the plan](plans/2026-09-26-docs-for-embedders.md) (PR 6). Until then, a generated file names the
-crates directly (`Paths::direct()`: `::fixbolt_dict`, `::fixbolt_codec`). No committed crate
-compiles a generated file yet, and plan step 27 is the first.
+`[2026-09-28]` **`fixbolt` accepts your type.** `fixbolt::dict` re-exports `Dictionary`,
+`Tables`, `FieldType`, `Fix44` and `TagValue`, which is what `Paths::facade()` (the default) names;
+`App`, `Handler`, `Incoming`, `Reply` and `Message` take the dictionary as a last type parameter
+defaulting to `Fix44`; and `serve_over`, `serve_hft_over` and `connect_and_serve_over` take the
+encoding, `TagValue<YourType, N>`. `Paths::direct()` (`::fixbolt_dict`, `::fixbolt_codec`) is for
+a crate that drives `fixbolt-engine` without the facade.
+[`examples/custom-dictionary`](../examples/custom-dictionary/) is the committed crate that compiles
+a generated file and serves it over a socket; [Use a venue dictionary](how-to/use-a-venue-dictionary.md)
+walks through it.
 
 ## 6. `fixbolt-store-sqlite`'s settings
 

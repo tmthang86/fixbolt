@@ -97,11 +97,13 @@ a session uses is decided at compile time, never at run time
 decision 1).
 
 **What it costs.** The dictionary is part of your binary. Changing a venue's dialect means a
-rebuild. Today the only way to change the FIX 4.4 dictionary is to replace the whole XML file at
-build time ([CONFIGURATION.md §5](../CONFIGURATION.md#5-build-time-environment-variables)); an
-overlay for venue fields is designed but not built
+rebuild. A venue's dialect is a type generated in your own `build.rs` — an overlay onto the
+shipped FIX 4.4, or a whole file — and one engine serves one dictionary, so several dialects are
+several engines
 ([ADR-0207](../decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md),
-*Proposed*). The validation tables are bitsets keyed by tag, so a single very high custom tag
+[Use a venue dictionary](../how-to/use-a-venue-dictionary.md)). Nothing in the types ties the
+handler's dictionary to the one the session validates by; that is a rule you keep
+([GUIDE.md §3a](../GUIDE.md)). The validation tables are bitsets keyed by tag, so a single very high custom tag
 number grows them
 ([the trap](../reference/a-bitset-keyed-by-tag-scales-with-the-highest-tag-not-the-field-count.md)).
 

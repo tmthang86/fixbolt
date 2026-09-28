@@ -402,6 +402,48 @@ the pass**. `CLAUDE.md` §2 non-negotiable 10 makes that **not a published numbe
 magnitude and not a band. The band is owed and is tracked in
 [STATUS.md](../STATUS.md)'s *Not proven* — the cost is not implied to be small.
 
+
+### 3c. A dialect's own tags `[added 2026-09-28]`
+
+**With a dictionary your `build.rs` generated, every `373=` above is answered by that dictionary.**
+The session asks the encoding's dictionary type — `TagValue<Venue, N>`'s `Venue` — every question
+it asks `Fix44`, through the same functions
+([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)).
+So a tag the dialect defines is checked like a FIX 4.4 tag: its type, its enum values, which
+messages carry it, whether it is a header field, and its repeating group. A tag neither FIX 4.4 nor
+the dialect defines is still `373=0`. Each case below is sent over a real socket to
+`examples/custom-dictionary`, whose dialect `venue.xml` is invented:
+
+| Behaviour | Held by (`examples/custom-dictionary/tests/venue.rs`) |
+|---|---|
+| a tag the dialect defines is accepted and reaches the handler | `a_custom_tag_reaches_the_handler` |
+| a value the dialect adds to a standard enum (`40=Z`) is not `373=5` | `a_custom_enum_value_is_not_rejected` |
+| a custom repeating group is read, and written back in the dialect's declared order | `a_custom_group_is_read_and_echoed_in_declared_order` |
+| a custom header field is accepted in the header and written back there | `a_custom_header_field_is_written_in_the_header` |
+| a message type the dialect adds is delivered, not `373=5` on tag 35 | `a_custom_message_type_is_delivered` |
+| a field the dialect makes required is `373=1` when missing | `a_missing_venue_required_field_is_rejected_373_1` |
+| an undefined tag below 5000 is still `373=0` | `an_undefined_tag_is_still_rejected_373_0` |
+| an undefined tag at or above 5000 passes under `ValidateUserDefinedFields=N` | `an_undefined_user_tag_passes_when_user_defined_fields_are_skipped` |
+| an `App` over the dialect behind a FIX 4.4 door: the session refuses the venue's tag `373=0` | `a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0` |
+
+**A new message type must be a value of `MsgType (35)`, or every message of that type is `373=5`
+on tag 35.** FIX 4.4 enumerates field 35, and the session checks it like any enumerated field,
+before anything else looks at the message. An overlay's generator adds each new message's type to
+field 35 by itself; a whole file that leaves one out is refused at build time, naming the message
+— [a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35](reference/a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35.md).
+
+**`ValidateUserDefinedFields=N` also skips the tags at or above 5000 your dialect defines** — their
+type and value go unchecked; a required one is still required. [CONFIGURATION.md
+§1](CONFIGURATION.md#1-configuration-file-keys) has the measurement and what holds it.
+
+**The 59 definitions run against `Fix44`, never against a dialect.** An overlay that adds nothing is
+held to `Fix44` answer for answer — every one of the fourteen `Dictionary` and `Tables` functions,
+over every tag to past the highest, the 93 message types and every enumerated value —
+by `examples/custom-dictionary/tests/plain_is_fix44.rs::an_empty_overlay_type_answers_every_dictionary_question_as_fix44`.
+The session reaches a dictionary only through those functions, so that is what carries `Fix44`'s
+59 / 59 to a generated type. What an overlay **adds** has no acceptance corpus: it is tested only
+by this repository's own invented fixture, never by a venue's rules of engagement.
+
 ---
 
 ## 4. Sequence numbers, gaps and resends

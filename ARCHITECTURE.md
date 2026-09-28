@@ -47,7 +47,11 @@ item 1. Check: `crates/codec/benches/alloc.rs`, run by `scripts/bench.sh` in the
 ### `crates/dict` — the FIX tables, generated at build time
 
 Entry points: `build.rs`, the `Tables` trait, `Fix44`, `FieldType`; behind the `fix50sp2`
-feature, `Fixt11Fix50Sp2Tables`. `build.rs` turns the XML in `crates/dict/spec/` into tables.
+feature, `Fixt11Fix50Sp2Tables`. `build.rs` turns the XML in `crates/dict/spec/` into tables through
+`src/codegen/`, the generator, which the off-by-default `codegen` feature also exposes as
+`pub mod codegen` — `generate(Source, type_name, Paths)` for a user's own `build.rs`, from an
+overlay onto the shipped FIX 4.4 or a whole file
+([ADR-0207](docs/decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)).
 
 **Architecture Invariant:** field order comes from these generated tables, never from a call
 site. Rule: CLAUDE.md §2 item 5 (D3). Check: hand-check; the positional acceptance comparator
@@ -56,7 +60,10 @@ goes red on a misordering the corpus exercises.
 **Architecture Invariant:** **no dictionary is chosen or loaded at run time**; a session's
 encoding carries its compiled table
 ([ADR-0080](docs/decisions/ADR-0080-the-dictionary-rides-the-encoding-and-a-fixt-session-is-one-table-built-from-two-xml-files.md)
-decision 1). Rule: D3, under CLAUDE.md §2 item 5. Check: hand-check.
+decision 1). A user's dialect is a type generated in the user's build, not a file read at start-up,
+and QuickFIX's `DataDictionary` keys are refused by name in a configuration file. Rule: D3, under
+CLAUDE.md §2 item 5. Check: hand-check;
+`crates/engine/tests/settings.rs::a_data_dictionary_key_is_refused_by_name`.
 
 **Architecture Invariant:** exactly three QuickFIX files ship, under `crates/dict/spec/`,
 byte-identical to a pinned commit; no QuickFIX source is copied
@@ -133,7 +140,9 @@ push per message to a writer thread (D14). Rule: CLAUDE.md §6 *Rust*. Check: ha
 
 Entry points: `Handler`, `Incoming`, `Reply`, `App`/`app`, and a curated re-export of what an
 application needs (`serve`, `Settings`, `Table`, `Limits`, `Handles`, `Recovery`, `FileJournal`,
-…). The shortest working program is `crates/library/examples/acceptor.rs`
+…). `Handler`, `Incoming`, `Reply`, `Message` and `App` end in a dictionary parameter `D = Fix44`;
+`fixbolt::dict` re-exports what a generated dictionary names; `serve_over`, `serve_hft_over` and
+`connect_and_serve_over` take the engine's encoding, `TagValue<D, N>`. The shortest working program is `crates/library/examples/acceptor.rs`
 ([ADR-0002](docs/decisions/ADR-0002-engine-library-split.md),
 [ADR-0041](docs/decisions/ADR-0041-the-library-layer-buys-an-api-with-a-template-per-message.md)).
 
@@ -141,6 +150,14 @@ application needs (`serve`, `Settings`, `Table`, `Limits`, `Handles`, `Recovery`
 `Transport`, `wait`, `shard`, `affinity`, `frame` or `ring`; reaching for one means depending on
 `fixbolt-engine` by name. Rule: DESIGN.md §3, ADR-0041. Check: hand-check — the example names
 nothing from `fixbolt_engine` or `fixbolt_session`.
+
+**Architecture Invariant:** deliberately **absent** — nothing in the types ties an `App`'s `D` to
+the dictionary of the encoding the door serves it over; a mismatch compiles, and the session
+validates by one table while the handler reads by the other
+([ADR-0207](docs/decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+decision 5). Rule: `docs/GUIDE.md` §3a. Check:
+`examples/custom-dictionary/tests/venue.rs::a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0`
+shows the mismatch compiling and what it answers; nothing prevents it.
 
 ### Around the core
 
@@ -151,6 +168,9 @@ nothing from `fixbolt_engine` or `fixbolt_session`.
   written by its own thread; nothing in `engine` or `library` depends on it
   ([ADR-0180](docs/decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md)).
 - `crates/conformance` — the `.def` runner (`runner`, `script`, `compare`, `echo`, `mirror`).
+- `examples/custom-dictionary` — an acceptor over a dialect its own `build.rs` generates with
+  `codegen`: the shape an embedder copies, and the socket tests behind it
+  ([docs/internals/examples-custom-dictionary.md](docs/internals/examples-custom-dictionary.md)).
 - `tools/` — `w2w` (wire-to-wire harness; the binary the mode checks trace), `jrnl`, `interop`,
   `attr-scan`; see [docs/internals/tools.md](docs/internals/tools.md).
 - Outside the workspace: `fuzz/` (nightly), `spikes/`; `vendor/` is fetched, never committed.

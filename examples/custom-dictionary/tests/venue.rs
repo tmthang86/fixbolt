@@ -255,6 +255,7 @@ fn an_undefined_tag_is_still_rejected_373_0() {
 
 /// `ValidateUserDefinedFields=N`'s meaning is unchanged by a dialect: it
 /// governs the tags the dialect does **not** define (ADR-0207 decision 7).
+// region:skipping
 #[test]
 fn an_undefined_user_tag_passes_when_user_defined_fields_are_skipped() {
     let mut c = Client::logged_on(DictionaryChecks::new().skipping_user_defined_fields());
@@ -265,6 +266,7 @@ fn an_undefined_user_tag_passes_when_user_defined_fields_are_skipped() {
         "tag 5999, undefined but user-defined, was refused while skipped: {got}"
     );
 }
+// endregion:skipping
 
 /// **The `App`'s dictionary and the door's are not tied by the types**
 /// (ADR-0207 decision 5, `GUIDE.md` §3a). An `App` over `Venue` behind a door

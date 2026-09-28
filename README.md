@@ -64,10 +64,10 @@ lists what an embedder still has to do themselves.
   ([CONFORMANCE.md §9](docs/CONFORMANCE.md#9-fixt-11--fix-50-sp2-added-2026-09-19)); `fixbolt`
   has no feature that turns it on.
 - **The dictionary is compiled in.** Its tables are generated at build time from QuickFIX's FIX
-  4.4 XML; changing it means rebuilding, and today it means replacing the whole file
-  ([CONFIGURATION.md §5](docs/CONFIGURATION.md#5-build-time-environment-variables)). A venue's
-  own fields as an overlay on FIX 4.4 is phase 5 work, not yet built
-  ([PRD.md §2](docs/PRD.md#2-phases)).
+  4.4 XML, and changing it means rebuilding. A venue's own fields, groups and message types are a
+  dictionary type your own `build.rs` generates — an overlay onto FIX 4.4 or a whole file — served
+  by its own engine; a configuration file cannot name one
+  ([Use a venue dictionary](docs/how-to/use-a-venue-dictionary.md)).
 - **Logon admits by identity only.** A counterparty presenting a configured comp-ID pair is
   admitted; there is no password, no `553` / `554` rejection and no IP allowlist.
 - **No Windows.** `standard` needs a Unix target, `hft` needs Linux, and TLS is Linux-only,
@@ -248,6 +248,11 @@ crates/
   store-sqlite/  a journal whose durable copy is a SQLite database, one per session; the
                  Async journal's engine-thread cost, a writer thread commits (feature
                  `sqlite`, on by default; off, the crate is empty and compiles no C)
+examples/
+  custom-dictionary/
+                 an acceptor over a venue dialect its own build.rs generates from an
+                 overlay (venue.xml, invented) with fixbolt-dict's `codegen`; the crate
+                 docs/how-to/use-a-venue-dictionary.md quotes. Not published
 tools/
   w2w/           wire-to-wire harness; the binary the two mode checks trace
   jrnl/          reads a journal file from outside the process that wrote it

@@ -10,6 +10,9 @@
 # How-to guides
 
 - [Task index](how-to/index.md)
+  - [Add a custom tag](how-to/add-a-custom-tag.md)
+  - [Use a venue dictionary](how-to/use-a-venue-dictionary.md)
+  - [Migrate from QuickFIX](how-to/migrate-from-quickfix.md)
 - [Embedding guide: the constraints](GUIDE.md)
 - [Operating in standard mode](best-practices-standard.md)
 - [Operating in hft mode](best-practices-hft.md)
@@ -68,6 +71,7 @@
 - [A masked diff compared the padding, not the format](reference/a-masked-diff-compared-the-padding.md)
 - [The guard could not match the thing it was written to catch](reference/a-matcher-excluded-the-separator-every-real-name-uses.md)
 - [A message on the wire is not a message delivered](reference/a-message-on-the-wire-is-not-a-message-delivered.md)
+- [A message type missing from MsgType's values is a `373=5` on tag 35](reference/a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35.md)
 - [A `nosuid` mount shows file capabilities it does not grant](reference/a-nosuid-mount-shows-file-capabilities-it-does-not-grant.md)
 - [A paced run outlived the session's MaxLatency](reference/a-paced-run-outlived-the-sessions-maxlatency.md)
 - [A pre-built `w2w` needs its file capabilities, and a rebuild drops them](reference/a-pre-built-w2w-needs-its-file-capabilities-and-a-rebuild-drops-them.md)
@@ -190,6 +194,7 @@
   - [`conformance` — internals](internals/conformance.md)
   - [`dict` — internals](internals/dict.md)
   - [`engine` — internals](internals/engine.md)
+  - [`examples/custom-dictionary` — internals](internals/examples-custom-dictionary.md)
   - [`library` — internals](internals/library.md)
   - [`metrics` — internals](internals/metrics.md)
   - [`sbe` and `sbe-gen` — internals](internals/sbe.md)

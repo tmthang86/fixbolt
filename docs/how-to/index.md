@@ -1,8 +1,9 @@
 # How-to guides
 
-A how-to guide gets one task done. Most of fixbolt's are sections of four longer pages today: the
+A how-to guide gets one task done. Most of fixbolt's are sections of four longer pages: the
 [embedding guide](../GUIDE.md), the two operating guides, one per mode, and the Linux tuning
-playbook. This index goes from the task to the section.
+playbook. This index goes from the task to the section, and to the three guides that are pages of
+their own.
 
 ## Building on the engine
 
@@ -33,13 +34,12 @@ playbook. This index goes from the task to the section.
 | Tune a Linux host: hardware, BIOS, kernel, NIC | [hft-playbook.md §1–§5](../hft-playbook.md) |
 | Measure latency on your own machine | [GUIDE.md §8](../GUIDE.md#8-how-to-benchmark-this-engine-without-fooling-yourself), then [hft-playbook.md §6](../hft-playbook.md#6-measure-a-number-you-can-use) |
 
-## Coming next
+## Dictionaries and dialects
 
-Three guides arrive with phase 5's custom-dictionary work, once the code they describe is built:
+These three are pages of their own:
 
-- *Add a custom tag* (`add-a-custom-tag.md`): accept a tag FIX 4.4 does not define, either by
-  not validating user-defined fields or by defining it in your own dictionary.
-- *Use a venue dictionary* (`use-a-venue-dictionary.md`): a venue's FIX 4.4 dialect as an overlay
-  on the shipped dictionary, or as a whole file.
-- *Migrate from QuickFIX* (`migrate-from-quickfix.md`): QuickFIX's configuration keys and what each
-  becomes here.
+| To… | Read |
+|---|---|
+| Accept a tag FIX 4.4 does not define: let it through unchecked, or define it | [Add a custom tag](add-a-custom-tag.md) |
+| Speak a venue's FIX 4.4 dialect: its own tags, groups, message types and required fields | [Use a venue dictionary](use-a-venue-dictionary.md) |
+| Bring a QuickFIX configuration file and data dictionary across | [Migrate from QuickFIX](migrate-from-quickfix.md) |

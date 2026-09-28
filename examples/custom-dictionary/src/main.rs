@@ -14,6 +14,7 @@
 
 #[cfg(all(feature = "standard", unix))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // region:serve
     use custom_dictionary::Desk;
     use custom_dictionary::venue::Venue;
     use fixbolt::dict::TagValue;
@@ -57,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NoLog,
         handles,
     )?;
+    // endregion:serve
     println!("stopped: {shutdown:?}");
     Ok(())
 }
