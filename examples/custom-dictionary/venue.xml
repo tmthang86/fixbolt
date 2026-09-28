@@ -1,0 +1,73 @@
+<!--
+  INVENTED FOR THIS EXAMPLE. This is not any venue's specification, rules of
+  engagement or dialect, and no field, value or message in it is taken from
+  one. Every name, number and value below was made up in this repository to
+  show, and to test, what an overlay can add (ADR-0207 decision 3).
+
+  An overlay onto the FIX 4.4 dictionary fixbolt-dict ships
+  (crates/dict/spec/FIX44.xml). It adds, and never removes or retypes:
+
+    <header>      VenueSessionTag(5002), a custom header field.
+    <messages>    NewOrderSingle(D) gains VenueClientID(5001) as required='Y'
+                  (a venue-required field) and the component VenueFeeGrp.
+                  ExecutionReport(8) gains the same, optional, so the desk can
+                  echo them. VenueFeeReport(U1) and VenueFeeAck(U2) are new
+                  application message types.
+    <components>  VenueFeeGrp holds NoVenueFees(5003), a custom repeating
+                  group declared amount first: its delimiter is VenueFeeAmt
+                  (5005), although VenueFeeType (5004) is the lower tag. The
+                  order on the wire is this declaration's, never a handler's.
+    <fields>      OrdType(40) gains the value 'Z'; 5001-5005 are added, and
+                  VenueFeeType has enumerated values of its own.
+                  MsgType(35) gains 'U1' and 'U2': FIX 4.4 lists every message
+                  type as a value of field 35, and a message added under
+                  <messages> is still refused 373=5 on tag 35 until its
+                  msgtype is added here too.
+-->
+<fix type='FIX' major='4' minor='4' servicepack='0'>
+ <header>
+  <field name='VenueSessionTag' required='N' />
+ </header>
+ <messages>
+  <message name='NewOrderSingle' msgtype='D' msgcat='app'>
+   <field name='VenueClientID' required='Y' />
+   <component name='VenueFeeGrp' required='N' />
+  </message>
+  <message name='ExecutionReport' msgtype='8' msgcat='app'>
+   <field name='VenueClientID' required='N' />
+   <component name='VenueFeeGrp' required='N' />
+  </message>
+  <message name='VenueFeeReport' msgtype='U1' msgcat='app'>
+   <field name='ClOrdID' required='Y' />
+   <component name='VenueFeeGrp' required='N' />
+  </message>
+  <message name='VenueFeeAck' msgtype='U2' msgcat='app'>
+   <field name='ClOrdID' required='Y' />
+  </message>
+ </messages>
+ <components>
+  <component name='VenueFeeGrp'>
+   <group name='NoVenueFees' required='N'>
+    <field name='VenueFeeAmt' required='N' />
+    <field name='VenueFeeType' required='N' />
+   </group>
+  </component>
+ </components>
+ <fields>
+  <field number='35' name='MsgType' type='STRING'>
+   <value enum='U1' description='VENUE_FEE_REPORT' />
+   <value enum='U2' description='VENUE_FEE_ACK' />
+  </field>
+  <field number='40' name='OrdType' type='CHAR'>
+   <value enum='Z' description='INVENTED_VENUE_PEG' />
+  </field>
+  <field number='5001' name='VenueClientID' type='STRING' />
+  <field number='5002' name='VenueSessionTag' type='STRING' />
+  <field number='5003' name='NoVenueFees' type='NUMINGROUP' />
+  <field number='5004' name='VenueFeeType' type='CHAR'>
+   <value enum='1' description='INVENTED_FEE' />
+   <value enum='2' description='INVENTED_REBATE' />
+  </field>
+  <field number='5005' name='VenueFeeAmt' type='AMT' />
+ </fields>
+</fix>

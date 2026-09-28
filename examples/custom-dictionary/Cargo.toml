@@ -1,0 +1,52 @@
+[package]
+name = "fixbolt-example-custom-dictionary"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "A FIX 4.4 acceptor over a venue dictionary generated in its own build (ADR-0207)"
+
+# `standard` is forwarded rather than taken by default from `fixbolt`, for the
+# reason `tools/interop` gives: `cargo test --all --no-default-features`
+# unifies features across every member it builds, so a member depending on
+# `fixbolt` with its defaults would switch `standard` — and `libc` — back on
+# for the whole workspace (docs/reference/feature-flags-unify-across-a-workspace.md).
+# `scripts/check-no-optional-deps.sh` asks this crate for `libc` by name.
+[features]
+default = ["standard"]
+standard = ["fixbolt/standard"]
+
+# The run-time side depends on `fixbolt` and nothing else: the generated file
+# names `::fixbolt::dict::…` (`Paths::facade()`, ADR-0207 decision 4).
+[dependencies]
+fixbolt = { path = "../../crates/library", default-features = false }
+
+# The generator runs in `build.rs` only. `codegen` pulls `roxmltree`, and a
+# build-dependency's features never reach the target build (resolver 2+), so
+# the binary carries the tables and not the XML parser — plan step 28 holds
+# that with `cargo tree -e normal`.
+[build-dependencies]
+fixbolt-dict = { path = "../../crates/dict", features = ["codegen"] }
+
+# Tests and the bench only: a stamp for `52=`, and the `Header` a bench hands
+# `Application::on_message` directly.
+[dev-dependencies]
+fixbolt-codec = { path = "../../crates/codec" }
+fixbolt-session = { path = "../../crates/session" }
+
+[lints]
+workspace = true
+
+[lib]
+name = "custom_dictionary"
+path = "src/lib.rs"
+
+[[bin]]
+name = "custom-dictionary"
+path = "src/main.rs"
+
+[[bench]]
+name = "alloc"
+harness = false

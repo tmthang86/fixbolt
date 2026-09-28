@@ -11,6 +11,7 @@ members = [
     "crates/sbe-gen",
     "crates/session",
     "crates/store-sqlite",
+    "examples/custom-dictionary",
     "tools/attr-scan",
     "tools/interop",
     "tools/jrnl",
