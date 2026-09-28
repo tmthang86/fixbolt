@@ -93,8 +93,7 @@ reached the code it was written for. Before that: **open items 62 and 65 are clo
 ## Start here — 2026-09-28: phase 4 is closed — two items kept, three dropped by their own lines; SIMD was measured on the §9 desk and discarded
 
 Branch `plan/p4-simd`, PR [#126](https://github.com/tmthang86/fixbolt/pull/126) (SIMD rows 8–9 and
-the phase-4 close, row 10). The closing commit and its CI run are named in the next handoff line
-of this entry once the run is green (`<CI run id of the closing commit>`).
+the phase-4 close, row 10). Closing commit `fa5cfdd`, CI run [`36366401071`](https://github.com/tmthang86/fixbolt/actions/runs/36366401071), 21 jobs of 21.
 
 ### What closed
 
