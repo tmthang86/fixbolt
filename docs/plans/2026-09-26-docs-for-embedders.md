@@ -565,3 +565,4 @@ Chủ dự án yêu cầu (2026-09-26): mọi bước viết tài liệu chạy 
     socket. Buộc ba cửa `_over` là thay đổi cộng thêm (minor), để cho một plan sau.
   - ADR-0207 sửa tại chỗ (đang Proposed); hàng 27, 29, mục §2 số 3, phần bằng chứng PR 6, bảng bẫy
     sửa theo.
+- **Chủ dự án duyệt lại (2026-09-28):** quy tắc field 35 — overlay tự thêm message type mới vào giá trị của `MsgType(35)`; file nguyên thiếu thì bị từ chối.
