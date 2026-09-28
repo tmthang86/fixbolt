@@ -572,4 +572,4 @@ Chủ dự án yêu cầu (2026-09-26): mọi bước viết tài liệu chạy 
 - **Phát hiện ghi thành open item:** 120 (test `events` đỏ trên Mac), 121 (`ValidateUserDefinedFields=N` bỏ qua cả tag dialect đã định nghĩa), 122, 123 (CLA/DCO).
 - **Theo lệnh chủ dự án:** không chạy benchmark trên laptop từ bước 27 — job `bench` của CI chạy.
 - ADR-0206 và ADR-0207 chuyển sang Accepted; `PRD.md` §2 ghi phase 5 đóng 2026-09-28.
-
+- **Đóng:** PR 6 commit đóng `bcbaa22`, CI run 36373978028 (21/21), merge `4e8b6f3`. Phase 5 xong.
