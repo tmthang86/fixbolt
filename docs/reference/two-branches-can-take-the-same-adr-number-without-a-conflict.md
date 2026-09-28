@@ -53,8 +53,8 @@ behind; it cannot catch prose that still says the old number, so grep for the ba
 ## What guards it
 
 `scripts/check-adr-numbers.sh` fails when two files in `docs/decisions/` share an `ADR-NNNN`
-prefix, or when a file does not match `ADR-NNNN-<slug>.md`; it runs in the `docs` job of
-`.github/workflows/ci.yml`, directly after `check-links.py`. It still cannot see a collision
+prefix, or when a file does not match `ADR-NNNN-<slug>.md`; it runs in the `book` job of
+`.github/workflows/docs.yml`, directly after `check-links.py`, on every pull request. It still cannot see a collision
 with a sibling branch that has not merged into the tree it reads — that is what the
 `for b in $(git branch -r ...)` loop above stays for.
 

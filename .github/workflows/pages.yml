@@ -1,9 +1,11 @@
 # The documentation site (ADR-0206 decision 7): the mdBook over docs/, built
 # and deployed to GitHub Pages on push to `main` only. The gate on every pull
-# request is the `book` job in ci.yml; this workflow repeats its install and
-# build (cheap) so what is deployed is built the way it was checked, and
-# leaves the source-side checks (samples, cited headings, the preprocessor's
-# unit test) to that job.
+# request is the `book` job in docs.yml (ADR-0214 decision 3 moved it there
+# from ci.yml, merging in the former `links` and `stranger-git` jobs without
+# changing a step); this workflow repeats its install and build (cheap) so
+# what is deployed is built the way it was checked, and leaves the
+# source-side checks (samples, cited headings, the preprocessor's unit test)
+# to that job.
 #
 # Requires the repository's Pages source to be "GitHub Actions"
 # (Settings → Pages), set once by the owner.

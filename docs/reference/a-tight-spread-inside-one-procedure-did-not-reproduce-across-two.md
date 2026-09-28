@@ -116,7 +116,7 @@ even inside one procedure it under-reports whenever the outliers are fast ones.
 
 - **A dispersion that reads both sides.** A pure `dispersion` function prints `min/median` and
   `max/median` for p50, p99 and p99.9 (and the wire columns). `scripts/check-w2w-baseline-summary.sh`,
-  run by CI's `script-logic` job, feeds it this entry's own twenty p50s — median 19 998, min/median
+  run by CI's `lint-config` job (fast tier; `script-logic` until ADR-0214), feeds it this entry's own twenty p50s — median 19 998, min/median
   **0.866**, max/median **1.008** — and asserts that *"a run 13.4% under the median is visible from
   the min side"*. Reversal, 2026-09-14: `min/median` removed from the function → red on that sentence,
   `pass 0 fail 4`; restored → `pass 4 fail 0`. The old `spread max/median` line is kept, so records

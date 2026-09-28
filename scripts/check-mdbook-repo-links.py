@@ -6,10 +6,10 @@ docs/plans/2026-09-26-docs-for-embedders.md, step 3: a link that leaves
 docs/ becomes a GitHub blob URL at the commit being built, and a link that
 stays inside the book is left exactly as written.
 
-There is no `script-logic`-style test for a Python script in this repository
+There is no `lint-config`-style test for a Python script in this repository
 yet (`grep -rn "\.py" .github/workflows/ci.yml` shows scripts/check-links.py
 and scripts/check-grafana-dashboard.py run directly as gates, with no
-separate unit test): the `script-logic` job that exists tests only shell
+separate unit test): the `lint-config` job that exists tests only shell
 scripts' pure functions. This script follows that job's shape (import the
 pure function, assert, print `ok`/`FAIL` per case, exit non-zero on any
 failure) translated to Python, placed beside the script it tests. Wiring it

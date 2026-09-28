@@ -26,7 +26,10 @@ Do not start unless all of these hold, on the commit about to be tagged:
 
 - `main` is clean (`git status --short` prints nothing) and this is the commit CI is green for
   **for this exact commit** — name the CI run id before continuing (`CLAUDE.md` §9: a laptop
-  says the gates pass, only CI says they pass for the commit).
+  says the gates pass, only CI says they pass for the commit). `scripts/ci-evidence.sh <sha>`
+  names the `CI` and `Docs` run ids and refuses a `CI` run whose full tier was skipped; a push
+  to `main` runs the full tier, but a push that changed only documentation runs no `CI` at all
+  (ADR-0214), so tag a commit that has one.
 - The `package` job is green on that commit: `scripts/check-release-versions.sh` (lockstep
   versions, exact-pinned internal dependencies, identical licence files — ADR-0160 decisions 1
   and 4), `cargo publish --workspace --dry-run`, one `Packaging` / one `Verifying` per published crate (eight),
@@ -87,15 +90,18 @@ literal everywhere it is hard-coded, so the page, the CI gates and the release a
 one:
 
 - `docs/GETTING-STARTED.md` and `README.md`'s install lines (`--tag v0.1.0` / `tag = "v0.1.0"`).
-- `.github/workflows/ci.yml`'s `stranger-git` job (`scripts/stranger-check.sh --from git --tag v0.1.0`).
+- `.github/workflows/docs.yml`'s `book` job, its step `scripts/stranger-check.sh --from git --tag v0.1.0`
+  (a job of its own, `stranger-git` in `ci.yml`, until ADR-0214 folded it into `book`).
   The `semver` job is **not** on this list: `scripts/check-semver-against-tag.sh` takes no
   argument and derives its baseline — the newest `vX.Y.Z` tag `HEAD` descends from
   ([ADR-0162](docs/decisions/ADR-0162-the-semver-baseline-is-the-newest-release-tag-head-descends-from-and-zero-checks-are-excused-only-by-a-major-bump.md)) —
   so it moves to the new tag by itself once the tag is on `main`'s history.
-- `docs/CONFORMANCE.md` — the run id of this PR's own CI (`stranger-git` and `semver` both
-  green against the NEW tag) and of the `push` to `main` right after it merges.
+- `docs/CONFORMANCE.md` — the run ids of this PR's own `Docs` run (the `book` job's
+  `stranger-check.sh --from git` step green against the NEW tag) and `CI` run (`semver` green;
+  `semver` is in the full tier, so attach the label `full-ci` before the push), and of the
+  `push` to `main` right after it merges.
 
-Until this PR merges, `stranger-git` on `main` still checks the OLD tag — that is expected, not
+Until this PR merges, the `book` job on `main` still checks the OLD tag — that is expected, not
 a defect, because the new tag is what this PR itself is introducing.
 
 ### 6. Tell the manager
@@ -192,14 +198,15 @@ license-file = "NOTICE"   # instead of license = "(MIT OR Apache-2.0) AND Licens
 ```
 
 **This is still a manifest edit, and `CLAUDE.md` §8 still applies: never on `main`.** Branch,
-commit the fix, open the pull request, and wait for CI to go green on it — the same gate every
-other change to this repository meets — before publishing anything else:
+commit the fix, open the pull request with the label `full-ci` attached (the `package` job that
+dry-runs the publish is in the full tier, ADR-0214), and wait for CI to go green on it — the same
+gate every other change to this repository meets — before publishing anything else:
 
 ```sh
 git checkout -b fix/dict-licence-fallback
 git commit -am "fix(dict): fall back to license-file, crates.io refused the LicenseRef expression"
 git push -u origin fix/dict-licence-fallback
-gh pr create --fill   # wait for CI green, then merge to main
+gh pr create --fill --label full-ci   # wait for CI green, then merge to main
 git checkout main && git pull
 ```
 

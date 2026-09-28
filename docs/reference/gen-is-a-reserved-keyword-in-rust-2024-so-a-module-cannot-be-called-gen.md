@@ -37,7 +37,7 @@ manager renamed both module and feature to **`codegen`** (`fixbolt_dict::codegen
 
 The compiler. Renaming the module back to `gen` fails every build that enables the feature, and
 the `gates` CI job's `codegen` step builds, lints and tests `-p fixbolt-dict` with `codegen` and
-with `codegen,fix50sp2` on every commit. Nothing else is needed: the failure cannot be silent.
+with `codegen,fix50sp2` on every push that changes code (fast tier). Nothing else is needed: the failure cannot be silent.
 
 ## The transferable half
 

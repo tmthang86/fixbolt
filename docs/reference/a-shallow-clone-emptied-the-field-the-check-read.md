@@ -7,7 +7,8 @@ wrong with the merge; the field it read had already been emptied before the step
 
 ## What was being checked, and why
 
-The `links` job's first step exists to turn GitHub's documented `pull_request` behaviour into
+An informational step — the first step of the `links` job then, a step of the `Docs` workflow's
+`book` job since ADR-0214 — exists to turn GitHub's documented `pull_request` behaviour into
 this repository's own measurement rather than a claim quoted from a vendor: on a `pull_request`
 event, `actions/checkout` with no `ref:` checks out `refs/pull/<n>/merge` — the merge of the
 head into the base, not the head commit itself. The step prints what actually landed in the
@@ -69,6 +70,13 @@ prove something the commit's own subject line already proves, is a cost with no 
 - `git rev-parse --is-shallow-repository` is printed beside it, so a blank `parents` line can
   never again be misread as "this was not a merge" — the shallow flag says why the field is
   blank, in the same block that shows it blank.
+
+`[2026-09-28]` ADR-0214 moved the step into the `Docs` workflow's `book` job, whose checkout is
+`fetch-depth: 0` because `stranger-check.sh --from git` verifies the release tag inside that
+checkout. There `shallow` should read `false` and `parents` should name both parents — not yet
+observed on a run. The depth was raised for the tag, not for this step; `subject` and `shallow`
+stay, so the step reads correctly at any depth, and the reasoning above still holds for a job
+that needs only the tip.
 
 ## The thing that actually proved it, and was not asked for
 

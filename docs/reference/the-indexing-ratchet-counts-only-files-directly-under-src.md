@@ -63,7 +63,8 @@ check-indexing-debt: FAIL — the debt went UP, 176 -> 177.
 ```
 
 and the tree restored reads `check-indexing-debt: ok`. Under the old pattern the same edit left
-the count at 176. The script runs in the `indexing-debt` CI job on every commit. What is not
+the count at 176. The script runs in the `indexing-debt` CI job, fast tier: every push that changes code, to a pull
+request or to `main`. What is not
 guarded is a test that runs this reversal automatically: it was run by hand, as above.
 
 ## The transferable half

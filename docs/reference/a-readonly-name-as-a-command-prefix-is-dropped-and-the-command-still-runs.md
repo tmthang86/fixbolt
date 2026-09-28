@@ -68,7 +68,7 @@ the script is still wanted.
 
 ## The guard
 
-`scripts/check-boot-p4-driver.sh` (CI job *script-logic*):
+`scripts/check-boot-p4-driver.sh` (CI job *lint-config*, fast tier; *script-logic* until ADR-0214):
 
 - sources the driver (`BOOT_P4_SOURCE_ONLY=1`) and runs `run_baseline` against a fake
   `w2w-baseline.sh` that prints what it received; `ENGINE_CORE=6` must be there, and bash must not

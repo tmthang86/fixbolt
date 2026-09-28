@@ -242,8 +242,9 @@ module is built in, `modinfo` finds nothing, and that row would have reported
 
 `scripts/check-ktls-classify.sh` runs the verdict logic over eight
 (syscall, config, loaded, on-disk) combinations and asserts the token for each. It
-needs no kernel, no root and no kTLS, so CI runs it on every push — the job is
-`script-logic` in `.github/workflows/ci.yml`.
+needs no kernel, no root and no kTLS, so CI runs it on every push that changes code — a step of
+the `lint-config` job in `.github/workflows/ci.yml` (fast tier; the `script-logic` job until
+ADR-0214 folded it in).
 
 Against the old logic it fails 5 of 8, including the desktop's own case; the three
 it passes are the container case and the accepted case, which the old script did
