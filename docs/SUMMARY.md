@@ -86,6 +86,7 @@
 - [A reversal that removed the guard's label, not the guard](reference/a-reversal-that-removed-the-guard-s-label-not-the-guard.md)
 - [A whole role was wrong, and every gate was green](reference/a-role-can-be-wrong-in-a-direction-no-gate-runs.md)
 - [A saved iptables-nft ruleset does not load back through `nft`](reference/a-saved-iptables-nft-ruleset-does-not-load-back-through-nft.md)
+- [A scalar loop the compiler already vectorised beat a hand-written SWAR replacement](reference/a-scalar-loop-the-compiler-already-vectorised-beat-a-hand-written-swar-replacement.md)
 - [A scratch fixture inherits the machine, not the project](reference/a-scratch-fixture-inherits-the-machine.md)
 - [A shallow clone emptied the field the check read](reference/a-shallow-clone-emptied-the-field-the-check-read.md)
 - [A shell error inside an `if` drops the row, and the report exits zero](reference/a-shell-error-inside-an-if-drops-the-row-and-the-report-exits-zero.md)

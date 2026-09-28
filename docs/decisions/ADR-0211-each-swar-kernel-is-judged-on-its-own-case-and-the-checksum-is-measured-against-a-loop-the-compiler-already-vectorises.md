@@ -151,3 +151,17 @@ density gain the size of a layout move could keep code that does nothing.
   simdjson-style structural scans (ADR-0100 already cites the two with figures), and no source
   whose numbers could be compared with this codec's.
 - `measured-costs.md` *A-desk* and *Phase 4's §9 boot, 2026-09-27*; `DESIGN.md` §8 *Boot B*.
+
+## Result
+
+**2026-09-28.** Measured on the §9 boot staged by ADR-0212. Neither kernel passed decision 1's
+codec line: `S` (SOH scan) against `A`, `parse NewOrderSingle (validated)` +4.8% and `parse
+Heartbeat (validated)` +0.3% (needed ≤ −15% on both); `C` (checksum) against `A`, `checksum
+NewOrderSingle` +222.2% (needed ≤ −15%) — the checksum kernel lost to the SSE2 loop `rustc`
+already builds from the scalar `wrapping_add` fold (184 `paddb` in `A`'s disassembly, 0 in
+`C`'s), exactly what fact 1 predicted. Decision 2's density read never ran (ADR-0212 *Result*):
+neither kernel reached it. Decision 3 applies directly — both kernels removed, no sub-arm search
+run. Full figures: [measured-costs.md](../reference/measured-costs.md) *Phase 4's SIMD boot,
+2026-09-28*; the trap this result names:
+[a-scalar-loop-the-compiler-already-vectorised-beat-a-hand-written-swar-replacement](../reference/a-scalar-loop-the-compiler-already-vectorised-beat-a-hand-written-swar-replacement.md).
+Code reverted in `83ddd20`; the checksum bench and its new baselines kept in `27f4cdb`.

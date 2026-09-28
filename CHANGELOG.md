@@ -152,6 +152,16 @@ against that tag rather than a published baseline.
   desk its `hft` wire p50 was 29–30 % slower than kernel TCP, which fails its kill line
   ([ADR-0190](docs/decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md)
   *Result*). `tools/w2w` refuses `--transport`, `--uring-arm` and `--sqpoll-core` by name.
+- **Not in this release: SWAR in `codec`.** Two kernels — an SOH-scan replacement and a checksum
+  replacement — were built (2026-09-27) and reverted (2026-09-28), before any tag carried them.
+  Neither cleared its own codec line: the checksum kernel lost to the SSE2 loop `rustc` already
+  builds from the scalar `wrapping_add` fold (+222.2 % instead of ≤ −15 %), and the SOH-scan
+  kernel missed its line too (+4.8 % / +0.3 %)
+  ([ADR-0211](docs/decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md)
+  *Result*). **No public API change.** `crates/codec/benches/checksum.rs` (added 2026-09-27) is
+  kept: three checksum cases now have their own baseline
+  (`benches/baselines.tsv`, machine `AMD Ryzen 7 3700X 8-Core Processor`), and `checksum
+  NewOrderSingle` / `checksum Heartbeat` / `checksum 1 KiB` run on every `bench.sh --strict`.
 
 ## Conditions to reach `1.0`
 

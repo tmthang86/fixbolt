@@ -5233,3 +5233,179 @@ Three things the table does not show:
   window (*estimated, not measured*). So p50 and p99 show the steady cost of having an exporter,
   not the stall a single scrape causes. Non-negotiable 4 is not checked here in split mode: the
   listen half prints no `engine-ctxt`.
+
+## Phase 4's SIMD boot, 2026-09-28: both SWAR kernels missed their codec line, density never ran
+
+`[measured 2026-09-28]` One §9 boot, staged per [ADR-0212](../decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md).
+Evidence stays on the desk, not committed: `target/simd-evidence/20260927T234503Z/` (the boot)
+and `target/simd-evidence/prep/` (the pre-boot instruction counts and disassembly). The verdict:
+**both kernels discarded** at stage 1 — neither cleared its ADR-0211 codec line — so stage 2
+(the density look) never ran. Code reverted in `83ddd20`; the checksum bench (row 8) and the
+`checksum`/`decimal` baselines it recorded are kept in `27f4cdb`.
+
+**Machine:** host `tmt-B450-I-AORUS-PRO-WIFI`, AMD Ryzen 7 3700X, kernel `7.0.0-34-generic`,
+`rustc 1.98.0`. The §9 grub line: `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15
+processor.max_cstate=1`, mitigations on, governor `performance`, turbo off, SMT off,
+`fixbolt-machine on`. NIC `enp9s0`: IRQs on cores 0–5, `rx-usecs 0`, EEE off. Every system and
+user timer unit was stopped before the boot. `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` read
+`pass 17 fail 0 unknown 0` at the boot's start (`machine-start.txt`) and its end
+(`machine-end.txt`).
+
+**Arms**, one `scripts/ab-rotation.sh` rotation, control `A`:
+
+| Arm | Commit | What it is |
+|---|---|---|
+| `A` | `d0e4f4e` | control — the tree before any SWAR, with the checksum bench (row 8) already present |
+| `S` | `f7d855f` | SOH scan only (`find_soh` SWAR) |
+| `C` | `2e426b0` | checksum only (SWAR `wrapping_add` replacement) — local branch, `A` plus step 3 cherry-picked, no pull request shows this tree; recorded here by sha |
+| `SC` | `2453850` | both kernels |
+
+**Stage durations**, from the evidence directory's own mtimes (`machine-start.txt`,
+`strict-before.txt`, `stage1-complete.txt`, `strict-after.txt`, `machine-end.txt`) — no
+Criterion timer inside the harness measures a whole stage, so these are wall-clock read off the
+files ADR-0212's stage table produces:
+
+| Stage | What ran | Duration |
+|---|---|---|
+| 0 | `check-machine.sh`, the discarded first run, `bench.sh --strict` on `A` (before) | ~10 min |
+| 1 — codec | 24 rounds, `A`/`S`/`C`/`SC`, `parse`/`serialize`/`checksum`/`decimal` per ADR-0212 decision 1's table | ~16.5 min |
+| 2a / 2b — density | not run — neither kernel passed its stage-1 codec line (ADR-0212 decision 1: stage 2 runs only when a kernel passes) | — |
+| 3 | baselines recorded from `A`'s stage-1 rounds, `bench.sh --strict` (after), the `library, parse only` UNDER investigation (`instr-cost.txt`, `ipc-cost.txt`, `cost-n20.txt`) | ~30 min |
+| **Total** | machine-start to machine-end | **~57 min**, against the original plan's 9–11 h and ADR-0212's own "~1 h if both kernels fail their codec line" prediction |
+
+### Stage 1, every case, all four arms — `stage1-summary.txt`, n = 24
+
+ns/op unless noted; `min/med` and `max/med` are the ratio of that round's extreme to the
+median; `diff%` is against `A`'s median; `over` counts rounds over `bench.sh`'s own band for
+that arm (not a codec-line verdict — that is read from the median only, per ADR-0211/-0212).
+
+| Arm | Case | Median | min/med | max/med | n | diff% | over |
+|---|---|---|---|---|---|---|---|
+| A | parse NewOrderSingle (validated) | 128.6 | 0.983 | 1.029 | 24 | — | 0/24 |
+| A | parse NewOrderSingle (no checks) | 122.4 | 0.987 | 1.030 | 24 | — | 0/24 |
+| A | parse Heartbeat (validated) | 64.6 | 0.967 | 1.040 | 24 | — | 1/24 |
+| A | encode ExecutionReport (template) | 238.3 | 0.963 | 1.029 | 24 | — | 0/24 |
+| A | SendingTime from the cache | 5.6 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | SendingTime from the cache, micros | 10.0 | 1.000 | 1.010 | 24 | — | 0/24 |
+| A | SendingTime from the cache, nanos | 12.9 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | checksum NewOrderSingle | 4.5 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | checksum Heartbeat | 2.9 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | checksum 1 KiB | 11.6 | 1.000 | 1.009 | 24 | — | 0/24 |
+| A | decimal parse 12345.6789 | 15.1 | 1.000 | 1.020 | 24 | — | 0/24 |
+| A | decimal format 12345.6789 | 18.9 | 0.995 | 1.000 | 24 | — | 0/24 |
+| S | parse NewOrderSingle (validated) | 134.7 | 0.995 | 1.010 | 24 | **+4.8%** | 24/24 |
+| S | parse NewOrderSingle (no checks) | 129.3 | 0.992 | 1.012 | 24 | +5.6% | 2/24 |
+| S | parse Heartbeat (validated) | 64.8 | 0.987 | 1.008 | 24 | **+0.3%** | 0/24 |
+| S | checksum NewOrderSingle | 4.5 | 1.000 | 1.022 | 24 | +0.0% | 0/24 |
+| S | checksum Heartbeat | 2.9 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| S | checksum 1 KiB | 11.6 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| C | parse NewOrderSingle (validated) | 137.2 | 0.979 | 1.020 | 24 | +6.7% | 24/24 |
+| C | parse NewOrderSingle (no checks) | 121.3 | 0.986 | 1.059 | 24 | -0.9% | 0/24 |
+| C | parse Heartbeat (validated) | 67.3 | 0.982 | 1.027 | 24 | +4.3% | 17/24 |
+| C | encode ExecutionReport (template) | 247.1 | 0.970 | 1.048 | 24 | +3.7% | 0/24 |
+| C | SendingTime from the cache | 5.6 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| C | SendingTime from the cache, micros | 10.0 | 1.000 | 1.010 | 24 | +0.0% | 0/24 |
+| C | SendingTime from the cache, nanos | 12.9 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| C | checksum NewOrderSingle | 14.5 | 1.000 | 1.028 | 24 | **+222.2%** | 0/24 |
+| C | checksum Heartbeat | 7.5 | 1.000 | 1.013 | 24 | +158.6% | 0/24 |
+| C | checksum 1 KiB | 93.8 | 0.999 | 1.000 | 24 | +708.6% | 0/24 |
+| SC | parse NewOrderSingle (validated) | 145.3 | 0.994 | 1.007 | 24 | +13.0% | 24/24 |
+| SC | parse NewOrderSingle (no checks) | 128.9 | 0.994 | 1.007 | 24 | +5.3% | 0/24 |
+| SC | parse Heartbeat (validated) | 70.1 | 0.991 | 1.011 | 24 | +8.5% | 24/24 |
+| SC | encode ExecutionReport (template) | 247.2 | 0.976 | 1.041 | 24 | +3.8% | 0/24 |
+| SC | SendingTime from the cache | 5.6 | 0.982 | 1.000 | 24 | +0.0% | 0/24 |
+| SC | SendingTime from the cache, micros | 10.0 | 1.000 | 1.010 | 24 | +0.0% | 0/24 |
+| SC | SendingTime from the cache, nanos | 12.9 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| SC | checksum NewOrderSingle | 14.5 | 1.000 | 1.028 | 24 | +222.2% | 0/24 |
+| SC | checksum Heartbeat | 7.5 | 1.000 | 1.013 | 24 | +158.6% | 0/24 |
+| SC | checksum 1 KiB | 93.8 | 0.999 | 1.000 | 24 | +708.6% | 0/24 |
+
+Over baseline: 7 (arm, case) pairs — all in `S`/`C`/`SC`'s own `parse`/`checksum` rows, none in
+`A`. The dumb controls (`SendingTime from the cache…`, run wherever the `serialize` suite ran)
+moved **+0.0%** in every arm that ran it (`C`, `SC`) — no layout-noise signal beside the
+verdict. `decimal` ran only under `A` (ADR-0212 decision 1's stage-1 table does not give it to
+`S`/`C`/`SC`), so it has no cross-arm diff; its two cases became new baselines (below).
+
+### Pre-boot instruction counts — `target/simd-evidence/prep/bench-instructions.log`, `perf stat instructions:u`, 3 interleaved pairs per comparison
+
+Not a timing — `scripts/bench-instructions.sh`'s `work-changed` / `same-work` /
+`unstable` verdict (ADR-0102 decisions 1–2), read before the boot so the density stage's
+instruction-count condition (ADR-0211 decision 2) would already have an answer if stage 1 had
+let a kernel through:
+
+| Comparison | Binary | `\|I_B − I_A\| / I_A` | Verdict |
+|---|---|---|---|
+| A → S | `parse` | 10.180% | work-changed |
+| A → C | `parse` | 6.512% | work-changed |
+| A → SC | `parse` | 14.837% | work-changed |
+| A → S | `checksum` | 0.000066% | same-work |
+| A → C | `checksum` | 290.749% | work-changed |
+| A → SC | `checksum` | 290.749% | work-changed |
+| A → S | `density` | 0.590% | work-changed |
+| A → C | `density` | 0.528% | work-changed |
+| A → SC | `density` | 1.100% | work-changed |
+
+`density`'s pre-boot pairs all read `work-changed`, so the instruction-count condition would not
+by itself have blocked stage 2 for any arm — the block was ADR-0211 decision 1's codec line,
+read at stage 1, before stage 2 was ever reached. The `checksum` pair for `S` reads
+`same-work` (0.000066%), which is consistent with `checksum.rs` being byte-identical between
+`A` and `S` — `S` only touches `find_soh`.
+
+**Disassembly, the checksum's "before"** (`objdump-A-full.txt`, `objdump-C-full.txt`, `rustc
+1.98.0 -O`, the pinned toolchain, on the binaries built for this boot): `A`'s (and `S`'s,
+unchanged) `checksum` loop lowers to **184** `paddb` instructions over 16-byte `xmm` registers
+(SSE2, the default `x86-64` target) with a `psadbw` reduction; `C`'s (the SWAR replacement)
+lowers to **0**. This is ADR-0211 fact 1, read back from this boot's own binaries rather than
+the scratch compile ADR-0211 cited.
+
+### The verdict table — filled, per the plan's template (ADR-0211, ADR-0212 stage column)
+
+| Condition | Stage | Read from | Reached when | Result |
+|---|---|---|---|---|
+| SOH scan through the codec line | 1 | `stage1-summary.txt`, `S` vs `A` | `parse NewOrderSingle (validated)` **and** `parse Heartbeat (validated)` both ≤ −15% | **missed** — +4.8% and +0.3%, both the wrong sign |
+| Checksum through the codec line | 1 | `stage1-summary.txt`, `C` vs `A` | `checksum NewOrderSingle` ≤ −15% | **missed** — +222.2%, the wrong sign by a wide margin |
+| Share clause (printed, not expected to pass) | 1 | no arm kept its codec line, so no arm's parse median is "the kept branch's" — computed from `S`'s own parse Heartbeat (64.8 ns) against the round trips in ADR-0211 fact 3 for illustration only | ≥ 2% of the fastest surviving round trip | **not read as a verdict input** (nothing survived to have it read for real); illustratively 0.23–0.43% of the loopback admin round trip (15 149–16 021 ns) and wire round trip (27 778–28 402 ns) — the same order ADR-0211 fact 3 predicted |
+| Density — instruction-count condition | pre-boot | `bench-instructions.sh` on the `density` binaries, `A` vs `S`/`C`/`SC` | `work-changed` | read `work-changed` for all three (table above) — would not itself have blocked stage 2 |
+| Density — futility look | 2a | — | B > −3.0% on six rounds kills | **not run** — no kernel reached stage 2 |
+| Density — verdict | 2b | — | `engine turn, 64 busy sessions` ≤ −3% **and** `work-changed` | **not run (no kernel passed its codec line in stage 1)** |
+| Rest of ADR-0100 | before boot | steps 2–3 gates | alloc 0; 59/59; FIXT as `CONFORMANCE.md` §9; comparison tests, fuzz, Miri green | held, at the commits that built `S` and `C` (steps 2–3, before this boot) |
+
+Neither kernel cleared its own codec line, so ADR-0211 decision 3 applies directly: both are
+removed, and no sub-arm search (`SC` alone, say) was run — the ADR forbids it. Density is
+**not run (no kernel passed)**.
+
+### `bench.sh --strict`, before and after
+
+Before (`strict-before.txt`, tree `A`, on the §9 line): `pass 17 fail 0 unknown 0`; 5 cases with
+no baseline for this CPU (the three `checksum` and two `decimal` cases just added), 0 over band,
+1 case (`library, parse only`, 144.6 ns/op) already reading under band `[145.1, 175.6]`; exit 1
+(no baseline is a finding, not a stop, per ADR-0095 decision 4 and ADR-0212 stage 0).
+
+After (`strict-after.txt`, tree `A` still, baselines recorded): `pass 17 fail 0 unknown 0`;
+all 24 bench binaries measuring, 0 invariant failures, 0 over band, 0 cases without baseline;
+1 case still under band — `library, parse only`, 144.4 ns/op below `[145.1, 175.6]`. Exit 1
+(a case under its own baseline is itself the finding `bench.sh --strict` is built to raise).
+
+**The `library, parse only` UNDER case, read per ADR-0102 decision 2.** `instr-cost.txt`
+interleaves the recorded baseline binary (`cost-a75bce33bf86a35f`, from `27f4cdb`'s prior
+baseline) against this boot's `A` binary (`cost-1178cbbe82cd04de`): `verdict: unstable`
+(spread 0.057651% on the baseline binary against 0.000003% on today's — the *old* binary
+carries two modes, so its own three-pair interleave does not converge). `ipc-cost.txt`: IPC
+2.75/2.73 (old) against 2.79/2.78 (new) on the same core. `35f206a` (between the two binaries)
+changed `as_u32`, which this case calls. **Cause unnamed** — ADR-0102 decision 2's rule (no
+named cause, no re-record) is read the same way it was in `27f4cdb`: nothing here is
+re-recorded, and the case stays open (the same item `27f4cdb`'s body names). `cost-n20.txt`
+(20 further runs, `FIXBOLT_BENCH_COUNT_ONLY=1`, not compared) shows `library, parse only`
+sitting at 142.3–148.1 ns/op across the 20 — under the 145.1 floor in most of them, consistent
+with a real move rather than one noisy run.
+
+### What is not proven
+
+- **Whether an AVX2 checksum (`-C target-cpu=x86-64-v3`) would have passed its codec line.**
+  Not measured on this boot, by ADR-0211 decision 4: the rotation builds every arm with one set
+  of `RUSTFLAGS`, and the build-flag question is explicitly out of scope here.
+- **`library, parse only`'s UNDER-baseline cause.** Two binaries disagree on `as_u32`'s cost and
+  the interleave that would separate "changed work" from "changed layout" reads `unstable`. The
+  case is not re-recorded and stays open.
+- **Whether a wider `S`/`C` SWAR variant (16-byte lanes, a different reduction) would clear
+  either line.** Not built or measured; this boot judged the kernels the plan specified.

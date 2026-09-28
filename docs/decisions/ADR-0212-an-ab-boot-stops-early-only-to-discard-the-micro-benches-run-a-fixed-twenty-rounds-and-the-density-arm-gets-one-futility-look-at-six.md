@@ -279,3 +279,17 @@ a new ADR.
   `scripts/ab-rotation.sh` header (*EVIDENCE*, *INTERRUPTIBLE*, *USAGE*) and main loop;
   `measured-costs.md` *Boot D* (rate, *A-desk* medians and spreads), *Boot E* (`s1m/` merge),
   *Boot F* (`--strict` ~10 min).
+
+## Result
+
+**2026-09-28.** The predicted outcome (*Context* fact 3, *Consequences*): both kernels failed
+their stage-1 codec line, so stage 2 (2a and 2b) never ran, exactly as decision 1's table says.
+Stage durations, read from the evidence directory's mtimes: stage 0 (machine check, discarded
+first run, `bench.sh --strict` before) ~10 min; stage 1 (24 rounds, four arms) ~16.5 min; stage 3
+(baselines, `bench.sh --strict` after, the UNDER-baseline investigation) ~30 min. **Total ~57
+min**, machine-start to machine-end — against the original plan's 9–11 h, and matching this
+ADR's own "~1 h if both kernels fail their codec line" estimate (*Consequences*, "Good") to
+within the estimate's own margin. The staged design worked as written: no interim look was taken
+inside stage 1, the codec line was read once after the invocation exited, and no tool call was
+made while `ab-rotation.sh` ran. Figures: [measured-costs.md](../reference/measured-costs.md)
+*Phase 4's SIMD boot, 2026-09-28*. ADR-0211 *Result* has the codec-line numbers.
