@@ -1,40 +1,18 @@
 # Contributing to fixbolt
 
 fixbolt is developed by a project team — today, one developer, its owner. This file is for
-**developers on that team**, and for anyone contributing from outside it: how to build the
-workspace, which gates a change must pass, and how a change gets into `main`. The engineering rules themselves are in [CLAUDE.md](CLAUDE.md), each
+**developers on that team**: how to build the workspace, which gates a change must pass, and how
+a change gets into `main`. The engineering rules themselves are in [CLAUDE.md](CLAUDE.md), each
 in one place; this file points at them by section and does not restate them.
 
 ## Who can contribute
 
-Changes come from the project team, which today is the owner alone. **Contributions from
-outside the team come in under a contributor licence agreement (CLA)**, not a Developer
-Certificate of Origin
-([ADR-0213](docs/decisions/ADR-0213-outside-contributions-come-in-under-a-cla-a-transferable-licence-the-owner-may-relicense-signed-in-the-pull-request.md)):
-
-- **Sign once, before your first pull request is merged.** Read [CLA.md](CLA.md), then post a
-  comment on your pull request reading exactly `I have read the CLA Document and I hereby sign
-  the CLA`. The CLA check on the pull request turns green, and the signature covers your later
-  contributions until a new version of the CLA is published.
-- **If your employer, or anyone else, may own rights in your work**, the employer also signs the
-  entity agreement, [CCLA.md](CCLA.md), once, naming the GitHub accounts that contribute for it;
-  CCLA.md says how.
-- You keep the copyright in what you contribute; what you grant, and why, is in CLA.md and
-  ADR-0213.
-
-**No outside pull request is merged yet.** Two things must happen first, and until both have, a
-signature does not get a pull request merged: **a lawyer has reviewed CLA.md and CCLA.md** (each
-carries a *Draft* notice until then), and **the CLA signing check is installed** on this
-repository and required on `main`. Both are the owner's, tracked in [STATUS.md](STATUS.md) open
-item 124.
-
-### Work that is not yours
-
-Submit only work you wrote, or have the right to grant under the CLA. Code, text or data from
-someone else — another project, a specification, a counterparty — goes in a separate pull request
-that names its source and licence in its description and says who holds the rights; it is merged
-only if its licence allows it and the owner accepts it. Nothing confidential is ever submitted
-(see *Before the first change*).
+Changes come from the internal project team only, which today is the owner alone. **A pull
+request from outside the team is closed without review**, however small; a bug found outside the
+team is reported as an issue, and the team writes the fix. There is no contributor licence
+agreement (CLA) and no Developer Certificate of Origin (DCO) sign-off: a team member's
+intellectual property is covered by their employment or contract terms, outside this repository
+([ADR-0213](docs/decisions/ADR-0213-contributions-come-from-the-project-team-only-with-no-cla-and-the-repository-goes-private-when-development-is-done.md)).
 
 A security problem is never reported in an issue or a pull request: see [SECURITY.md](SECURITY.md).
 

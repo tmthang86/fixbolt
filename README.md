@@ -140,9 +140,9 @@ external toolchain (ADR-0104). Two steps to a running acceptor:
 
 ### Support level
 
-fixbolt has a development team; today that team is one developer, its owner. Issues and pull
-requests are read, but there is no SLA and no on-call, and contributions from outside the team
-are not accepted yet ([docs/contributing.md](docs/contributing.md)). `docs/PRD.md` says what is built and what
+fixbolt has a development team; today that team is one developer, its owner. Issues are
+read, but there is no SLA and no on-call, and contributions from outside the team
+are not accepted ([docs/contributing.md](docs/contributing.md)). `docs/PRD.md` says what is built and what
 is not; `CHANGELOG.md`'s *Conditions to reach 1.0* says what has to be true — a deployment this
 repository did not write, reported publicly, and one minor release with no `semver-checks`
 exemption — before this project calls itself `1.0`.

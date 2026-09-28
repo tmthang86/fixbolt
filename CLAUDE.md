@@ -126,7 +126,6 @@ Docs-as-code: Markdown, in this repo, changed **in the same commit** as the code
 | `ARCHITECTURE.md` | the codemap: crate boundaries, names to search for, and each invariant — including what is deliberately absent — mapped to its §2 item |
 | `CONTRIBUTING.md` | who may contribute and how a change gets in |
 | `SECURITY.md` | where a vulnerability is reported |
-| `CLA.md` + `CCLA.md` | the terms an outside contributor (and their employer) signs before a first pull request is merged |
 
 | When you change… | You must update |
 |---|---|
