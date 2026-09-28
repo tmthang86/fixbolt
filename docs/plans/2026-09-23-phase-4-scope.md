@@ -224,19 +224,31 @@ có thể cần một boot nữa.
 
 ## Tài liệu phải cập nhật
 
-- [ ] `PRD.md` §2 *Phase 4* (đã thêm, trạng thái *Proposed*), §5 (hai gạch đầu dòng đã đánh
-      dấu "đề xuất thu hẹp"; sửa hẳn khi duyệt)
-- [ ] `DESIGN.md` §1 *Positioning* (ADR-0099), §3 (hai crate mới), D5 (transport `io_uring`), D7
-      (store), §5 (SIMD), §8 (dòng bypass nếu giữ), §9 (dòng boot bypass)
-- [ ] `README.md` layout; `Cargo.toml` members; `docs/internals/` một trang mỗi crate mới
-- [ ] `docs/GUIDE.md` — `io_uring` và Docker/sysctl; store không có chế độ đồng bộ; bypass chỉ
-      `hft`, plaintext
-- [ ] `docs/CONFIGURATION.md` — feature `io-uring`, khoá của store và exporter
-- [ ] `docs/best-practices-hft.md`, `docs/hft-playbook.md` — quy trình Onload/AF_XDP
-- [ ] `docs/reference/measured-costs.md` — mọi cặp A/B, kể cả cặp làm hạng mục bị bỏ
-- [ ] `CHANGELOG.md` — tên metric là API công khai
-- [ ] `CLAUDE.md` đoạn đầu trích câu định vị — **anh sửa** nếu ADR-0099 được duyệt
-- [ ] `STATUS.md` khi từng bước đóng
+- [x] `PRD.md` §2 *Phase 4* (đã thêm, trạng thái *Proposed*), §5 (hai gạch đầu dòng đã đánh
+      dấu "đề xuất thu hẹp"; sửa hẳn khi duyệt) — đóng 2026-09-28: §2 *Phase 4* có dòng đóng
+      phase và phán quyết từng mục; §5 hai gạch đầu dòng (bypass, web UI) đã ghi phán quyết cuối
+- [x] `DESIGN.md` §1 *Positioning* (ADR-0099), §3 (hai crate mới), D5 (transport `io_uring`), D7
+      (store), §5 (SIMD), §8 (dòng bypass nếu giữ), §9 (dòng boot bypass) — đóng 2026-09-28: D7's
+      bảng policy persistence nay có dòng `SqliteJournal` (ADR-0180 quyết định 1, 3–6 và
+      *Result*; ADR-0182 quyết định 3); §9's "dòng boot bypass" là **vô nghĩa với hạng mục này**
+      — bypass dừng ở probe gate G1, chưa từng tới một boot ([ADR-0201](../decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md)/[ADR-0203](../decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)),
+      nên không có gì để viết ở đó
+- [x] `README.md` layout; `Cargo.toml` members; `docs/internals/` một trang mỗi crate mới — cả
+      hai crate (`fixbolt-metrics`, `fixbolt-store-sqlite`) có đủ ba chỗ
+- [x] `docs/GUIDE.md` — `io_uring` và Docker/sysctl; store không có chế độ đồng bộ; bypass chỉ
+      `hft`, plaintext — mục `io_uring` ghi rõ đã gỡ (ADR-0190 *Result*); store §6 xong; bypass
+      không còn gì để dùng nên không có gì phải thêm
+- [x] `docs/CONFIGURATION.md` — feature `io-uring`, khoá của store và exporter — mục *The
+      `io_uring` transport — removed* xác nhận không còn gì cấu hình được; khoá store/exporter có
+- [x] `docs/best-practices-hft.md`, `docs/hft-playbook.md` — quy trình Onload/AF_XDP — G1 và
+      lý do (`igb` thiếu RSS key) ghi ở `hft-playbook.md`, cùng thủ tục thuê VM GCP cho lần sau
+- [x] `docs/reference/measured-costs.md` — mọi cặp A/B, kể cả cặp làm hạng mục bị bỏ — bốn
+      hạng mục có số đo đều có mặt (io_uring, store, exporter, SIMD); bypass dừng ở G1 nên không
+      có cặp, bằng chứng thất bại của G1 đứng thay (ADR-0203)
+- [x] `CHANGELOG.md` — tên metric là API công khai — có, trỏ ADR-0171 quyết định 1
+- [x] `CLAUDE.md` đoạn đầu trích câu định vị — **anh sửa** nếu ADR-0099 được duyệt — câu định vị
+      đã mang đúng hình ADR-0099 (dòng bypass thứ hai có nhãn)
+- [ ] `STATUS.md` khi từng bước đóng — của manager, không đụng ở phiên này
 
 ## Bẫy đã lường trước
 
@@ -319,4 +331,20 @@ có thể cần một boot nữa.
 
 ## Nhật ký giao hàng
 
-*(Chưa có — plan đã duyệt 2026-09-23; chưa bắt đầu, và không bắt đầu trước khi phase 3 đóng.)*
+| Bước | PR | Ngày | Kết quả |
+|---|---|---|---|
+| 1 | [#108](https://github.com/tmthang86/fixbolt/pull/108) | 2026-09-24 | `fixbolt-metrics` xây xong: exporter trên luồng riêng, hai số mới trong `Snapshot`, case alloc |
+| 2 | [#124](https://github.com/tmthang86/fixbolt/pull/124) | 2026-09-27 | Cặp `w2w` scrape bật/tắt đo trên boot §9, trong band cả hai procedure — **giữ** (ADR-0170 *Result*) |
+| 3 | [#109](https://github.com/tmthang86/fixbolt/pull/109) | 2026-09-24 | `fixbolt-store-sqlite` xây xong: writer thread gom lô, test sập-rồi-khôi-phục, case alloc |
+| 4 | [#124](https://github.com/tmthang86/fixbolt/pull/124) | 2026-09-27 | 50 000 msg/s × 60 s hai lần, `unwritten 0`; cặp `w2w` so `FileJournal` `Async` trong band — **giữ** (ADR-0180 *Result*) |
+| 5 | [#110](https://github.com/tmthang86/fixbolt/pull/110) | 2026-09-25 | Transport `io_uring` xây xong (`hft` + `standard`), 59/59 qua nó, hai script mode |
+| 6 | [#111](https://github.com/tmthang86/fixbolt/pull/111) | 2026-09-24 | Dòng §9 và `check-machine.sh` cho boot bypass viết xong; **bypass dừng ở probe gate G1 trước khi tới boot** — `igb` trả lời được truy vấn bảng chỉ mục RSS nhưng không trả lời được truy vấn khoá RSS, Onload/AF_XDP cần cả hai ([ADR-0201](../decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md) *Result*); bằng chứng của cổng hỏng đứng thay một cặp số ([ADR-0203](../decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)) — **tính là xong** (ADR-0098 Q1) |
+| 7 | [#124](https://github.com/tmthang86/fixbolt/pull/124) | 2026-09-27 | Một boot §9: A/B `io_uring` chạy đủ, `hft` wire p50 chậm hơn kernel TCP 29–30 % ở cả hai procedure — **bỏ** ([ADR-0190](../decisions/ADR-0190-the-io-uring-transport-is-reaped-by-the-idle-strategy-and-an-hft-turn-enters-the-kernel-once-without-waiting.md) *Result*). A/B Onload không chạy được (đã dừng ở bước 6, G1) |
+| 8 | [#126](https://github.com/tmthang86/fixbolt/pull/126) (nhánh `plan/p4-simd`, commit `27f4cdb`) | 2026-09-27/28 | Bench `checksum` riêng thêm xong, baseline ba case checksum + hai case `Decimal` lấy trên máy bàn §9 |
+| 9 | [#126](https://github.com/tmthang86/fixbolt/pull/126) | 2026-09-28 | SWAR quét SOH + checksum xây, đo A/B trên boot §9 theo ADR-0212: **không kernel nào qua vạch codec riêng** (quét SOH +4,8 %/+0,3 %, checksum +222,2 %, cả hai cần ≤ −15 %) — **bỏ cả hai**, density không chạy ([ADR-0211](../decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md) *Result*) |
+| 115 (ngoài *Chia việc*, cùng đợt) | [#127](https://github.com/tmthang86/fixbolt/pull/127) | 2026-09-27 | Gỡ `Transport::NEEDS_REAPER`/`Waiting::REAPS`/`Carrier` trước tag tiếp theo (ADR-0210) |
+| 10 | phiên tài liệu này | 2026-09-28 | Đóng phase: `PRD.md` §2 *Phase 4* (dòng đóng + phán quyết từng tiêu chí), `measured-costs.md` (đã có mọi cặp từ bước 7 trở về); `DESIGN.md` còn nợ D7 và §9 (xem *Tài liệu phải cập nhật*); `STATUS.md` của manager |
+
+**Tổng kết:** 2 hạng mục giữ (exporter, store SQLite), 3 hạng mục bỏ theo đúng vạch của chính nó
+(`io_uring`, bypass — dừng ở G1, SIMD) — mỗi cái tính là xong theo ADR-0098 Q1. Đóng phase
+2026-09-28.

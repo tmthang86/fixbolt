@@ -161,7 +161,9 @@ commit, with a CI run id.
 
 ### Phase 4: the owner's five items, each behind a kill line — *Accepted — ADR-0098, 2026-09-23*
 
-**Approved by the owner on 2026-09-23, not yet built; nothing starts before phase 3 closes.**
+**Approved by the owner on 2026-09-23, closed 2026-09-28: two items kept (the metrics exporter,
+the SQLite store), three dropped by their own kill lines (`io_uring`, kernel bypass at probe
+gate G1, SIMD) — a removed item counts as done (ADR-0098 Q1).**
 All eight of the plan's questions were answered as recommended — SQLite, not Postgres; Onload
 over AF_XDP, no TCP stack of this project's own; no `ef_vi` card; SQPOLL an `hft` arm only.
 Decided by
@@ -191,13 +193,13 @@ with a CI run id; the measured rows quote `scripts/check-machine.sh` from the de
 
 | # | Criterion | Gate |
 |---|---|---|
-| 1 | Nothing new built by default | `cargo build --workspace --no-default-features`; `scripts/check-no-optional-deps.sh` |
+| 1 | Nothing new built by default — held at the closing commit, CI run `<CI run id of the closing commit>` | `cargo build --workspace --no-default-features`; `scripts/check-no-optional-deps.sh` |
 | 2 | `io_uring` verdict applied — `[2026-09-27]` **killed**: the `io-uring` feature is absent from every manifest, the pair is in `measured-costs.md` | kept: `--features io-uring --test wire` 59 / 59, both mode scripts pass and are tripped by the wrong mode, alloc 0; killed: feature absent, pair in `measured-costs.md` |
-| 3 | Bypass verdict applied | kept: second labelled row in `DESIGN.md` §8 beside its kernel twin, 59 / 59 under `onload`; killed: negative pair in `measured-costs.md`; **cannot run: the failing gate's evidence in its place** ([ADR-0203](decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)) |
+| 3 | Bypass verdict applied — `[2026-09-24]` **dropped, cannot run**: probe gate G1 failed on the desk's I211, no RSS key ops in the `igb` driver ([ADR-0201](decisions/ADR-0201-onload-on-the-i211-runs-without-hardware-flow-filters-one-channel-count-holds-for-the-boot-and-the-control-path-leaves-the-cable.md) *Result*); the failing gate's evidence stands in its place, counts as done per ADR-0098 Q1 | kept: second labelled row in `DESIGN.md` §8 beside its kernel twin, 59 / 59 under `onload`; killed: negative pair in `measured-costs.md`; **cannot run: the failing gate's evidence in its place** ([ADR-0203](decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md)) |
 | 4 | SIMD verdict applied — `[2026-09-28]` **discarded**: both kernels missed their codec line, `stage1-summary.txt` A/B quoted in `measured-costs.md`, code absent | `bench.sh --strict` A/B quoted; kept: differential fuzz and Miri on the SWAR arm green; killed: code absent |
-| 5 | The store recovers | `cargo test -p fixbolt-store-sqlite` with a crash-and-recover test; engine-thread alloc 0; the throughput run quoted |
-| 6 | The exporter stays off the hot path | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |
-| — | Phases 1–3 hold | 59 / 59, FIXT 179 / 180, interop 7 / 7 with both peers, `cargo semver-checks` |
+| 5 | The store recovers — `[2026-09-27]` **passed**: crash-and-recover test green, engine-thread alloc 0, 50 000 msg/s for 60 s twice with `unwritten 0 rows 3000000 mismatched 0` ([ADR-0180](decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md) *Result*) | `cargo test -p fixbolt-store-sqlite` with a crash-and-recover test; engine-thread alloc 0; the throughput run quoted |
+| 6 | The exporter stays off the hot path — `[2026-09-27]` **passed**: alloc 0 under a 10 Hz scrape, wire p50 / p99 within band scrape on vs off ([ADR-0170](decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md) *Result*) | `cargo test -p fixbolt-metrics`; alloc 0 under scrape; scrape on / off pair within the band |
+| — | Phases 1–3 hold — proven at the closing commit, CI run `<CI run id of the closing commit>` | 59 / 59, FIXT 179 / 180, interop 7 / 7 with both peers, `cargo semver-checks` |
 
 ### Phase 5: dependable by an embedder — *approved by the owner 2026-09-26; ADR-0206 and ADR-0207 Proposed*
 
