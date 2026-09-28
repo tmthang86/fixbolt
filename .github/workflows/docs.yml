@@ -108,6 +108,8 @@ jobs:
         run: scripts/check-doc-claims.sh
 
       - name: Install mdBook ${{ env.MDBOOK_VERSION }}, the release binary, checked by sha256
+        # Runs even after an earlier check failed, so the book checks after it judge the book, not a missing binary (plan ci-tiers R7).
+        if: ${{ !cancelled() }}
         run: |
           tgz="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           mkdir -p target/mdbook-pin

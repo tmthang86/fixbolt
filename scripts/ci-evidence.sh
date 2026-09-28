@@ -143,8 +143,19 @@ fi
 
 jobs_json="$(gh run view "${ci_id}" --json jobs --jq '.jobs')"
 
+# GitHub truncates job names longer than 100 characters to first 97 chars + "..." (observed: "The published crates package, dry-run publish, and build from nothing but the .crate contents (no...")
+truncate_job_name() {
+  if [ ${#1} -gt 100 ]; then
+    printf '%s...' "${1:0:97}"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 job_conclusion() {
-  printf '%s' "${jobs_json}" | jq -r --arg n "$1" '([.[] | select(.name == $n) | .conclusion] | first) // "missing"'
+  local name
+  name="$(truncate_job_name "$1")"
+  printf '%s' "${jobs_json}" | jq -r --arg n "${name}" '([.[] | select(.name == $n) | .conclusion] | first) // "missing"'
 }
 
 skipped_full=""

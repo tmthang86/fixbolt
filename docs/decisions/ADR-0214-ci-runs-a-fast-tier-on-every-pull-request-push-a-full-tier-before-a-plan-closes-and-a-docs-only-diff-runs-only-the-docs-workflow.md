@@ -1,6 +1,6 @@
 # ADR-0214 — CI runs a fast tier on every pull-request push, a full tier before a plan closes, and a docs-only diff runs only the docs workflow
 
-- **Status**: **Proposed — 2026-09-28.** Written by the architect (Opus) at the manager's request,
+- **Status**: **Accepted — 2026-09-28**, when the plan closed. Proposed — 2026-09-28. Written by the architect (Opus) at the manager's request,
   from the four changes the owner approved on 2026-09-28 (in chat). The manager moves it to
   Accepted when the plan closes.
   **Revision 1 (2026-09-28, in place, while Proposed)**: the owner approved the plan and chose a
