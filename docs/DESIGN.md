@@ -446,6 +446,7 @@ latency source in its default configuration. Here the policy is the user's:
 | in memory | `engine::journal::MemJournal` | a ring that keeps but does not persist |
 | `Async` | `engine::journal::FileJournal` | appended, flushed by a background thread. Survives a process crash |
 | `Fsync` | `engine::journal::FileJournal` | synced before the message is acknowledged. Survives a power loss. Regulated deployments |
+| database, `Async`-class only | `store_sqlite::journal::SqliteJournal` (package `fixbolt-store-sqlite`, behind its default feature `sqlite`; not a dependency of `engine` or `fixbolt`) | one SQLite database file per session, keyed by `seq`; the engine thread's half costs exactly what `FileJournal` `Async`'s does — `put` writes the ring, no `rusqlite` type reaches the engine thread — and a writer thread batches commits (WAL, `synchronous = NORMAL` by default, `FULL` a setting): survives a process crash under NORMAL, a power loss too under `FULL`, and **no mode waits for a commit before `put` returns** ([ADR-0180](decisions/ADR-0180-the-sqlite-store-is-the-async-journal-with-a-database-for-a-file-one-database-per-session-and-no-synchronous-mode.md) decisions 1, 3–6; *Result*: kept, its kill line passed 2026-09-27, joining the release family per [ADR-0182](decisions/ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md) decision 3) |
 
 **The in-memory ring is the whole resend store, in every policy.** A `FileJournal` keeps the
 ring too and answers `get` from it: reading a replay back off disk would be a blocking `read`
@@ -1205,10 +1206,18 @@ The full list is [PRD.md §5](PRD.md); this is the subset that shapes the archit
   limit, which §8 puts at 10–20 µs. If it ever happens: Onload first (the D8 loop and the
   socket API survive unchanged), `ef_vi` second as an `impl Transport` behind a D5-style flag,
   DPDK never (no TCP stack). Plaintext only, so it and D11 exclude each other. STATUS item 14.
-- **SIMD delimiter scan and checksum**: declined by
-  [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md),
-  because parse is 0.62% of a round trip. `matthart1983/nanofix` has SIMD and parses 4–6×
-  slower, because layout beat it.
+- **SIMD delimiter scan and checksum**: reopened as an experiment
+  ([ADR-0100](decisions/ADR-0100-simd-is-reopened-as-an-experiment-whose-kill-line-is-written-before-the-code.md)),
+  built as two SWAR kernels and measured, each against its own kill line
+  ([ADR-0211](decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md)).
+  **`[measured 2026-09-28]` Both discarded**: the checksum kernel lost to the SSE2 loop `rustc`
+  already builds from the scalar fold (+222.2% instead of ≤ −15%), and the SOH-scan kernel
+  missed its line too (+4.8% / +0.3%); density was never reached
+  ([ADR-0212](decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md)
+  *Result*). Figures:
+  [measured-costs.md](reference/measured-costs.md) *Phase 4's SIMD boot, 2026-09-28*; the trap:
+  [a-scalar-loop-the-compiler-already-vectorised-beat-a-hand-written-swar-replacement](reference/a-scalar-loop-the-compiler-already-vectorised-beat-a-hand-written-swar-replacement.md).
+  `matthart1983/nanofix` has SIMD and parses 4–6× slower, because layout beat it.
 - **Clustering, HA, replication. Metrics dashboards and web UIs. Matching engine, order book,
   risk.** This is a protocol engine.
 
@@ -1674,7 +1683,12 @@ Three readings:
   dictionary pass, which STATUS item 39 named as the largest untimed candidate, is **679 ns of
   it, 17.4%**, and the gap is still **~2 804 ns unexplained**. The arithmetic is below the
   stage table. [ADR-0045](decisions/ADR-0045-parse-is-under-one-percent-of-the-wire-and-simd-is-declined.md)
-  declines SIMD on this basis: parse is 0.62% of the application round trip.
+  declined SIMD on this basis: parse is 0.62% of the application round trip. Reopened as an
+  experiment by [ADR-0100](decisions/ADR-0100-simd-is-reopened-as-an-experiment-whose-kill-line-is-written-before-the-code.md)
+  and measured by [ADR-0211](decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md) /
+  [ADR-0212](decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md),
+  `[measured 2026-09-28]` both SWAR kernels missed their codec line and were discarded — see §5
+  and [measured-costs.md](reference/measured-costs.md) *Phase 4's SIMD boot, 2026-09-28*.
 
 ### Boot C, 2026-09-18: the listener asked every 16th iteration takes 2.6 µs off the application round trip, and 0.3 µs onto the administrative one
 

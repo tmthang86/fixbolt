@@ -151,6 +151,18 @@ AMD Ryzen 7 3700X 8-Core Processor	encode ExecutionReport (template)	237.6	1.15	
 AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache	5.8	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
 AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache, micros	10.0	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
 AMD Ryzen 7 3700X 8-Core Processor	SendingTime from the cache, nanos	12.7	1.10	20	2026-09-15	pass 15 fail 0 unknown 0
+# `[measured 2026-09-28, p4-simd boot, stage 1]` FIVE FIRST LINES (the origin, ADR-0095 decision 2):
+# the three `checksum` cases (the SWAR plan's step 1 bench, `d0e4f4e`) and the two `Decimal`
+# cases (STATUS.md item 111). Median of arm A -- `d0e4f4e`, scalar, the tree kept after both SWAR
+# kernels were discarded (ADR-0211) -- over 24 complete rounds of `scripts/ab-rotation.sh`, which
+# runs the pre-built binary with bench.sh's RUSTFLAGS (checksum sha256 5572c326..., decimal
+# 91cdb9df...); `target/simd-evidence/20260927T234503Z/stage1-summary.txt` (desk only).
+# max/median 1.000 / 1.000 / 1.009 / 1.020 / 1.000, so every margin is the ladder's floor.
+AMD Ryzen 7 3700X 8-Core Processor	checksum NewOrderSingle	4.5	1.10	24	2026-09-28	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	checksum Heartbeat	2.9	1.10	24	2026-09-28	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	checksum 1 KiB	11.6	1.10	24	2026-09-28	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	decimal parse 12345.6789	15.1	1.10	24	2026-09-28	pass 17 fail 0 unknown 0
+AMD Ryzen 7 3700X 8-Core Processor	decimal format 12345.6789	18.9	1.10	24	2026-09-28	pass 17 fail 0 unknown 0
 AMD Ryzen 7 3700X 8-Core Processor	walk 1 group, 2 entries, 2 members	56.2	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	walk 4 levels, 61-tag member list	339.5	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
 AMD Ryzen 7 3700X 8-Core Processor	group_members contains, 61 tags	9.0	1.10	20	2026-09-05	pass 12 fail 0 unknown 1
