@@ -94,6 +94,10 @@ contributors and employers refuse to sign one on principle
 before the first outside contribution is merged**; after it, the DCO outcome is the default for
 that contribution.
 
+fixbolt chose a CLA — a transferable licence on Project Harmony's templates, Option Five — in
+[ADR-0213](../decisions/ADR-0213-outside-contributions-come-in-under-a-cla-a-transferable-licence-the-owner-may-relicense-signed-in-the-pull-request.md),
+which records the further sources (Apache's ICLA and CCLA, Harmony, Qt, Grafana, the signing tools).
+
 ## 4. Documentation structure
 
 - **Diátaxis** ([diataxis.fr](https://diataxis.fr/), [start here](https://diataxis.fr/start-here/)):

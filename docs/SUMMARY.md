@@ -345,4 +345,5 @@
 - [ADR-0210 — The reaper pair and the carrier report leave the public API before the next tag](decisions/ADR-0210-the-reaper-pair-and-the-carrier-report-leave-the-public-api-before-the-next-tag.md)
 - [ADR-0211 — Each SWAR kernel is judged on its own case, and the checksum is measured against a loop the compiler already vectorises](decisions/ADR-0211-each-swar-kernel-is-judged-on-its-own-case-and-the-checksum-is-measured-against-a-loop-the-compiler-already-vectorises.md)
 - [ADR-0212 — An A/B boot stops early only to discard: the micro-benches run a fixed twenty rounds, and the density arm gets one futility look at six](decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md)
+- [ADR-0213 — Outside contributions come in under a CLA: a transferable licence the owner may relicense, signed in the pull request](decisions/ADR-0213-outside-contributions-come-in-under-a-cla-a-transferable-licence-the-owner-may-relicense-signed-in-the-pull-request.md)
 <!-- END GENERATED: decisions -->
