@@ -5015,3 +5015,403 @@ unlike an item that runs and loses, this one never ran. ADR-0098 asks for "the p
 [ADR-0203](../decisions/ADR-0203-an-item-that-cannot-run-is-dropped-on-its-failing-gates-evidence-in-place-of-a-pair.md) lets this gate record stand in its place for an item that cannot run. The trap this cost, and the guard that
 now watches for it on any future NIC, is
 [onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks](onload-af-xdp-needs-rss-key-ops-the-igb-driver-lacks.md).
+
+## Phase 4's §9 boot, 2026-09-27: the SQLite store pair and the metrics exporter's scrape pair
+
+`[measured 2026-09-27]` One §9 boot. Two scripts ran on it, from binaries built before the reboot
+(ADR-0090 decision 2, ADR-0202 decision 1). Evidence stays on the desk and is not committed:
+`target/boot-p4-evidence/20260927T042832Z/` for the driver, and its `row2/` for the exporter pair.
+The same boot's `io_uring` A/B is the first subsection. It failed its kill line, and the
+transport was removed (ADR-0190 *Result*).
+
+**Machine:** host `tmt-B450-I-AORUS-PRO-WIFI`, AMD Ryzen 7 3700X, NIC Intel I211 (`igb`, `enp9s0`,
+`combined 2`, `rx-usecs 0`, EEE off, IRQs on cores 0–4), kernel `7.0.0-34-generic`, mitigations
+on. The §9 grub line: `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15 processor.max_cstate=1`, no
+`nohz_full`. Runtime: `fixbolt-machine on`, so SMT is off and cores 14 and 15 are offline. Every
+timer unit of both managers was stopped (boot plan *Sửa 5*). `FIXBOLT_NIC=enp9s0
+scripts/check-machine.sh` read `pass 17 fail 0 unknown 0` before every block and at the end of
+both scripts. It read the same in every arm's own summary **but one**: procedure 1's K arm, whose
+summary reads `machine pass 16 fail 1 unknown 0`. That arm's own read, at its start, found
+`FAIL   machine is quiet       10% CPU busy over 1s — code 2% of a core  claude 2% of a core
+code 2% of a core`: processes named `code` and `claude`, read after the driver's own gate for
+block A had read 17/0. `w2w-baseline.sh` re-reads *quiet* per run, and it disqualified one
+run there (9 of 10 qualified). Procedure 2's K arm reads 17/0. The verdict does not move: U/K
+wire p50 is 1.2889 in procedure 2, on a clean arm, as well as 1.3030 in procedure 1. **Generator:** the Mac mini over the direct cable,
+`w2w` sha256 `2826bbc19267…` at commit `1dd99bd`, unpinned. **Build:** commit `1dd99bd` (the
+7a merge), `rustc 1.98.0`, `RUSTFLAGS=-C llvm-args=-align-all-functions=6`. `MANIFEST.txt`
+read `OK` 4 of 4 before and after both scripts. **Settings of every arm:** `RUNS=10`,
+`MESSAGES=20000`, interval 0, `WARMUP=2000`, `GAP=8`, engine core 6, client core 7, `hft` observer
+core 7. Two procedures at least 1800 s apart by the clock (`gap.txt`: `elapsed_s 1800` for both
+scripts), with the arm order reversed in the second. Figures are medians over the qualifying
+runs (`scripts/w2w-baseline.sh`). `hft` rows are the **acceptor wire figure** (enp9s0 hardware
+stamps, NIC in → NIC out). `standard` rows are the **round trip as the Mac sees it**, because
+`w2w-baseline.sh` refuses NIC stamps for `standard` (Q10); they are **not** wire figures. The 5 %
+band is ADR-0068 decision 2, computed on the smaller figure by `scripts/compare-w2w-procedures.sh`.
+
+### The `io_uring` transport against kernel TCP (phase-4 row 5) — failed, removed
+
+Command: `BOOT_ROOT=/home/tmt/Projects/fb-p4-boot scripts/boot-p4.sh run`, blocks A and B. All six
+`w2w` arms come from **one** binary, the `uring` build (`w2w` sha256 `ae0e860f…`, features
+`affinity,io-uring`). The arms differ only in `W2W_EXTRA`:
+
+| Arm | `W2W_EXTRA` | Observer core |
+|---|---|---|
+| K | *(empty)* | 7 |
+| U | `--transport uring` | 7 |
+| U′ | `--transport uring` | 5 |
+| S | `--transport uring --uring-arm sqpoll --sqpoll-core 7` | 5 |
+| stdK | *(empty)*, `--mode standard` | — |
+| stdU | `--transport uring`, `--mode standard` | — |
+
+Path `admin`, `hft` arms with acceptor stamps. Every run's `transport:` line was read back from
+the engine, for example `transport: uring arm=enter cqes=22002 bytes=1803868 enobufs=0 unarmed=0
+cq-overflow=0 enter-errors=0` (U, p1 run 1). `allocs 0` in every listen file.
+
+| Procedure | Arm | Runs qualified | `hft` wire p50 / p99 / p99.9 | Mac-side p50 / p99 / p99.9 |
+|---|---|---|---|---|
+| 1 | K | 9 / 10 | 27 778 / 33 146 / 36 026 | 150 000 / 287 375 / 291 958 |
+| 1 | U | 9 / 10 | 36 194 / 41 410 / 45 130 | 260 708 / 281 042 / 323 333 |
+| 1 | U′ | 8 / 10 | 36 158 / 41 538 / 44 506 | 260 917 / 283 937 / 324 625 |
+| 1 | S | 10 / 10 | 35 730 / 40 986 / 45 054 | 261 229 / 282 604 / 323 854 |
+| 1 | stdK | 10 / 10 | — | 260 750 / 280 104 / 323 541 |
+| 1 | stdU | 10 / 10 | — | 260 729 / 280 666 / 313 979 |
+| 2 | K | 10 / 10 | 28 402 / 33 926 / 36 734 | 150 604 / 287 042 / 291 604 |
+| 2 | U | 10 / 10 | 36 606 / 42 082 / 45 050 | 260 729 / 282 791 / 324 167 |
+| 2 | U′ | 10 / 10 | 36 722 / 42 258 / 44 970 | 260 792 / 282 833 / 324 312 |
+| 2 | S | 10 / 10 | 36 250 / 41 510 / 44 510 | 261 167 / 282 104 / 323 833 |
+| 2 | stdK | 10 / 10 | — | 260 750 / 280 854 / 324 729 |
+| 2 | stdU | 10 / 10 | — | 260 708 / 280 979 / 303 479 |
+
+All figures are in ns. Every arm reproduced itself across the two procedures
+(`compare/<arm>-p1-vs-p2.txt`). K's wire p50 moved `2.246%`, the largest move. The pairs:
+
+- **K against U**: wire p50 `diff 30.297%` (p1) and `28.885%` (p2), wire p99 `24.932%` and
+  `24.041%`, all `not reproduced`, and U is the slower one. `verdict-inputs.txt`: `U/K wire p50
+  1.3030` and `1.2889`, `U/K wire p99 1.2493` and `1.2404`.
+- **U′ against S**: wire p50 `1.198%` and `1.302%`, reproduced. S is slightly faster, but
+  `S/U′ wire p50 0.9882` and `0.9871`, while S/K is 1.29 (35 730 / 27 778). S burns core 7.
+- **stdK against stdU**: p50 `0.008%` (p1) and `0.016%` (p2), and `stdU/stdK counterparty p50
+  0.9999` and `0.9998`. The p99.9 moved `3.045%` (p1) and `7.002%` (p2). The p2 move is
+  `not reproduced`, and `compare/p2-stdK-vs-stdU.txt` exits 1 on it. p99.9 is not judged.
+- **Mac-side, `hft`: two levels, and not an `io_uring` property.** The Mac-side round trip of
+  an `hft` run sits either near 150 µs or near 250–260 µs, and **K itself is bimodal**. Its
+  per-run p50s in procedure 1 are 150 000, 150 541, 149 333, **258 916**, **255 000**, 149 833,
+  149 208, 149 667, **243 583** (`across runs: 149208 .. 258916`). In procedure 2 they are nine
+  runs at 150 334–150 792 and one at **261 792**. Kernel-TCP `hft` arms also sat at the upper
+  level for whole arms: the store pair's `hft-file` (path `app`) runs are 249 375–257 500, p50
+  252 375. Every U run sat there too: 256 375–261 167 in procedure 1, 260 291–261 000 in
+  procedure 2. Row 2's `off-hft` sat at the lower level, 150 416–151 125. The acceptor's own wire
+  figure does not show the two levels (K wire p50 27 778 / 28 402). This is a bimodality of the
+  harness or the Mac side, **cause unknown**, and nothing here isolates it. Not judged: the
+  kill line reads the acceptor's wire figure.
+
+The `turn`/`density` benches were pinned to the engine core (`taskset -c 6`) from the same
+`uring` build (`turn` binary `01109e1fa106…`, `density` `79b86a555466…`), with
+`FIXBOLT_BENCH_COUNT_ONLY=1`. Each is one run per procedure, best of 7 inside the binary. Figures
+are ns per operation:
+
+| Case | p1 kernel | p1 uring | p2 kernel | p2 uring |
+|---|---|---|---|---|
+| idle loop, N = 1 | 485.3 | 303.8 | 485.3 | 331.1 |
+| idle loop, N = 16 | 7 637.0 | 929.1 | 7 627.2 | 954.4 |
+| idle loop, N = 64 | 33 880.8 | 5 764.0 | 34 156.1 | 5 772.8 |
+| busy loop, N = 1 | 14 426.6 | 16 012.7 | 15 363.1 | 17 112.6 |
+| busy loop, N = 16 | 232 760.9 | 245 377.5 | 248 362.7 | 260 613.8 |
+| busy loop, N = 64 | 963 908.3 | 1 160 350.2 | 1 024 284.4 | 1 222 130.3 |
+
+Idle N = 16, uring against kernel: `0.1217` and `0.1251`. The idle loop is about eight times
+cheaper at N = 16. The busy loop is recorded, not judged, and it is 5–20 % dearer over `io_uring`.
+
+**The verdict** (plan row 5, *Hàng 7 sẽ đo gì*; ADR-0190 decision 10), as `verdict-inputs.txt`
+prints it:
+
+```text
+clause (a) U/K p50 <= 0.97 and p99 <= 1.05, both procedures: no
+clause (b) idle N=16 uring/kernel <= 0.75 and U/K p50 <= 1.05, both procedures: no
+S beside U′, clause (a)'s arithmetic on S/U′ (cannot keep the item alone): no
+standard half: stdU/stdK p50 > 1.05 in both procedures (then UringBlock/serve_uring go): no
+```
+
+Clause (b)'s first half holds with a wide margin. Its second half, and all of clause (a), fail
+by about 29 %. **Dropped**: the `io-uring` feature, module, `w2w` flags and script runs were
+removed on the same branch (ADR-0098; ADR-0190 *Result*).
+
+### The SQLite store against `FileJournal` `Async` (phase-4 row 4, step 4b)
+
+Command: `BOOT_ROOT=/home/tmt/Projects/fb-p4-boot scripts/boot-p4.sh run`, block C. Both arms use
+**one** binary: `sqlite` build, `w2w` sha256 `74616b230e61…`, features `affinity,sqlite`. The only
+difference is `--journal file-async` against `--journal sqlite-async` (ADR-0202 decision 1).
+Path `app`. Every one of the 80 listen files read `allocs 0`. The `sqlite-async` label counts
+the engine thread (and the observer thread in `hft`). **The SQLite writer thread and SQLite's C
+heap are not counted.**
+
+| Procedure | Arm | Runs qualified | p50 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| 1 | `hft` file-async (wire) | 9 / 10 | 30 282 | 36 130 | 38 922 |
+| 1 | `hft` sqlite-async (wire) | 10 / 10 | 30 366 | 36 502 | 39 658 |
+| 2 | `hft` file-async (wire) | 10 / 10 | 30 358 | 36 158 | 39 358 |
+| 2 | `hft` sqlite-async (wire) | 10 / 10 | 30 210 | 36 442 | 39 630 |
+| 1 | `standard` file-async (Mac side) | 10 / 10 | 258 604 | 277 563 | 302 291 |
+| 1 | `standard` sqlite-async (Mac side) | 10 / 10 | 258 458 | 277 833 | 305 042 |
+| 2 | `standard` file-async (Mac side) | 10 / 10 | 258 625 | 277 604 | 305 187 |
+| 2 | `standard` sqlite-async (Mac side) | 10 / 10 | 258 479 | 277 646 | 302 500 |
+
+All figures are in ns. The band lines (`compare/p{1,2}-{hft,std}-file-vs-sqlite.txt`):
+`hft` wire p50 `diff 0.277%` (p1) and `0.490%` (p2), `std` p50 `diff 0.056%` in both, and every
+p99 and p99.9 was `reproduced` too. `sqlite/file` computed in `verdict-inputs.txt`: `hft` 1.0028 and
+0.9951, `standard` 0.9994 and 0.9994. **Step 4b passes in both procedures and in both modes.** With step 4a below and the
+alloc bench (step 4), the store's kill line passes, and the crate is kept (store plan 4c, ADR-0180
+*Result*).
+
+### The SQLite store at 50 000 msg/s for 60 s (phase-4 row 4, step 4a)
+
+`[measured 2026-09-27]` Same desk, same boot, after the two scripts above. The grub line was
+the §9 line, cmdline `BOOT_IMAGE=/boot/vmlinuz-7.0.0-34-generic … isolcpus=6,7,14,15
+rcu_nocbs=6,7,14,15 processor.max_cstate=1 …`, and the runtime settings were still on.
+`FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` read `pass 17 fail 0 unknown 0` before and after.
+The build was `cargo build --release -p fixbolt-store-sqlite --example soak` from the worktree at
+`3f97383`, with the default toolchain 1.98.0. It is not pinned; the soak is a count, not a latency
+figure. `--dir target/soak` sat on ext4 on NVMe and was deleted after each run. The logs stayed
+on the desk under `target/p4-4a/` of that worktree.
+
+```text
+soak: fs ext4 synchronous normal rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 51 max_batch 6138 wal_bytes_max 4148872 db_bytes 648429568 pace_missed 0
+soak: fs ext4 synchronous normal rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 48 max_batch 5826 wal_bytes_max 4144752 db_bytes 648429568 pace_missed 0
+soak: fs ext4 synchronous full rate 50000 seconds 60 messages 3000000 records 6000000 unwritten 0 rows 3000000 mismatched 0 behind_max_ms 28 max_batch 2978 wal_bytes_max 4185952 db_bytes 648429568 pace_missed 0
+```
+
+The first two lines are the verdict's two `normal` runs. Both exited 0, both lost nothing, and
+the pace never slipped. **Step 4a passes.** The third, `full`, is recorded only. It too lost
+nothing. Its writer fell less far behind (28 ms against 48–51 ms) in smaller batches (2 978
+against about 6 000). Read that as one run each, not a finding about `FULL`.
+
+### The metrics exporter under a 10 Hz scrape (phase-4 row 2)
+
+Command: the script in the metrics plan's *Sửa 2*, saved verbatim as `row2/row2.sh`, run as
+`bash row2.sh > row2.log 2>&1` after the driver exited. It used the `uring` build's `w2w` (sha256
+`ae0e860f…`, the same binary as the driver's K arm) and path `admin`. The on arms add
+`--metrics 127.0.0.1:19464` and a `scripts/scrape-loop.sh` 10 Hz loop pinned to
+`taskset -c 0-5,8-13`. In the table, `off` is column 1 of `compare/*-off-vs-on.txt` and `on` is
+column 2.
+
+| Procedure | Arm | Runs qualified | p50 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| 1 | `hft` off (wire) | 9 / 10 | 28 378 | 34 026 | 37 314 |
+| 1 | `hft` on (wire) | 8 / 10 | 28 622 | 34 786 | 38 094 |
+| 2 | `hft` off (wire) | 9 / 10 | 28 450 | 34 178 | 36 954 |
+| 2 | `hft` on (wire) | 9 / 10 | 28 498 | 34 778 | 38 314 |
+| 1 | `standard` off (Mac side) | 10 / 10 | 260 750 | 281 125 | 325 062 |
+| 1 | `standard` on (Mac side) | 9 / 10 | 260 667 | 280 667 | 320 625 |
+| 2 | `standard` off (Mac side) | 10 / 10 | 260 583 | 281 187 | 324 750 |
+| 2 | `standard` on (Mac side) | 9 / 10 | 260 625 | 281 208 | 324 417 |
+
+All figures are in ns. Off against on: `hft` wire p50 `diff 0.860%` (p1) and `0.169%` (p2), wire
+p99 `2.234%` and `1.756%`. `standard` p50 `0.032%` and `0.016%`. Every line `reproduced`. The on
+arm is the slower one in every `hft` row. Each arm against itself across procedures is also
+`reproduced` (`compare/{off,on}-{hft,std}-p1-vs-p2.txt`, p50 at most 0.435 %). Every listen
+file read `allocs 0`, and every on-arm label names the exporter thread. Every on-arm listen file
+(36) has `metrics: 127.0.0.1:19464`, and no off-arm file has it. All 36 `metrics-thread: cpus`
+masks read `[0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13]`. Every scrape chunk read `bad 0` at
+9.7 Hz. **The exporter passes its kill line in both procedures** (metrics plan *Đọc vạch bỏ*,
+rules 1–5).
+
+Three things the table does not show:
+
+- **Disqualified runs.** The scrape loop's own load disqualified runs in the on arms only:
+  `DISQUALIFIED, 10% busy` (p1 `hft` run 10), `9% busy` (p2 `hft` run 10), `13%` and `12% busy`
+  (`standard` run 5 in p1 and p2). Other runs were disqualified for NIC stamps, off arms included:
+  `hw-tx-missing … exceeds 0.1%` (p1 off run 1, p1 on run 8, p2 off run 3). The plan names this
+  trap — the loop forks ten `curl` a second — and says to record it without loosening the rule.
+  The on arms are therefore medians of 8 or 9 runs, not 10.
+- **How often the exporter was up.** The loop runs in 60 s chunks across the whole arm, including
+  the gaps between `w2w` runs. Scrapes answered per chunk: 203, 168 and 0 (`hft`, p1); 228, 231 and
+  57 (`standard`, p1). About a third of the scrapes reached an exporter. In each `hft` arm the last
+  chunk found no exporter listening at any point (`ok 0 … unanswered 600`) and printed `scrape-loop: FAIL — no scrape reached an
+  exporter`. The plan expects a chunk with no `ok` when no exporter is listening. Rule 4 asks for
+  `bad 0` everywhere and at least one chunk with `ok > 0` at ≥ 9.0 Hz, and both hold.
+- **What p50 and p99 cannot show.** At 10 Hz only about ten scrapes fall inside one 20 000-request
+  window (*estimated, not measured*). So p50 and p99 show the steady cost of having an exporter,
+  not the stall a single scrape causes. Non-negotiable 4 is not checked here in split mode: the
+  listen half prints no `engine-ctxt`.
+
+## Phase 4's SIMD boot, 2026-09-28: both SWAR kernels missed their codec line, density never ran
+
+`[measured 2026-09-28]` One §9 boot, staged per [ADR-0212](../decisions/ADR-0212-an-ab-boot-stops-early-only-to-discard-the-micro-benches-run-a-fixed-twenty-rounds-and-the-density-arm-gets-one-futility-look-at-six.md).
+Evidence stays on the desk, not committed: `target/simd-evidence/20260927T234503Z/` (the boot)
+and `target/simd-evidence/prep/` (the pre-boot instruction counts and disassembly). The verdict:
+**both kernels discarded** at stage 1 — neither cleared its ADR-0211 codec line — so stage 2
+(the density look) never ran. Code reverted in `83ddd20`; the checksum bench (row 8) and the
+`checksum`/`decimal` baselines it recorded are kept in `27f4cdb`.
+
+**Machine:** host `tmt-B450-I-AORUS-PRO-WIFI`, AMD Ryzen 7 3700X, kernel `7.0.0-34-generic`,
+`rustc 1.98.0`. The §9 grub line: `isolcpus=6,7,14,15 rcu_nocbs=6,7,14,15
+processor.max_cstate=1`, mitigations on, governor `performance`, turbo off, SMT off,
+`fixbolt-machine on`. NIC `enp9s0`: IRQs on cores 0–5, `rx-usecs 0`, EEE off. Every system and
+user timer unit was stopped before the boot. `FIXBOLT_NIC=enp9s0 scripts/check-machine.sh` read
+`pass 17 fail 0 unknown 0` at the boot's start (`machine-start.txt`) and its end
+(`machine-end.txt`).
+
+**Arms**, one `scripts/ab-rotation.sh` rotation, control `A`:
+
+| Arm | Commit | What it is |
+|---|---|---|
+| `A` | `d0e4f4e` | control — the tree before any SWAR, with the checksum bench (row 8) already present |
+| `S` | `f7d855f` | SOH scan only (`find_soh` SWAR) |
+| `C` | `2e426b0` | checksum only (SWAR `wrapping_add` replacement) — local branch, `A` plus step 3 cherry-picked, no pull request shows this tree; recorded here by sha |
+| `SC` | `2453850` | both kernels |
+
+**Stage durations**, from the evidence directory's own mtimes (`machine-start.txt`,
+`strict-before.txt`, `stage1-complete.txt`, `strict-after.txt`, `machine-end.txt`) — no
+Criterion timer inside the harness measures a whole stage, so these are wall-clock read off the
+files ADR-0212's stage table produces:
+
+| Stage | What ran | Duration |
+|---|---|---|
+| 0 | `check-machine.sh`, the discarded first run, `bench.sh --strict` on `A` (before) | ~10 min |
+| 1 — codec | 24 rounds, `A`/`S`/`C`/`SC`, `parse`/`serialize`/`checksum`/`decimal` per ADR-0212 decision 1's table | ~16.5 min |
+| 2a / 2b — density | not run — neither kernel passed its stage-1 codec line (ADR-0212 decision 1: stage 2 runs only when a kernel passes) | — |
+| 3 | baselines recorded from `A`'s stage-1 rounds, `bench.sh --strict` (after), the `library, parse only` UNDER investigation (`instr-cost.txt`, `ipc-cost.txt`, `cost-n20.txt`) | ~30 min |
+| **Total** | machine-start to machine-end | **~57 min**, against the original plan's 9–11 h and ADR-0212's own "~1 h if both kernels fail their codec line" prediction |
+
+### Stage 1, every case, all four arms — `stage1-summary.txt`, n = 24
+
+ns/op unless noted; `min/med` and `max/med` are the ratio of that round's extreme to the
+median; `diff%` is against `A`'s median; `over` counts rounds over `bench.sh`'s own band for
+that arm (not a codec-line verdict — that is read from the median only, per ADR-0211/-0212).
+
+| Arm | Case | Median | min/med | max/med | n | diff% | over |
+|---|---|---|---|---|---|---|---|
+| A | parse NewOrderSingle (validated) | 128.6 | 0.983 | 1.029 | 24 | — | 0/24 |
+| A | parse NewOrderSingle (no checks) | 122.4 | 0.987 | 1.030 | 24 | — | 0/24 |
+| A | parse Heartbeat (validated) | 64.6 | 0.967 | 1.040 | 24 | — | 1/24 |
+| A | encode ExecutionReport (template) | 238.3 | 0.963 | 1.029 | 24 | — | 0/24 |
+| A | SendingTime from the cache | 5.6 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | SendingTime from the cache, micros | 10.0 | 1.000 | 1.010 | 24 | — | 0/24 |
+| A | SendingTime from the cache, nanos | 12.9 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | checksum NewOrderSingle | 4.5 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | checksum Heartbeat | 2.9 | 1.000 | 1.000 | 24 | — | 0/24 |
+| A | checksum 1 KiB | 11.6 | 1.000 | 1.009 | 24 | — | 0/24 |
+| A | decimal parse 12345.6789 | 15.1 | 1.000 | 1.020 | 24 | — | 0/24 |
+| A | decimal format 12345.6789 | 18.9 | 0.995 | 1.000 | 24 | — | 0/24 |
+| S | parse NewOrderSingle (validated) | 134.7 | 0.995 | 1.010 | 24 | **+4.8%** | 24/24 |
+| S | parse NewOrderSingle (no checks) | 129.3 | 0.992 | 1.012 | 24 | +5.6% | 2/24 |
+| S | parse Heartbeat (validated) | 64.8 | 0.987 | 1.008 | 24 | **+0.3%** | 0/24 |
+| S | checksum NewOrderSingle | 4.5 | 1.000 | 1.022 | 24 | +0.0% | 0/24 |
+| S | checksum Heartbeat | 2.9 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| S | checksum 1 KiB | 11.6 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| C | parse NewOrderSingle (validated) | 137.2 | 0.979 | 1.020 | 24 | +6.7% | 24/24 |
+| C | parse NewOrderSingle (no checks) | 121.3 | 0.986 | 1.059 | 24 | -0.9% | 0/24 |
+| C | parse Heartbeat (validated) | 67.3 | 0.982 | 1.027 | 24 | +4.3% | 17/24 |
+| C | encode ExecutionReport (template) | 247.1 | 0.970 | 1.048 | 24 | +3.7% | 0/24 |
+| C | SendingTime from the cache | 5.6 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| C | SendingTime from the cache, micros | 10.0 | 1.000 | 1.010 | 24 | +0.0% | 0/24 |
+| C | SendingTime from the cache, nanos | 12.9 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| C | checksum NewOrderSingle | 14.5 | 1.000 | 1.028 | 24 | **+222.2%** | 0/24 |
+| C | checksum Heartbeat | 7.5 | 1.000 | 1.013 | 24 | +158.6% | 0/24 |
+| C | checksum 1 KiB | 93.8 | 0.999 | 1.000 | 24 | +708.6% | 0/24 |
+| SC | parse NewOrderSingle (validated) | 145.3 | 0.994 | 1.007 | 24 | +13.0% | 24/24 |
+| SC | parse NewOrderSingle (no checks) | 128.9 | 0.994 | 1.007 | 24 | +5.3% | 0/24 |
+| SC | parse Heartbeat (validated) | 70.1 | 0.991 | 1.011 | 24 | +8.5% | 24/24 |
+| SC | encode ExecutionReport (template) | 247.2 | 0.976 | 1.041 | 24 | +3.8% | 0/24 |
+| SC | SendingTime from the cache | 5.6 | 0.982 | 1.000 | 24 | +0.0% | 0/24 |
+| SC | SendingTime from the cache, micros | 10.0 | 1.000 | 1.010 | 24 | +0.0% | 0/24 |
+| SC | SendingTime from the cache, nanos | 12.9 | 1.000 | 1.000 | 24 | +0.0% | 0/24 |
+| SC | checksum NewOrderSingle | 14.5 | 1.000 | 1.028 | 24 | +222.2% | 0/24 |
+| SC | checksum Heartbeat | 7.5 | 1.000 | 1.013 | 24 | +158.6% | 0/24 |
+| SC | checksum 1 KiB | 93.8 | 0.999 | 1.000 | 24 | +708.6% | 0/24 |
+
+Over baseline: 7 (arm, case) pairs — all in `S`/`C`/`SC`'s own `parse`/`checksum` rows, none in
+`A`. The dumb controls (`SendingTime from the cache…`, run wherever the `serialize` suite ran)
+moved **+0.0%** in every arm that ran it (`C`, `SC`) — no layout-noise signal beside the
+verdict. `decimal` ran only under `A` (ADR-0212 decision 1's stage-1 table does not give it to
+`S`/`C`/`SC`), so it has no cross-arm diff; its two cases became new baselines (below).
+
+### Pre-boot instruction counts — `target/simd-evidence/prep/bench-instructions.log`, `perf stat instructions:u`, 3 interleaved pairs per comparison
+
+Not a timing — `scripts/bench-instructions.sh`'s `work-changed` / `same-work` /
+`unstable` verdict (ADR-0102 decisions 1–2), read before the boot so the density stage's
+instruction-count condition (ADR-0211 decision 2) would already have an answer if stage 1 had
+let a kernel through:
+
+| Comparison | Binary | `\|I_B − I_A\| / I_A` | Verdict |
+|---|---|---|---|
+| A → S | `parse` | 10.180% | work-changed |
+| A → C | `parse` | 6.512% | work-changed |
+| A → SC | `parse` | 14.837% | work-changed |
+| A → S | `checksum` | 0.000066% | same-work |
+| A → C | `checksum` | 290.749% | work-changed |
+| A → SC | `checksum` | 290.749% | work-changed |
+| A → S | `density` | 0.590% | work-changed |
+| A → C | `density` | 0.528% | work-changed |
+| A → SC | `density` | 1.100% | work-changed |
+
+`density`'s pre-boot pairs all read `work-changed`, so the instruction-count condition would not
+by itself have blocked stage 2 for any arm — the block was ADR-0211 decision 1's codec line,
+read at stage 1, before stage 2 was ever reached. The `checksum` pair for `S` reads
+`same-work` (0.000066%), which is consistent with `checksum.rs` being byte-identical between
+`A` and `S` — `S` only touches `find_soh`.
+
+**Disassembly, the checksum's "before"** (`objdump-A-full.txt`, `objdump-C-full.txt`, `rustc
+1.98.0 -O`, the pinned toolchain, on the binaries built for this boot): `A`'s (and `S`'s,
+unchanged) `checksum` loop lowers to **184** `paddb` instructions over 16-byte `xmm` registers
+(SSE2, the default `x86-64` target) with a `psadbw` reduction; `C`'s (the SWAR replacement)
+lowers to **0**. This is ADR-0211 fact 1, read back from this boot's own binaries rather than
+the scratch compile ADR-0211 cited.
+
+### The verdict table — filled, per the plan's template (ADR-0211, ADR-0212 stage column)
+
+| Condition | Stage | Read from | Reached when | Result |
+|---|---|---|---|---|
+| SOH scan through the codec line | 1 | `stage1-summary.txt`, `S` vs `A` | `parse NewOrderSingle (validated)` **and** `parse Heartbeat (validated)` both ≤ −15% | **missed** — +4.8% and +0.3%, both the wrong sign |
+| Checksum through the codec line | 1 | `stage1-summary.txt`, `C` vs `A` | `checksum NewOrderSingle` ≤ −15% | **missed** — +222.2%, the wrong sign by a wide margin |
+| Share clause (printed, not expected to pass) | 1 | no arm kept its codec line, so no arm's parse median is "the kept branch's" — computed from `S`'s own parse Heartbeat (64.8 ns) against the round trips in ADR-0211 fact 3 for illustration only | ≥ 2% of the fastest surviving round trip | **not read as a verdict input** (nothing survived to have it read for real); illustratively 0.23–0.43% of the loopback admin round trip (15 149–16 021 ns) and wire round trip (27 778–28 402 ns) — the same order ADR-0211 fact 3 predicted |
+| Density — instruction-count condition | pre-boot | `bench-instructions.sh` on the `density` binaries, `A` vs `S`/`C`/`SC` | `work-changed` | read `work-changed` for all three (table above) — would not itself have blocked stage 2 |
+| Density — futility look | 2a | — | B > −3.0% on six rounds kills | **not run** — no kernel reached stage 2 |
+| Density — verdict | 2b | — | `engine turn, 64 busy sessions` ≤ −3% **and** `work-changed` | **not run (no kernel passed its codec line in stage 1)** |
+| Rest of ADR-0100 | before boot | steps 2–3 gates | alloc 0; 59/59; FIXT as `CONFORMANCE.md` §9; comparison tests, fuzz, Miri green | held, at the commits that built `S` and `C` (steps 2–3, before this boot) |
+
+Neither kernel cleared its own codec line, so ADR-0211 decision 3 applies directly: both are
+removed, and no sub-arm search (`SC` alone, say) was run — the ADR forbids it. Density is
+**not run (no kernel passed)**.
+
+### `bench.sh --strict`, before and after
+
+Before (`strict-before.txt`, tree `A`, on the §9 line): `pass 17 fail 0 unknown 0`; 5 cases with
+no baseline for this CPU (the three `checksum` and two `decimal` cases just added), 0 over band,
+1 case (`library, parse only`, 144.6 ns/op) already reading under band `[145.1, 175.6]`; exit 1
+(no baseline is a finding, not a stop, per ADR-0095 decision 4 and ADR-0212 stage 0).
+
+The first "after" attempt (`strict-after-1-busy.txt`) failed its own machine check —
+`FAIL machine is quiet 8% CPU busy over 1s — claude 6% of a core claude-desktop 3% of a core
+claude-desktop 2% of a core`, `pass 16 fail 1 unknown 0` — and was discarded and re-run; the
+figures below are the re-run that read `pass 17 fail 0 unknown 0`.
+
+After (`strict-after.txt`, tree `A` still, baselines recorded): `pass 17 fail 0 unknown 0`;
+all 24 bench binaries measuring, 0 invariant failures, 0 over band, 0 cases without baseline;
+1 case still under band — `library, parse only`, 144.4 ns/op below `[145.1, 175.6]`. Exit 1
+(a case under its own baseline is itself the finding `bench.sh --strict` is built to raise).
+
+**The `library, parse only` UNDER case, read per ADR-0102 decision 2.** `instr-cost.txt`
+interleaves the recorded baseline binary (`cost-a75bce33bf86a35f`, boot F's binary from
+2026-09-23, the build that recorded the `159.6` baseline still active) against this boot's `A`
+binary (`cost-1178cbbe82cd04de`): `verdict: unstable`
+(spread 0.057651% on the baseline binary against 0.000003% on today's — the *old* binary
+carries two modes, so its own three-pair interleave does not converge). `ipc-cost.txt`: IPC
+2.75/2.73 (old) against 2.79/2.78 (new) on the same core. `35f206a` (between the two binaries)
+changed `as_u32`, which this case calls. **Cause unnamed** — ADR-0102 decision 2's rule (no
+named cause, no re-record) is read the same way: nothing here is re-recorded, and the case stays
+open (STATUS.md item 119). `cost-n20.txt`
+(20 further runs, `FIXBOLT_BENCH_COUNT_ONLY=1`, not compared) shows `library, parse only`
+sitting at 142.3–148.1 ns/op across the 20 — under the 145.1 floor in most of them, consistent
+with a real move rather than one noisy run.
+
+### What is not proven
+
+- **Whether an AVX2 checksum (`-C target-cpu=x86-64-v3`) would have passed its codec line.**
+  Not measured on this boot, by ADR-0211 decision 4: the rotation builds every arm with one set
+  of `RUSTFLAGS`, and the build-flag question is explicitly out of scope here.
+- **`library, parse only`'s UNDER-baseline cause.** Two binaries disagree on `as_u32`'s cost and
+  the interleave that would separate "changed work" from "changed layout" reads `unstable`. The
+  case is not re-recorded and stays open.
+- **Whether a wider `S`/`C` SWAR variant (16-byte lanes, a different reduction) would clear
+  either line.** Not built or measured; this boot judged the kernels the plan specified.

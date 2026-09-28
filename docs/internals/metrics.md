@@ -3,7 +3,8 @@
 Layer L4 in [DESIGN.md §3](../DESIGN.md#3-crates), the package **`fixbolt-metrics`**: a
 Prometheus exporter that holds an `observe::Observer` for each engine it watches and nothing
 else. Why it is shaped this way — one sleeping thread, a ceiling on how often it asks, nothing
-allocated per scrape, events only on request, `publish = false` until its kill line — is
+allocated per scrape, events only on request, released only after its kill line (passed
+2026-09-27) — is
 [ADR-0170](../decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md);
 why a series name is public API is
 [ADR-0171](../decisions/ADR-0171-a-series-name-is-public-api-promtool-is-the-format-oracle-and-the-dashboard-names-no-data-source.md).

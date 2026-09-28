@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ADR-0207 decisions 1, 3 and 4; plan docs/plans/2026-09-26-docs-for-embedders.md
-# row 28: a user of `examples/custom-dictionary` builds it from the SIX
-# `.crate` files, not from this tree. `scripts/check-packaged-build.sh`'s
+# row 28: a user of `examples/custom-dictionary` builds it from the packaged
+# `.crate` files, not from this tree. PUBLISHED below lists the six crates
+# of v0.1.0's family; `fixbolt-metrics` and `fixbolt-store-sqlite`, in the
+# release family since 2026-09-27, are left out because nothing the example
+# builds reaches them (`cargo tree -p fixbolt-example-custom-dictionary`).
+# `scripts/check-packaged-build.sh`'s
 # `fixbolt-dict-codegen*` cases (its own comment there) only prove `fixbolt-dict`
 # with `codegen` compiles as a dependency of a scratch crate — they never run a
 # caller's `build.rs` against it. Three things that check cannot see, and this
@@ -157,7 +161,7 @@ if [[ "${#stale[@]}" -gt 0 ]]; then
 fi
 
 # One [patch.crates-io] block, reused from check-packaged-build.sh's own
-# reasoning: it redirects all six names, whether or not this crate's own
+# reasoning: it redirects every PUBLISHED name, whether or not this crate's own
 # dependency graph reaches all of them.
 PATCH_BLOCK="[patch.crates-io]
 $(for name in "${PUBLISHED[@]}"; do

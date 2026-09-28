@@ -2,8 +2,12 @@
 
 - **Status**: **Accepted — 2026-09-24, by the manager under the owner's delegation of
   2026-09-18.** Proposed 2026-09-24, revised in place the same day (see *Revision 1*), the
-  revision folded into the accepted text. Decision 3 (joining the tagged release family) is
-  not yet applied — that is row 4 of the plan below, in a later pull request.
+  revision folded into the accepted text. **Decision 3 applied 2026-09-27**: the kill line passed
+  (ADR-0180 *Result*), `publish = false` is gone from `crates/store-sqlite/Cargo.toml`, and the
+  crate is in `PUBLISHED` of `check-release-versions.sh`, `check-packaged-build.sh` (a default and
+  a `--no-default-features` case on 1.98.0, and a `sqlite` case on 1.89.0) and
+  `check-package-contents.sh`. In the same commit `fixbolt-metrics` joined too (ADR-0170 decision
+  10), so the family counts **eight**, not the seven written below.
   Written by the architect (Opus) for row 3 of
   [docs/plans/2026-09-23-phase-4-scope.md](../plans/2026-09-23-phase-4-scope.md), planned in
   [docs/plans/2026-09-24-p4-sqlite-store.md](../plans/2026-09-24-p4-sqlite-store.md). On the day

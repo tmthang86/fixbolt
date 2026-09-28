@@ -1,9 +1,11 @@
 //! FIX checksum: every byte before `10=`, summed mod 256, rendered as three
 //! digits with leading zeros.
 //!
-//! Plain byte loop. `reference/measured-costs.md` puts a whole `NewOrderSingle`
-//! parse at 139 ns without any of this vectorised, which is already inside the
-//! published gate — so SIMD waits until a measurement asks for it.
+//! Plain byte loop, and it stays one (ADR-0211 records that the compiler
+//! already vectorises it). ADR-0211's hand-written SWAR (eight lanes of seven-bit sums) was measured
+//! against this loop on the `DESIGN.md` §9 machine, `benches/checksum.rs`, and
+//! lost by 3.2× on `checksum NewOrderSingle` (4.5 → 14.5 ns/op, n = 24), so it
+//! was reverted. A faster checksum is judged on that bench case, against this loop.
 
 /// Sum of `bytes`, mod 256.
 #[inline]

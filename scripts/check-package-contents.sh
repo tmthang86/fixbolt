@@ -3,24 +3,24 @@
 # the source tree and never `git ls-files`. `cargo package --list -p <crate>`
 # is what actually asks cargo to resolve that allowlist — it packages nothing
 # to disk, so this is cheap enough to run on its own — and this script reads
-# that list for each of the six published crates (plan
+# that list for each published crate (six at ADR-0160, eight since 2026-09-27; plan
 # 2026-09-23-p3-packaging-and-first-release, row 6b) and asserts:
 #
 #   1. `fixbolt-dict` ships `NOTICE` and its three `spec/*.xml` files
 #      (ADR-0104): without them the crate cannot build at all, on crates.io or
 #      anywhere else, because `build.rs` reads nothing but `spec/`.
-#   2. Every one of the six ships `README.md`, `LICENSE-MIT` and
+#   2. Every published crate ships `README.md`, `LICENSE-MIT` and
 #      `LICENSE-APACHE` — files crates.io and docs.rs render, and
 #      `check-release-versions.sh` already holds byte-identical to the root
 #      copies; this script only asks that they REACH the package.
-#   3. None of the six ships a `tests/`, `benches/` or `vendor` path, or a
+#   3. No published crate ships a `tests/`, `benches/` or `vendor` path, or a
 #      `.def` fixture. Their dev-dependencies are stripped by cargo on
 #      publish (ADR-0160 decision 1 / decision 4), and half of the test
 #      suites read `vendor/` besides, so a shipped test could not even build
 #      from the `.crate` — carrying one anyway is dead weight a stranger pays
 #      to download, and the `.def` corpus is QuickFIX's own test data, never
 #      committed here in the first place (CLAUDE.md §2 non-negotiable 9).
-#   4. Exactly six crates are published — the same count, and the same names.
+#   4. Exactly the crates in PUBLISHED are published — the same count, and the same names.
 #      `check-release-versions.sh` asserts this too, against the manifests
 #      directly; this script asks the same question its own way, by reading
 #      every OTHER workspace member's `publish` key, so a seventh crate
@@ -34,7 +34,7 @@
 # this script does not invoke; crates.io's own server-side checks (the name,
 # the licence expression) — `cargo package --list` never reaches the server;
 # a file added to `include` after this script was last taught to look for it.
-# The list of six crate names, and the two per-crate checklists, are written
+# The list of crate names, and the two per-crate checklists, are written
 # out on purpose rather than discovered from the manifests — the same
 # reasoning `check-release-versions.sh` gives: a crate quietly switched to
 # publish = false (or fixbolt-dict quietly losing its NOTICE requirement)
@@ -57,12 +57,14 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 2
 fi
 
-# The list of six is written here on purpose — see the header above and
+# The list is written here on purpose — see the header above and
 # scripts/check-release-versions.sh, which gives the same reasoning for the
 # same list.
-PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt)
+# Eight since 2026-09-27: `fixbolt-metrics` (ADR-0170 decision 10) and
+# `fixbolt-store-sqlite` (ADR-0182 decision 3) joined after their kill lines.
+PUBLISHED=(fixbolt-codec fixbolt-dict fixbolt-session fixbolt-engine fixbolt-sbe fixbolt fixbolt-metrics fixbolt-store-sqlite)
 
-# Required in every one of the six.
+# Required in every published crate.
 COMMON_REQUIRED=(README.md LICENSE-MIT LICENSE-APACHE)
 
 # Required in fixbolt-dict alone (ADR-0104).
@@ -148,7 +150,7 @@ fi
 # --- no seventh crate: every OTHER workspace member must be publish = false -
 # Independent of check-release-versions.sh, and reading the manifests
 # directly rather than trusting `cargo package --list` above to have noticed
-# — that loop only ever iterates the six names already in PUBLISHED, so it
+# — that loop only ever iterates the names already in PUBLISHED, so it
 # cannot see a member that was never on that list at all.
 extra_published="$(python3 - "${ROOT}" <<'PY'
 import pathlib
@@ -163,6 +165,8 @@ published = {
     "fixbolt-engine",
     "fixbolt-sbe",
     "fixbolt",
+    "fixbolt-metrics",
+    "fixbolt-store-sqlite",
 }
 
 with open(root / "Cargo.toml", "rb") as f:
@@ -185,7 +189,7 @@ PY
 )"
 if [[ -n "${extra_published}" ]]; then
   while IFS= read -r line; do
-    fails+=("FAIL: a seventh publishable crate — ${line}")
+    fails+=("FAIL: a publishable crate outside PUBLISHED — ${line}")
   done <<<"${extra_published}"
 fi
 

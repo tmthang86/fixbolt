@@ -353,7 +353,7 @@ the session then refuses the venue's own tags as `373=0`
 Name the type once, as an alias, and use the alias in both places. [GUIDE.md §3a](../GUIDE.md)
 says why the types do not tie them.
 
-The sharded, TLS and `io_uring` doors are FIX 4.4 only. A deployment that needs one of them over a
+The sharded and TLS doors are FIX 4.4 only. A deployment that needs one of them over a
 dialect drives `fixbolt_engine::Engine` itself, whose encoding is a type parameter
 ([GUIDE.md §3a](../GUIDE.md)).
 

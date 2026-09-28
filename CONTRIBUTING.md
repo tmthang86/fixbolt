@@ -49,7 +49,7 @@ the control is you, before `git add` (CLAUDE.md, preamble).
 - **Documentation**: `python3` for the scripts under `scripts/`, and mdBook at the version the
   `book` job in `.github/workflows/ci.yml` pins, to build the site from `book.toml`.
 - **Linux** for anything that measures, and for the mode checks: `hft`, `affinity`, `shard`,
-  kTLS and `io-uring` code is Linux-only, and a `cargo check` on macOS does not compile it.
+  kTLS code is Linux-only, and a `cargo check` on macOS does not compile it.
 
 ## The gates
 

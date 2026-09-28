@@ -8,9 +8,13 @@ release* below is what "0.1.0 exists" means today, and it is a **manager** step 
 if ever* is kept, unchanged in substance, for the day a new ADR supersedes decision 1; nobody
 runs it under the current decision.
 
-Six crates release in lockstep, at one version, always all six together
+The published crates release in lockstep, at one version, always all together
 ([ADR-0160](docs/decisions/ADR-0160-six-crates-release-in-lockstep-and-the-packaged-sources-are-the-stranger-before-crates-io-is.md)):
-`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`, `fixbolt-sbe`, `fixbolt`.
+`fixbolt-codec`, `fixbolt-dict`, `fixbolt-session`, `fixbolt-engine`, `fixbolt-sbe`, `fixbolt`
+— the six of `v0.1.0` — and, from the next tag, `fixbolt-metrics` and `fixbolt-store-sqlite`.
+Those two joined on 2026-09-27, when their phase-4 kill lines passed (ADR-0170 decision 10,
+ADR-0182 decision 3). The crates.io sections below were written for `v0.1.0`'s six. Read "six"
+there as every crate in `scripts/check-release-versions.sh`'s `PUBLISHED`.
 `fixbolt-conformance`, `fixbolt-sbe-gen` and `tools/*` stay `publish = false` (ADR-0160
 decision 2) — never run any of the steps below against them.
 
@@ -25,7 +29,7 @@ Do not start unless all of these hold, on the commit about to be tagged:
   says the gates pass, only CI says they pass for the commit).
 - The `package` job is green on that commit: `scripts/check-release-versions.sh` (lockstep
   versions, exact-pinned internal dependencies, identical licence files — ADR-0160 decisions 1
-  and 4), `cargo publish --workspace --dry-run`, six `Packaging` / six `Verifying`,
+  and 4), `cargo publish --workspace --dry-run`, one `Packaging` / one `Verifying` per published crate (eight),
   `scripts/check-package-contents.sh`, `scripts/check-packaged-build.sh` on both the pinned
   toolchain and the declared MSRV. `scripts/stranger-check.sh --from packaged` is green.
 - `CHANGELOG.md`'s `## [0.1.0]` section reads true, and `## [Unreleased]` above it is empty.

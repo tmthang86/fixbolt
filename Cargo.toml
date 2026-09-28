@@ -37,7 +37,9 @@ exclude = ["fuzz", "spikes/ktls", "spikes/fixp-probe"]
 # See CLAUDE.md §1 — Rule Zero.
 
 [workspace.package]
-# ADR-0160 decision 1: the six published crates release in lockstep at this one
+# ADR-0160 decision 1: the published crates — six, and eight since
+# `fixbolt-metrics` (ADR-0170 decision 10) and `fixbolt-store-sqlite` (ADR-0182
+# decision 3) passed their kill lines — release in lockstep at this one
 # version and inherit it; every internal normal dependency pins it exactly
 # (`version = "=<this>"`). `scripts/check-release-versions.sh` holds both. The
 # unpublished members (`publish = false`) keep their own `0.0.0`.

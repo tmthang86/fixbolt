@@ -10,7 +10,8 @@ It retires, releases and idles through the engine's own public handles — `Writ
 ([ADR-0181](../decisions/ADR-0181-a-journal-outside-the-engine-joins-the-engines-writer-bookkeeping-through-three-public-handles.md)).
 Everything sits behind the default feature `sqlite`; without it the crate is empty and compiles no
 C ([ADR-0182](../decisions/ADR-0182-the-sqlite-store-is-born-release-shaped-behind-a-default-feature-and-joins-the-tagged-release-family-only-when-its-kill-line-passes.md)).
-`publish = false` until phase 4 row 4's kill line passes (ADR-0182 decision 3).
+The crate has been in the tagged release family since 2026-09-27, when phase 4 row 4's kill line
+passed (ADR-0182 decision 3, ADR-0180 *Result*).
 
 ## Files, and what each keeps
 
