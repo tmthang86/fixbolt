@@ -18,18 +18,23 @@ work on the loop.
 ## What it actually was
 
 `rustc 1.98.0 -O` (the pinned toolchain) already auto-vectorises the `wrapping_add` fold. On the
-default `x86-64` target it becomes **SSE2**: 16-byte `xmm` registers, `paddb` for the add,
+default `x86-64` target it becomes **SSE2**: 16-byte `xmm` registers, `paddb` for the add — each
+`paddb` sums 16 bytes, and two registers run per iteration, 32 bytes per iteration — with
 `psadbw` for the horizontal reduction. `objdump` on this boot's own `A` binary counts **184**
-`paddb` instructions in the checksum's disassembly. With `-C target-cpu=x86-64-v3` (not this
-project's default, and not built here) the same source becomes AVX2 over 32-byte `ymm`
-registers. An 8-byte SWAR sum therefore does not compete with a byte loop — it competes with a
-32-byte-per-iteration vector loop the compiler already wrote for free. The SWAR kernel's own
-`objdump` shows **0** `paddb`: the compiler cannot auto-vectorise a hand-rolled `u64` fold the
-same way, because the reduction pattern it recognises is gone.
+`paddb` instructions, every one of them inside a single function,
+`checksum::harness::suite::<checksum::main::{closure#0}>`: the checksum call was inlined into
+the bench suite's own closure. **This boot did not build the AVX2 form.** With
+`-C target-cpu=x86-64-v3` (not this project's default, and not built here) the same source
+becomes `vpaddb` over 32-byte `ymm` registers, four per iteration, 128 bytes per iteration — a
+form no binary in this boot contains. An 8-byte SWAR sum therefore does not compete with a byte
+loop, and it is not being measured against that 32-byte-register form either: it competes with
+the 16-byte-register SSE2 loop actually built and measured here. The SWAR kernel's own `objdump`
+shows **0** `paddb`: the compiler cannot auto-vectorise a hand-rolled `u64` fold the same way,
+because the reduction pattern it recognises is gone.
 
 `find_soh` (`crates/codec/src/parse.rs`, `iter().position(|&b| b == SOH)`) is the other case:
-LLVM's loop vectoriser does not fire on it in `rustc` 1.98 (it has an early-exit vectoriser, but
-it is not enabled by default and does not trigger here), so that byte loop really is scalar. The
+LLVM has an early-exit loop vectoriser **enabled by default**, but it does not fire on this loop
+in `rustc` 1.98 (ADR-0211 *Context* fact 2), so that byte loop really is scalar. The
 two kernels needed opposite predictions, and were judged separately for exactly this reason
 (ADR-0211 decision 1).
 
@@ -52,15 +57,23 @@ miss as the checksum's. Neither kernel cleared its line; both were reverted in `
 ## What now guards it
 
 `benches/baselines.tsv` carries the three `checksum` cases (`checksum NewOrderSingle` 4.5 ns,
-`checksum Heartbeat` 2.9 ns, `checksum 1 KiB` 11.6 ns, all margin `1.10`, recorded `27f4cdb`
-from this boot's `A` rotation). `crates/codec/benches/checksum.rs` (plan row 8) measures them
-on every `scripts/bench.sh --strict` run. A checksum implementation slower than the compiler's
-own vectorisation of the scalar fold — SWAR or otherwise — trips `checksum NewOrderSingle` over
-its `×1.10` band (`> 5.0 ns/op`) and fails `--strict`. The regression this page is about is
-therefore not hypothetical: it is exactly what tripped when `C`'s tree ran `--strict` on this
-boot (`stage1-summary.txt`, `checksum NewOrderSingle` `+222.2%`, `0/24` over only because the
-*baseline itself* had not been recorded from `A` yet at that point in the boot — once it was,
-the same number is what the band exists to catch).
+`checksum Heartbeat` 2.9 ns, `checksum 1 KiB` 11.6 ns, all margin `1.10`, keyed to machine
+`AMD Ryzen 7 3700X 8-Core Processor` and recorded `27f4cdb` from this boot's `A` rotation).
+`crates/codec/benches/checksum.rs` (plan row 8) measures them on every `bench.sh --strict` run
+on that CPU. A checksum implementation slower than the compiler's own vectorisation of the
+scalar fold — SWAR or otherwise — trips `checksum NewOrderSingle` over its `×1.10` band
+(`> 5.0 ns/op`) and fails `--strict`.
+
+**`C`'s tree itself was never run under `--strict`** — only `A` was, at stage 0 and stage 3
+(ADR-0212 decision 1); `C` was measured by `ab-rotation.sh`'s stage-1 rotation, whose
+median-against-`A` comparison is what ADR-0211's codec line reads. `checksum NewOrderSingle`
+`+222.2%` in that rotation (`stage1-summary.txt`) is the same order of number `--strict`'s new
+band would flag — the mechanism that would catch a regression like this is narrower than "any
+CI run", though: `--strict`, and the baseline it reads against, exist only on the §9 desk, keyed
+to that one CPU. CI's `bench` job runs `scripts/bench.sh` **without** `--strict`
+(`.github/workflows/ci.yml` ~1649), so a checksum this much slower would not fail CI on its own
+— it is caught only by a `--strict` run, by hand or scripted, on a machine named
+`AMD Ryzen 7 3700X 8-Core Processor`.
 
 ## Related
 

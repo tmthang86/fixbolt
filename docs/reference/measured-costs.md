@@ -5381,20 +5381,26 @@ no baseline for this CPU (the three `checksum` and two `decimal` cases just adde
 1 case (`library, parse only`, 144.6 ns/op) already reading under band `[145.1, 175.6]`; exit 1
 (no baseline is a finding, not a stop, per ADR-0095 decision 4 and ADR-0212 stage 0).
 
+The first "after" attempt (`strict-after-1-busy.txt`) failed its own machine check —
+`FAIL machine is quiet 8% CPU busy over 1s — claude 6% of a core claude-desktop 3% of a core
+claude-desktop 2% of a core`, `pass 16 fail 1 unknown 0` — and was discarded and re-run; the
+figures below are the re-run that read `pass 17 fail 0 unknown 0`.
+
 After (`strict-after.txt`, tree `A` still, baselines recorded): `pass 17 fail 0 unknown 0`;
 all 24 bench binaries measuring, 0 invariant failures, 0 over band, 0 cases without baseline;
 1 case still under band — `library, parse only`, 144.4 ns/op below `[145.1, 175.6]`. Exit 1
 (a case under its own baseline is itself the finding `bench.sh --strict` is built to raise).
 
 **The `library, parse only` UNDER case, read per ADR-0102 decision 2.** `instr-cost.txt`
-interleaves the recorded baseline binary (`cost-a75bce33bf86a35f`, from `27f4cdb`'s prior
-baseline) against this boot's `A` binary (`cost-1178cbbe82cd04de`): `verdict: unstable`
+interleaves the recorded baseline binary (`cost-a75bce33bf86a35f`, boot F's binary from
+2026-09-23, the build that recorded the `159.6` baseline still active) against this boot's `A`
+binary (`cost-1178cbbe82cd04de`): `verdict: unstable`
 (spread 0.057651% on the baseline binary against 0.000003% on today's — the *old* binary
 carries two modes, so its own three-pair interleave does not converge). `ipc-cost.txt`: IPC
 2.75/2.73 (old) against 2.79/2.78 (new) on the same core. `35f206a` (between the two binaries)
 changed `as_u32`, which this case calls. **Cause unnamed** — ADR-0102 decision 2's rule (no
-named cause, no re-record) is read the same way it was in `27f4cdb`: nothing here is
-re-recorded, and the case stays open (the same item `27f4cdb`'s body names). `cost-n20.txt`
+named cause, no re-record) is read the same way: nothing here is re-recorded, and the case stays
+open (STATUS.md item 119). `cost-n20.txt`
 (20 further runs, `FIXBOLT_BENCH_COUNT_ONLY=1`, not compared) shows `library, parse only`
 sitting at 142.3–148.1 ns/op across the 20 — under the 145.1 floor in most of them, consistent
 with a real move rather than one noisy run.
