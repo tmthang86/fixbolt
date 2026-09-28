@@ -100,8 +100,8 @@ Plan [docs-for-embedders](docs/plans/2026-09-26-docs-for-embedders.md), seven pu
 [#119](https://github.com/tmthang86/fixbolt/pull/119) (the generator becomes `codegen`),
 [#122](https://github.com/tmthang86/fixbolt/pull/122) (FIX 4.4 overlays),
 [#123](https://github.com/tmthang86/fixbolt/pull/123) (a custom dictionary reaches the application).
-Each merged on a green CI run named in its merge commit; the closing run for #123 is named in the
-handoff commit that follows this one.
+Each merged on a green CI run named in its merge commit. Closing commit `bcbaa22`, CI run
+[`36373978028`](https://github.com/tmthang86/fixbolt/actions/runs/36373978028), 21 jobs of 21; merge `4e8b6f3`.
 
 ### What closed
 
