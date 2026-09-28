@@ -577,3 +577,4 @@ Usage is [GUIDE.md §6d](GUIDE.md).
 `--journal file-async` opens a `FileStore`; see `docs/plans/2026-09-24-p4-sqlite-store.md` row 6
 for the alloc-counting caveat it carries (the engine and client threads are counted, SQLite's
 own C heap is not).
+

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Parse and serialise FIX 4.4 in place at the I/O buffer.
 //!
 //! `no_std` on purpose. That alone proves nothing about allocation — the crate
