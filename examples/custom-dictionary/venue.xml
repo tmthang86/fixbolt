@@ -19,10 +19,11 @@
                   order on the wire is this declaration's, never a handler's.
     <fields>      OrdType(40) gains the value 'Z'; 5001-5005 are added, and
                   VenueFeeType has enumerated values of its own.
-                  MsgType(35) gains 'U1' and 'U2': FIX 4.4 lists every message
-                  type as a value of field 35, and a message added under
-                  <messages> is still refused 373=5 on tag 35 until its
-                  msgtype is added here too.
+                  MsgType(35): FIX 4.4 lists every message type as a value of
+                  field 35. The generator adds each new message's msgtype
+                  there itself (ADR-0207 decision 3), so U1 is not listed
+                  below; U2 is, the QuickFIX habit, which is accepted and
+                  changes nothing. Both are delivered.
 -->
 <fix type='FIX' major='4' minor='4' servicepack='0'>
  <header>
@@ -55,7 +56,6 @@
  </components>
  <fields>
   <field number='35' name='MsgType' type='STRING'>
-   <value enum='U1' description='VENUE_FEE_REPORT' />
    <value enum='U2' description='VENUE_FEE_ACK' />
   </field>
   <field number='40' name='OrdType' type='CHAR'>

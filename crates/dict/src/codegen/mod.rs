@@ -124,7 +124,10 @@ pub enum Source<'a> {
     /// - a message FIX 4.4 defines is repeated with its own `msgtype` (and
     ///   `msgcat`, if given) and may gain fields, groups and components,
     ///   `required='Y'` included; a new message needs a `msgtype` FIX 4.4 does
-    ///   not use;
+    ///   not use, and **becomes a value of `MsgType(35)` by itself** — FIX 4.4
+    ///   lists every type there and the session checks it, so without this
+    ///   every such message would be `373=5` on tag 35. Listing it on field 35
+    ///   as well, as QuickFIX requires, is accepted and changes nothing;
     /// - a component FIX 4.4 defines may gain children; the header may gain
     ///   fields and groups;
     /// - no level of a message may end up carrying one field twice.
@@ -132,6 +135,11 @@ pub enum Source<'a> {
     /// A conflict fails naming both sides.
     Fix44Overlay(&'a str),
     /// A complete QuickFIX FIX 4.4 dictionary, generated as-is.
+    ///
+    /// As written means as written: a `<message>` whose `msgtype` field
+    /// `MsgType(35)` does not list among its values is refused, naming the
+    /// message and the type, since every such message would be `373=5` on
+    /// tag 35. A field 35 listing no values at all takes any type, and passes.
     Fix44Whole(&'a str),
 }
 
@@ -377,12 +385,20 @@ fn refuse_type_name(name: &str) -> Result<(), GenError> {
 /// sentence names what conflicts, both sides of it where there are two.
 pub fn merged_model(source: Source<'_>) -> Result<Model, GenError> {
     match source {
-        Source::Fix44Whole(text) => fix44_model(&parse_xml(text)?),
+        Source::Fix44Whole(text) => {
+            let doc = parse_xml(text)?;
+            let model = fix44_model(&doc)?;
+            merge::refuse_unlisted_msg_types(&doc)?;
+            Ok(model)
+        }
         Source::Fix44Overlay(text) => {
             let merged = merge::overlay_fix44(SHIPPED_FIX44, text)?;
             let doc = parse_xml(&merged)?;
             let model = fix44_model(&doc)?;
             merge::refuse_repeats(&doc)?;
+            // Last, after every agreement check: the merge added each new
+            // message's type to field 35, so for an overlay this never trips.
+            merge::refuse_unlisted_msg_types(&doc)?;
             Ok(model)
         }
     }

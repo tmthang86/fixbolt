@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use custom_dictionary::Desk;
 use custom_dictionary::venue::Venue;
-use fixbolt::dict::TagValue;
+use fixbolt::dict::{Fix44, TagValue};
 use fixbolt::{App, Config, DictionaryChecks, Handles, Limits, NoLog, NoRecovery, Store, Table};
 
 /// An acceptor over `Venue` on a free port, serving `TW44` as `ISLD` with
@@ -62,10 +62,13 @@ struct Client {
 
 impl Client {
     fn logged_on(checks: DictionaryChecks) -> Self {
-        let addr = serve(checks);
+        Self::logged_on_at(&serve(checks))
+    }
+
+    fn logged_on_at(addr: &str) -> Self {
         let deadline = Instant::now() + Duration::from_secs(5);
         let sock = loop {
-            if let Ok(s) = TcpStream::connect(&addr) {
+            if let Ok(s) = TcpStream::connect(addr) {
                 break s;
             }
             assert!(
@@ -260,5 +263,38 @@ fn an_undefined_user_tag_passes_when_user_defined_fields_are_skipped() {
     assert!(
         got.contains("|35=8|"),
         "tag 5999, undefined but user-defined, was refused while skipped: {got}"
+    );
+}
+
+/// **The `App`'s dictionary and the door's are not tied by the types**
+/// (ADR-0207 decision 5, `GUIDE.md` §3a). An `App` over `Venue` behind a door
+/// told `TagValue<Fix44, 256>` compiles — this test is that proof — and the
+/// session, validating by FIX 4.4, refuses the venue's own tag before the
+/// handler that knows it is asked.
+#[test]
+fn a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0() {
+    let l = TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = l.local_addr().expect("bound").to_string();
+    drop(l);
+    let a = addr.clone();
+    std::thread::spawn(move || {
+        let _ = fixbolt::serve_over::<256, 4096, 8192, 1024, TagValue<Fix44, 256>, _, Store, _, _>(
+            &a,
+            Table::new().serving(Config::acceptor(b"FIX.4.4", b"ISLD", b"TW44")),
+            // The mismatch: the handler reads and writes by `Venue`.
+            App::<Desk, 256, 64, 1024, Venue>::with_sizes(Desk::default()),
+            4,
+            Limits::new(8, 30_000).expect("both above zero"),
+            NoRecovery,
+            NoLog,
+            Handles::new(),
+        );
+    });
+    let mut c = Client::logged_on_at(&addr);
+    c.send("D", &order(""));
+    let got = c.next();
+    assert!(
+        got.contains("|35=3|") && got.contains("|371=5001|") && got.contains("|373=0|"),
+        "behind a FIX 4.4 door, VenueClientID (5001) must be refused 373=0 by the session: {got}"
     );
 }

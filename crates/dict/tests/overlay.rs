@@ -766,3 +766,111 @@ fn a_tag_whose_tables_pass_64_mib_fails_naming_it() {
     ));
     assert_names(&msg, &["VenueHuge", "4294967295", "64"]);
 }
+
+// ---------------------------------------------------------------------------
+// MsgType(35) follows <messages> (ADR-0207 decision 3, revision 2026-09-28).
+// FIX 4.4 lists every message type as a value of field 35, and the session
+// checks field 35 like any enumerated field: a message whose type is not
+// listed there is `373=5` on tag 35 before anything else looks at it.
+// ---------------------------------------------------------------------------
+
+/// The shipped FIX 4.4 with field 35's `<value>` lines replaced by `values`
+/// (empty for none). Asserts the edit applied, so a changed spec file cannot
+/// turn these tests into questions about the unedited one.
+fn whole_with_msgtype_values(values: &str) -> String {
+    const OPEN: &str = "<field number='35' name='MsgType' type='STRING'>";
+    let Some((head, rest)) = SHIPPED_FIX44.split_once(OPEN) else {
+        panic!("no field 35 in FIX44.xml");
+    };
+    let Some((_, tail)) = rest.split_once("</field>") else {
+        panic!("field 35 does not close in FIX44.xml");
+    };
+    let whole = format!("{head}{OPEN}{values}</field>{tail}");
+    assert_ne!(whole, SHIPPED_FIX44, "the edit to field 35 did not apply");
+    whole
+}
+
+/// The fixture adds `VenueFeeReport(U1)` under `<messages>` and lists nothing
+/// on field 35: the merge adds `U1` there, and only `U1`.
+#[test]
+fn an_added_message_type_is_an_allowed_value_of_msgtype() {
+    let m = venue();
+    assert_eq!(
+        m.enum_allows(35, b"U1"),
+        Some(true),
+        "U1, a message the overlay adds, is not an allowed MsgType: every U1 would be 373=5 on tag 35"
+    );
+    assert_eq!(
+        m.enum_allows(35, b"U3"),
+        Some(false),
+        "a type no message has became a MsgType value"
+    );
+    assert_eq!(
+        m.enum_allows(35, b"D"),
+        Some(true),
+        "FIX 4.4's own D is no longer a MsgType value"
+    );
+}
+
+/// A whole file is read as written: a message its field 35 does not list is a
+/// dictionary that contradicts itself, refused naming both.
+#[test]
+fn a_whole_file_whose_message_type_is_not_listed_on_msgtype_fails_naming_it() {
+    const D_VALUE: &str = "<value enum='D' description='NEW_ORDER_SINGLE' />";
+    assert_eq!(
+        SHIPPED_FIX44.matches(D_VALUE).count(),
+        1,
+        "the value line moved"
+    );
+    let whole = SHIPPED_FIX44.replacen(D_VALUE, "", 1);
+    let msg = match codegen::merged_model(Source::Fix44Whole(&whole)) {
+        Ok(_) => panic!(
+            "a whole file whose field 35 lists every type but D generated; every \
+             NewOrderSingle it receives would be refused 373=5 on tag 35"
+        ),
+        Err(GenError::Dictionary(msg)) => msg,
+        Err(other) => panic!("expected GenError::Dictionary, got {other:?} — \"{other}\""),
+    };
+    assert_names(&msg, &["NewOrderSingle", "D", "MsgType", "35"]);
+    // `generate` refuses with the same sentence.
+    match codegen::generate(Source::Fix44Whole(&whole), "Venue", Paths::direct()) {
+        Ok(_) => panic!("generate accepted what merged_model refused"),
+        Err(e) => assert_eq!(e.to_string(), GenError::Dictionary(msg).to_string()),
+    }
+}
+
+/// The QuickFIX habit — the `<message>` and a `<value>` on field 35 — still
+/// works, and listing the type twice changes nothing. Guard: expected green
+/// before the rule, since the overlay's own value is merged like any other.
+#[test]
+fn an_added_message_type_also_listed_on_msgtype_is_accepted() {
+    let with_value = overlay(
+        "<messages><message name='VenueAck' msgtype='U7' msgcat='app'>\
+         <field name='ClOrdID' required='Y' /></message></messages>\
+         <fields><field number='35' name='MsgType' type='STRING'>\
+         <value enum='U7' description='VENUE_ACK' /></field></fields>",
+    );
+    let m = model(Source::Fix44Overlay(&with_value));
+    assert!(m.is_msg_type(b"U7"));
+    assert_eq!(m.enum_allows(35, b"U7"), Some(true));
+    assert_eq!(m.enum_allows(35, b"U8"), Some(false));
+    match codegen::generate(Source::Fix44Overlay(&with_value), "Venue", Paths::direct()) {
+        Ok(text) => assert!(text.contains("struct Venue"), "no type named Venue"),
+        Err(e) => panic!("generate returned Err({e:?}) — \"{e}\""),
+    }
+}
+
+/// A whole file whose field 35 lists no values is not enumerated there, and
+/// passes, as it does in QuickFIX. Guard: expected green before the rule.
+#[test]
+fn a_whole_file_whose_msgtype_lists_no_values_generates() {
+    let whole = whole_with_msgtype_values("");
+    let m = model(Source::Fix44Whole(&whole));
+    assert_eq!(m.enum_allows(35, b"D"), None, "field 35 is not enumerated");
+    assert_eq!(m.enum_allows(35, b"U1"), None, "field 35 is not enumerated");
+    assert!(m.is_msg_type(b"D"));
+    match codegen::generate(Source::Fix44Whole(&whole), "Venue", Paths::direct()) {
+        Ok(text) => assert!(text.contains("struct Venue"), "no type named Venue"),
+        Err(e) => panic!("generate returned Err({e:?}) — \"{e}\""),
+    }
+}
