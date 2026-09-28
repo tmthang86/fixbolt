@@ -207,6 +207,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fixbolt-example-custom-dictionary"
+version = "0.0.0"
+dependencies = [
+ "fixbolt",
+ "fixbolt-codec",
+ "fixbolt-dict",
+ "fixbolt-session",
+]
+
+[[package]]
 name = "fixbolt-interop"
 version = "0.0.0"
 dependencies = [

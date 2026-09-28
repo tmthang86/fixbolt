@@ -9,11 +9,19 @@ directly, not a gap in this crate. Behind the non-default `sbe` feature, `lib.rs
 re-exports `fixbolt_sbe` as `sbe` — a codec without a session (ADR-0078, ADR-0082 decision 4);
 no `serve_sbe` exists or will.
 
+`Handler`, `Incoming`, `Reply`, `Message` and `App` take the dictionary as a last type parameter
+`D`, defaulting to `Fix44`: `app.rs` parses by it and `reply.rs` orders and encodes by it; on
+`Incoming` it is a marker, and a group is read with `view().group::<D>`, naming it again
+([ADR-0207](../decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+decision 5). `D` is **not** tied to the dictionary of the encoding the engine is served over — the
+session validates by that one, this crate by `D`; `GUIDE.md` §3a carries the rule and
+`examples/custom-dictionary/tests/venue.rs` the proof.
+
 ## Files, and what each keeps
 
 | File | Keeps |
 |---|---|
-| `lib.rs` | No logic of its own — the curated `pub use` list from `fixbolt_codec`, `fixbolt_session`, `fixbolt_engine`, plus `mod app; mod reply;` |
+| `lib.rs` | No logic of its own — the curated `pub use` list from `fixbolt_codec`, `fixbolt_session`, `fixbolt_engine`, plus `mod app; mod reply;`. Includes `serve_over`, `serve_hft_over`, `connect_and_serve_over`, and `pub mod dict`: `Dictionary`, `Tables`, `FieldType`, `Fix44`, `TagValue`, and the hidden `codegen_format` a generated file checks its format against — the paths `codegen::Paths::facade()` emits |
 | `app.rs` | `Handler` — what an application implements — and `App`, the adapter that makes one look like `fixbolt_session::Application` |
 | `reply.rs` | `Reply`, `Answer`, `Message`, `ReplyError` — the answer a handler writes, and the seven header/frame fields it never writes itself |
 
@@ -31,4 +39,6 @@ no `serve_sbe` exists or will.
 - `examples/acceptor.rs` (+ `examples/acceptor.cfg`, `examples/shared/`) — the worked example
   `docs/TUTORIAL.md` builds around
 - `tests/sbe_example.rs` — the `sbe` re-export, behind the `sbe` feature
+- `tests/dictionary_param.rs` — `D` used for real: `a_reply_over_a_dialect_orders_its_custom_group_by_the_dialect`,
+  and `an_app_over_the_default_is_fix44`
 - `benches/alloc.rs`, `benches/cost.rs` — non-negotiable 1, and the adapter's own overhead

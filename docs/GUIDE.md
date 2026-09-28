@@ -617,17 +617,67 @@ Three things to know before you write `E` yourself:
   pinned by `E`'s view and scratch types, not by a parameter of its own. You still pick the number
   (`CLAUDE.md` §6: no hidden constant).
 - **`Session<E>` is generic over tag=value encodings and nothing else.** Any `TagValue<D, N>`
-  whose `D` implements `fixbolt_dict::Tables` is a session: FIX 4.4 today, FIXT 1.1 / FIX 5.0 SP2
-  today, and FIXT 1.1 / FIX 5.0 SP2 behind the off-by-default `fix50sp2` feature `[2026-09-19]`. An SBE encoding will implement `Encoding` and **will not be a
+  whose `D` implements `fixbolt_dict::Tables` is a session: FIX 4.4, FIXT 1.1 / FIX 5.0 SP2
+  behind the off-by-default `fix50sp2` feature `[2026-09-19]`, and a FIX 4.4 dialect your own
+  `build.rs` generates (below). An SBE encoding will implement `Encoding` and **will not be a
   session**: `Session<Sbe<S>>` is a compile error at the session's `where` clause, by design,
   because the FIX session layer is tag=value by specification. There is no SBE session to wait
   for; SBE will be a codec you carry over your own transport.
 - **The default sits on the types, not on the functions.** Rust puts no default on a function's
   type parameter, so `serve`, `serve_with`, `serve_hft`, … build their engine with the default
-  `E` and infer nothing — which is exactly why none of them changed. Running another tag=value
-  encoding today means naming the engine alias with `E` filled in (`TcpAcceptorEngine<A, W, J,
-  L, N, RX, TX, APP, TagValue<MyDict, N>>`) and driving `Engine` yourself, which means naming
+  `E` and infer nothing — which is exactly why none of them changed. `[2026-09-28]` Three doors
+  take `E` as a parameter instead: `serve_over` (`standard` acceptor), `serve_hft_over` (`hft`
+  acceptor) and `connect_and_serve_over` (initiator), each with recovery and a message log, each
+  re-exported by `fixbolt` ([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+  decision 5). The old doors call them with `TagValue<Fix44, N>`
+  (`crates/engine/tests/serve_over.rs::serve_over_with_fix44_answers_like_serve`). Every other
+  door — sharded, TLS — is still FIX 4.4 only; running another encoding through one
+  of those means naming the engine alias with `E` filled in (`TcpAcceptorEngine<A, W, J, L, N,
+  RX, TX, APP, TagValue<MyDict, N>>`) and driving `Engine` yourself, which means naming
   `fixbolt-engine` (§1a already asks that of a sharded deployment).
+
+### A dictionary of your own
+
+`[2026-09-28]` A venue's FIX 4.4 dialect — its own tags, enum values, repeating groups, header
+fields, message types and required fields — is a type your own `build.rs` generates with
+`fixbolt_dict::codegen`, from an overlay onto the shipped FIX 4.4 or from a whole file of your own
+([ADR-0207](decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)).
+The steps are [Use a venue dictionary](how-to/use-a-venue-dictionary.md); the working crate is
+[`examples/custom-dictionary`](../examples/custom-dictionary/). Five constraints come with it, and
+the compiler holds only the third:
+
+- **The `App`'s dictionary and the door's encoding must be one type, and nothing checks it.** The
+  dictionary appears twice: in the encoding `TagValue<Venue, N>` handed to a `_over` door, which
+  the **session** validates by, and as the last parameter of `App<H, N, P, S, Venue>`, which the
+  **handler** reads and writes by. `App<H, …, Venue>` behind `serve_over::<…, TagValue<Fix44, N>,
+  …>` — or behind `fixbolt::serve`, which is always FIX 4.4 — compiles. At run time the session
+  then refuses the venue's own tags as `373=0` before the handler that knows them is asked; the
+  other way round, a custom group is validated by one table and parsed and written by another.
+  `examples/custom-dictionary/tests/venue.rs::a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0`
+  is the proof: it compiles that mismatch and reads `371=5001|373=0` back over a socket. **Why the
+  types do not tie them** (ADR-0207 decision 5): the session's `Application` trait sees bytes and
+  names no dictionary, and `fixbolt::serve` and its siblings, released at `v0.1.0`, take any
+  `A: Application` — so `App<…, Venue>` through `serve` compiles whatever the `_over` doors do.
+  Closing that needs a breaking change to those signatures or a new item on the session's
+  `Application` trait. Write the dictionary's name once, as a type alias, and use the alias in both
+  places.
+- **A custom group is read by naming the dictionary a third time, and nothing checks that one
+  either.** `Incoming<'_, N, Venue>` carries `Venue` as a marker only: the message was parsed by
+  `App`'s `D`, but reading a repeating group is `msg.view().group::<Venue>(msg_type, counter)`, whose
+  dictionary is the call's own type argument. `group::<Fix44>` on an `Incoming<'_, N, Venue>`
+  compiles, and asks FIX 4.4's tables, which declare no venue group. Use the same alias there.
+  Writing needs no third name: `Reply<'_, P, S, Venue>` orders a reply's groups by its own `D`.
+- **The build-dependency and the dependency must be the same fixbolt version.** Your `build.rs`
+  runs one copy of `fixbolt-dict` (with `codegen`) and your binary links another (through
+  `fixbolt`). The generated file opens with a compile-time check of the generator's format
+  version, so a mismatch is a compile error (`E0080`) whose sentence says *give the
+  build-dependency and the dependency the same fixbolt version*, not a table misread at run time.
+- **A dialect change is a rebuild.** The dictionary is compiled in; no file is read at run time, and
+  QuickFIX's `DataDictionary` keys are refused by name in a configuration file
+  (`Problem::DictionaryIsBuildTime`, [CONFIGURATION.md §1](CONFIGURATION.md#1-configuration-file-keys)).
+- **Your generated tables carry the QuickFIX notice obligation.** An overlay's tables are derived
+  from the shipped `FIX44.xml`, so §10 applies to a binary built on them exactly as it does to
+  `Fix44`; a whole file brings, in addition, whatever licence your own copy is under.
 
 ---
 

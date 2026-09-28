@@ -1226,7 +1226,7 @@ jobs:
       # file's shellcheck step (lint-config job) names them, and that job is
       # out of scope for this plan step — checked here instead, once, rather
       # than left silently unchecked.
-      - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh scripts/stranger-check.sh scripts/check-semver-against-tag.sh
+      - run: shellcheck -S info scripts/check-package-contents.sh scripts/check-packaged-build.sh scripts/check-custom-dictionary-packaged.sh scripts/stranger-check.sh scripts/check-semver-against-tag.sh
       # ADR-0160 decisions 1 and 4, plan row 6a: before anything is packaged,
       # the manifests themselves must be lockstep — every internal normal
       # dependency pinned `=<version>`, every published crate inheriting the
@@ -1248,6 +1248,15 @@ jobs:
       # MSRV. Depends on the dry run immediately above having populated
       # target/package/ — it says so itself if that directory is missing.
       - run: scripts/check-packaged-build.sh
+      # ADR-0207 decision 1, plan row 28: check-packaged-build.sh's
+      # `fixbolt-dict-codegen*` cases above only prove `fixbolt-dict` with
+      # `codegen` compiles as a dependency — they never run a caller's
+      # `build.rs` against it. This runs examples/custom-dictionary's own
+      # build.rs + src/ from a scratch crate outside the workspace, depending
+      # on the packaged fixbolt (normal) and packaged fixbolt-dict+codegen
+      # (build-dependency), and asserts `cargo tree -e normal` carries no
+      # roxmltree. Depends on the same target/package/ the dry run above left.
+      - run: scripts/check-custom-dictionary-packaged.sh
       # ADR-0097 exit criterion 7, plan row 8a: the packaged sources, over a
       # real socket, against a client that shares no code with this
       # repository (scripts/stranger-logon.py) — the last, and closest to

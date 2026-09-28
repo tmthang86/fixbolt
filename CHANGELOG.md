@@ -43,9 +43,8 @@ against that tag rather than a published baseline.
     immediately in front of it, a field numbered 0, and per-tag bitsets over 64 MiB. An empty overlay writes
     `Fix44`'s tables byte for byte. `Source::Fix44Whole(&str)` reads a complete file as written.
     `Source` is `#[non_exhaustive]`.
-  - `Paths::facade()` (the default) makes the file name `::fixbolt::dict::…`, whose re-exports
-    arrive with the facade's dictionary parameter. `Paths::direct()` names `::fixbolt_dict` and
-    `::fixbolt_codec`.
+  - `Paths::facade()` (the default) makes the file name `::fixbolt::dict::…`, the facade's
+    re-exports below. `Paths::direct()` names `::fixbolt_dict` and `::fixbolt_codec`.
   - `codegen::merged_model(Source) -> Result<Model, GenError>` is the same merge without the
     writing. `Model` answers every question the generated type will (`enum_allows`, `allows`,
     `group_members`, …).
@@ -57,8 +56,38 @@ against that tag rather than a published baseline.
     another fixbolt version fails to compile with a sentence (`E0080`). It is not silently
     misread. The constant the file reads is the hidden `fixbolt_dict::codegen_format`, compiled
     with or without `codegen`.
-  - Additive only. Nothing in `fixbolt` accepts the generated type yet: the doors that take a
-    dictionary type are the next pull request of `docs/plans/2026-09-26-docs-for-embedders.md`.
+  - **MsgType(35) follows `<messages>`** `[2026-09-28]` (ADR-0207 decision 3, revised). An
+    overlay that adds a message adds its `msgtype` to field 35's values; without that, every such
+    message was `373=5` on tag 35. A whole file whose field 35 lists values but not a message's type
+    is refused, naming the message, the type and `MsgType(35)`; one whose field 35 lists no values
+    passes. `Fix44`'s generated tables are unchanged.
+  - Additive only.
+- **`fixbolt`: the facade takes a dictionary of your own** `[2026-09-28]`
+  ([ADR-0207](docs/decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)
+  decision 5). `Handler`, `Incoming`, `Reply`, `Message` and `App` gain a last type parameter
+  `D = Fix44`: `App` parses by it and `Reply`/`Message` order and encode by it, while on `Incoming`
+  it is a marker only (a group is read as `view().group::<D>(…)`, naming the dictionary again); `fixbolt::dict` re-exports `Dictionary`, `Tables`,
+  `FieldType`, `Fix44` and `TagValue`; `serve_over`, `serve_hft_over` and `connect_and_serve_over`
+  are re-exported. **Nothing ties an `App`'s `D` to the door's encoding**: a mismatch compiles and
+  validates by one table while the handler reads by another — a constraint in `docs/GUIDE.md` §3a.
+  Every existing item keeps its signature; `cargo-semver-checks` 0.50.0 against `v0.1.0` read the
+  change as minor on the development laptop (plan step 26).
+- **`fixbolt-engine`: three doors take the encoding** `[2026-09-28]`. `serve_over` (`standard`
+  acceptor), `serve_hft_over` (`hft` acceptor) and `connect_and_serve_over` (initiator), each with
+  recovery and a message log, are generic over `E`; `serve_with`, `serve_with_recovery_with`,
+  `serve_hft_with`, `serve_hft_with_recovery_with` and `connect_and_serve_with` call them with
+  `TagValue<Fix44, N>`, unchanged in signature and behaviour. The sharded and TLS doors stay
+  FIX 4.4.
+- **`fixbolt-engine`: QuickFIX's `DataDictionary` keys are refused by name** `[2026-09-28]`.
+  `UseDataDictionary`, `DataDictionary`, `TransportDataDictionary` and `AppDataDictionary`, in
+  `[DEFAULT]` or `[SESSION]` and whatever the value, stop startup as the new
+  `Problem::DictionaryIsBuildTime` (`Problem` is `#[non_exhaustive]`), with a sentence pointing at
+  `docs/how-to/use-a-venue-dictionary.md`. They used to be *unknown key*.
+- **`examples/custom-dictionary`** (package `fixbolt-example-custom-dictionary`, `publish = false`)
+  `[2026-09-28]` — an acceptor over a venue dialect its own `build.rs` generates, with socket tests
+  for each thing an overlay adds and an allocation bench over the generated type.
+- **Documentation** `[2026-09-28]`: three how-to guides — `docs/how-to/add-a-custom-tag.md`,
+  `use-a-venue-dictionary.md` and `migrate-from-quickfix.md`.
 - **`fixbolt-engine`** — additive observability surface for phase 4's metrics exporter
   ([ADR-0170](docs/decisions/ADR-0170-the-metrics-exporter-holds-an-observer-and-nothing-else-allocates-nothing-per-scrape-and-publishes-only-after-its-kill-line.md)):
   `observe::Occupancy { used, capacity }`; `Snapshot::ring_to_app() -> Option<Occupancy>`, read

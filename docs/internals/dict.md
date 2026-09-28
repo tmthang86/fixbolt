@@ -33,7 +33,11 @@ text of the shipped `spec/FIX44.xml` (reached by `include_str!`, never through
 `NANOFIX_FIX44_XML`), and the merged document then goes through the same `Model::compute` that
 builds `Fix44`, so an empty overlay writes `Fix44`'s own tables byte for byte. The order is:
 `merge` refuses what only an overlay can get wrong (a repeated number, name or `msgtype` that
-disagrees with FIX 4.4, a value list on an open field, a `<trailer>`, an unknown section).
+disagrees with FIX 4.4, a value list on an open field, a `<trailer>`, an unknown section), and
+adds each new message's `msgtype` to field 35's values. After the merge, on the merged document of
+either shape, the MsgType(35) rule refuses a `<message>` whose type field 35 does not list — which
+only a whole file can reach, and which `build.rs`'s own `Fix44` path skips, so `fix44.rs` is
+unchanged ([a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35](../reference/a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35.md)).
 `Model::compute` then makes every refusal about the dictionary's content. That includes three
 added in review: a tag in two of header, trailer and message bodies; a DATA group member whose
 length field is not the member immediately in front of it (the order `put_group` in
@@ -71,7 +75,8 @@ crate, which is built without `codegen`
 1. `build.rs` — which files are read, the overrides, and how a refusal stops the build
 2. `src/codegen/mod.rs`, then `model.rs` and `emit.rs` — what is generated and from what
    (`parse.rs` and `merge.rs` when the question is about the XML itself; `merge.rs` from
-   `overlay_fix44` when it is about a user's overlay)
+   `overlay_fix44` when it is about a user's overlay, and its MsgType(35) rule when a message type
+   is refused)
 3. `src/lib.rs` — the shape of the generated output (read a generated table, not the
    generator's emit code, to see what a caller actually gets)
 4. `src/field_type.rs` — the one hand-written table, and why it is separate from generation
@@ -121,7 +126,11 @@ crate, which is built without `codegen`
   field; a DATA field without its length field; a type name that cannot name a struct; a tag in
   the header or trailer and a body, or in both the header and the trailer; a DATA group member
   without its length immediately in front (at body level any order stays accepted); a field
-  numbered 0; a tag whose bitsets would pass 64 MiB. The FIX
+  numbered 0; a tag whose bitsets would pass 64 MiB. A new message's type becomes a value of
+  field 35 (`an_added_message_type_is_an_allowed_value_of_msgtype`, and `…_also_listed_on_msgtype_is_accepted`);
+  a whole file whose field 35 leaves one out is refused naming it
+  (`a_whole_file_whose_message_type_is_not_listed_on_msgtype_fails_naming_it`), and one whose field
+  35 lists nothing passes (`a_whole_file_whose_msgtype_lists_no_values_generates`). The FIX
   4.4 traps the base survives still hold after the merge. `an_empty_overlay_emits_byte_identical_fix44`
   holds an empty overlay to `$OUT_DIR/fix44.rs`, byte for byte. `a_whole_file_generates_as_is`
   reads a whole file as written, a retype included, which an overlay refuses. `a_high_tag_reports_the_table_size` checks the size report.
@@ -130,7 +139,8 @@ crate, which is built without `codegen`
   format does not compile. `generate_names_the_facade_or_the_crates_by_paths` checks the paths
   in the emitted code. The fixture, `tests/fixtures/overlay-invented.xml`, is invented. What
   it does **not** prove: that a generated file compiles in a user's crate, or that an engine
-  built on it answers the wire as the `Model` does (plan steps 27 and 28)
+  built on it answers the wire as the `Model` does — `examples/custom-dictionary` proves both
+  ([its page](examples-custom-dictionary.md))
 - `scripts/check-dict-refuses-a-message-without-msgcat.sh` — the only gate that observes the
   generator's three `msgcat` refusals actually stop the build: the unknown-category arm
   (`src/codegen/model.rs:534-539`) and the missing-`msgcat` arm (`src/codegen/model.rs:540-548`),

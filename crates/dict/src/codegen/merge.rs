@@ -325,6 +325,7 @@ pub(super) fn overlay_fix44(base: &str, overlay: &str) -> Result<String, GenErro
     let b = Base::index(bdoc.root_element())?;
     let mut adds: Additions<'_, '_> = BTreeMap::new();
     let mut sections: BTreeSet<&str> = BTreeSet::new();
+    let mut new_msg_types: Vec<&str> = Vec::new();
     for section in oroot.children().filter(roxmltree::Node::is_element) {
         let name = section.tag_name().name();
         if !sections.insert(name) {
@@ -335,7 +336,7 @@ pub(super) fn overlay_fix44(base: &str, overlay: &str) -> Result<String, GenErro
         match name {
             "fields" => overlay_fields(&b, section, overlay, &mut adds)?,
             "components" => overlay_components(&b, section, overlay, &mut adds)?,
-            "messages" => overlay_messages(&b, section, overlay, &mut adds)?,
+            "messages" => overlay_messages(&b, section, overlay, &mut adds, &mut new_msg_types)?,
             "header" => {
                 for c in section.children().filter(roxmltree::Node::is_element) {
                     if !(c.has_tag_name("field") || c.has_tag_name("group")) {
@@ -364,7 +365,136 @@ pub(super) fn overlay_fix44(base: &str, overlay: &str) -> Result<String, GenErro
             }
         }
     }
+    add_new_msg_types(&b, oroot, &new_msg_types, &mut adds)?;
     splice(base, adds)
+}
+
+/// `MsgType`'s tag.
+const MSG_TYPE: u32 = 35;
+
+/// ADR-0207 decision 3, revision 2026-09-28: **MsgType(35) follows
+/// `<messages>`.** FIX 4.4 lists every message type as a value of field 35, and
+/// the session checks field 35 like any enumerated field, so a message whose
+/// type is not listed there is `373=5` on tag 35 before anything else looks at
+/// it. An overlay that adds a message means *this message is usable*, so each
+/// new `msgtype` becomes a value of field 35 here — unless FIX 4.4 or the
+/// overlay's own `<fields>` already lists it (the QuickFIX habit, which changes
+/// nothing). A field 35 listing no values takes any, and gains none.
+///
+/// `tests/overlay.rs::an_added_message_type_is_an_allowed_value_of_msgtype`,
+/// `an_added_message_type_also_listed_on_msgtype_is_accepted`.
+fn add_new_msg_types<'a, 'i>(
+    b: &Base<'a, 'i>,
+    oroot: roxmltree::Node<'_, '_>,
+    new_msg_types: &[&str],
+    adds: &mut Additions<'a, 'i>,
+) -> Result<(), GenError> {
+    let Some(&(_, field)) = b
+        .field_by_number
+        .get(&MSG_TYPE)
+        .and_then(|name| b.field_by_name.get(name))
+    else {
+        return refuse("FIX44.xml: no field 35 (MsgType)");
+    };
+    let listed = values_of(field);
+    if listed.is_empty() {
+        return Ok(());
+    }
+    // The overlay's own values on field 35, which `overlay_values` adds.
+    let overlay_listed: BTreeSet<&str> = child(oroot, "fields")
+        .into_iter()
+        .flat_map(|fields| fields.children())
+        .filter(|f| f.has_tag_name("field") && f.attribute("number") == Some(MSG_TYPE_TEXT))
+        .flat_map(values_of)
+        .collect();
+    let mut text = String::new();
+    for &mt in new_msg_types {
+        if listed.contains(mt) || overlay_listed.contains(mt) {
+            continue;
+        }
+        text.push_str("<value enum='");
+        text.push_str(&escape_attribute(mt));
+        text.push_str("' description='ADDED_BY_OVERLAY' />");
+    }
+    if !text.is_empty() {
+        push(adds, field, &text);
+    }
+    Ok(())
+}
+
+/// Field 35's number as the XML writes it.
+const MSG_TYPE_TEXT: &str = "35";
+
+/// The `enum` of every `<value>` of `field`.
+fn values_of<'a>(field: roxmltree::Node<'a, '_>) -> BTreeSet<&'a str> {
+    field
+        .children()
+        .filter(|n| n.has_tag_name("value"))
+        .filter_map(|v| v.attribute("enum"))
+        .collect()
+}
+
+/// `text` made safe inside a single-quoted XML attribute. roxmltree hands back
+/// attribute values unescaped, so one written back must be escaped again.
+fn escape_attribute(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\'' => out.push_str("&apos;"),
+            '"' => out.push_str("&quot;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// ADR-0207 decision 3, revision 2026-09-28, for both shapes: every message's
+/// `msgtype` must be a value of field 35 when field 35 lists values at all.
+///
+/// Runs on the merged document **after** the merge's agreement checks and the
+/// table walk, so an existing refusal still names its own conflict first — and
+/// an overlay can never trip it, since [`overlay_fix44`] adds each new type. A
+/// whole file is read as written, so there it is a dictionary contradicting
+/// itself, refused naming the message and its type.
+/// `tests/overlay.rs::a_whole_file_whose_message_type_is_not_listed_on_msgtype_fails_naming_it`,
+/// `a_whole_file_whose_msgtype_lists_no_values_generates`.
+pub(super) fn refuse_unlisted_msg_types(doc: &roxmltree::Document<'_>) -> Result<(), GenError> {
+    let root = doc.root_element();
+    let field = child(root, "fields").and_then(|fields| {
+        fields
+            .children()
+            .find(|f| f.has_tag_name("field") && f.attribute("number") == Some(MSG_TYPE_TEXT))
+    });
+    let Some(field) = field else {
+        return Ok(());
+    };
+    let listed = values_of(field);
+    if listed.is_empty() {
+        return Ok(());
+    }
+    let field_name = field.attribute("name").unwrap_or("MsgType");
+    let messages = child(root, "messages")
+        .into_iter()
+        .flat_map(|m| m.children())
+        .filter(|m| m.has_tag_name("message"));
+    for m in messages {
+        let (name, mt) = (
+            m.attribute("name").unwrap_or(""),
+            m.attribute("msgtype").unwrap_or(""),
+        );
+        if !listed.contains(mt) {
+            return refuse(format!(
+                "message {name} has msgtype {mt}, which field {field_name}(35) does not list\n\
+                 among its values: every {name} would be refused 373=5 on tag 35. Add\n\
+                 <value enum='{mt}' .../> to field 35, or list no values there.\n\
+                 ADR-0207 decision 3."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The overlay's `<fields>`: new fields appended, gained values added, and a
@@ -530,11 +660,12 @@ fn overlay_components<'a, 'i>(
 
 /// The overlay's `<messages>`: new ones appended, existing ones extended under
 /// the msgtype and msgcat FIX 4.4 gives them.
-fn overlay_messages<'a, 'i>(
+fn overlay_messages<'a, 'i, 'o>(
     b: &Base<'a, 'i>,
-    section: roxmltree::Node<'_, '_>,
+    section: roxmltree::Node<'o, '_>,
     text: &str,
     adds: &mut Additions<'a, 'i>,
+    new_msg_types: &mut Vec<&'o str>,
 ) -> Result<(), GenError> {
     let mut names: BTreeSet<&str> = BTreeSet::new();
     let mut types: BTreeMap<&str, &str> = BTreeMap::new();
@@ -592,6 +723,7 @@ fn overlay_messages<'a, 'i>(
                     ));
                 }
                 add(adds, b.messages_el, text, m)?;
+                new_msg_types.push(mt);
             }
         }
     }

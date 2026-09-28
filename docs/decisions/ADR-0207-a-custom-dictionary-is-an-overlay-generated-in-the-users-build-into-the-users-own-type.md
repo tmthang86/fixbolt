@@ -1,6 +1,6 @@
 # ADR-0207 — A custom dictionary is an overlay, generated in the user's build into the user's own type
 
-- **Status**: Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
+- **Status**: Accepted — 2026-09-28, when phase 5 closed. Proposed — 2026-09-26. *Revised in place 2026-09-26, while Proposed*, with the owner's
   answers: decision 8 (FIX 4.4 only) and the first *Bad* consequence (rebuild accepted).
   *Revised again 2026-09-26, at plan step 17*: the module and the feature are `codegen`, not
   `gen` — `gen` is a reserved keyword in Rust edition 2024, so `pub mod gen` does not compile and
@@ -10,6 +10,16 @@
   ([a-tag-in-the-header-and-a-body-makes-a-valid-message-a-373-14](../reference/a-tag-in-the-header-and-a-body-makes-a-valid-message-a-373-14.md)).
   The per-tag bitsets have a 64 MiB ceiling, so a tag near `u32::MAX` is refused naming the tag
   and the size, where it used to size each bitset at 512 MiB.
+  *Revised again 2026-09-28, at plan step 27 (PR 6)*, on two gaps found while building it:
+  decision 3 gains the MsgType(35) rule — an overlay's new message adds its `msgtype` to field
+  35's values, and a whole file that leaves one out is refused; decision 5 states that the `App`'s
+  dictionary and the door's encoding are **not** tied in the types, and why; the *Consequences*
+  bullet on the 59 definitions changes from "the corpus runs over an empty overlay" to "an empty
+  overlay's type is held to `Fix44` answer for answer", which carries `Fix44`'s 59 / 59 to it.
+  *Revised again 2026-09-28, at plan step 29*, on a measurement: decision 7's last sentence said
+  `ValidateUserDefinedFields=N` governs only the tags a dialect does not define. It governs every
+  tag at or above 5000, defined or not; the sentence now says so, and changing the behaviour is left
+  to a later session-layer plan.
 - **Date**: 2026-09-26
 - **Deciders**: Tran Manh Thang (owner). Written by the architect (Opus).
 - **Related**: [plans/2026-09-26-docs-for-embedders.md](../plans/2026-09-26-docs-for-embedders.md);
@@ -111,6 +121,25 @@ reason.)
      needs that supplies the whole file.
    - **Whole file**: a user's own complete QuickFIX FIX 4.4 XML (their existing customised copy),
      generated as-is.
+   - **MsgType(35) follows `<messages>`** *(revision 2026-09-28)*. FIX 4.4 lists every message
+     type as a `<value>` of field 35 (`spec/FIX44.xml`: 93 messages, 93 values, the same set,
+     `[measured 2026-09-28]`), and field 35 is checked like any enumerated field, so a message
+     whose type is not among them is `373=5` on tag 35 before anything else looks at it. QuickFIX
+     behaves the same: loading a `<message>` adds its type to the message set and a *name* for the
+     value, never an allowed value (C++ `DataDictionary.cpp` 376–380 at the vendored pin; QuickFIX/J
+     `addValueName` writes `valueNames`, `isFieldValue` reads `fieldValues`), and its documentation
+     makes adding a message two steps, the `<message>` and the `<value>` on field 35. Here:
+     - an **overlay** that adds a message **adds its `msgtype` to field 35's values** during the
+       merge. Listing it on field 35 as well — the QuickFIX habit, and what a migrated file already
+       has — is accepted and changes nothing. An overlay means "this message is usable"; a second
+       step whose omission is a run-time `373=5` is a trap, not a rule worth copying.
+     - a **whole file** is read as written, so a message whose type field 35 does not list is
+       **refused, naming the message and its type** — the same shape as the other ways a
+       dictionary contradicts itself (a DATA field without its length field). A file whose field 35
+       lists no values at all is not enumerated there and passes, as it would in QuickFIX
+       (`hasFieldValue` false).
+     The check runs on the merged model of both shapes, after the merge's agreement checks, so an
+     overlay can never trip it and an existing refusal still names its own conflict first.
    The shipped `spec/` files are read, never written (non-negotiable 9); the base text reaches the
    generator as `include_str!` from inside the `fixbolt-dict` package, so it works from the git tag
    and from a `.crate`.
@@ -130,13 +159,36 @@ reason.)
    signature. Other doors (sharded, TLS) stay FIX 4.4 until a user asks; a user who needs one today
    drives `fixbolt_engine::Engine` directly, which is already generic. Whether the additions pass
    `cargo semver-checks` as minor is **measured by the existing gate**, not assumed.
+
+   **The `App`'s `D` and the door's encoding are not tied in the types** *(revision 2026-09-28)*.
+   `App<H, …, Venue>` handed to `serve_over::<…, TagValue<Fix44, N>, …>` compiles; the session
+   then validates by FIX 4.4 (a venue tag is `373=0`) while the handler reads and orders by
+   `Venue`, and the other way round a custom group is validated by one table and parsed and
+   written by another. They cannot be tied without a break: `fixbolt_session::Application` sees
+   bytes and names no dictionary, and `fixbolt::serve` and its siblings — released at v0.1.0 —
+   take any `A: Application`, so `App<…, Venue>` through `fixbolt::serve` compiles whatever the
+   `_over` doors do. Closing that needs a major change to those signatures or a new item on the
+   session's `Application` trait (a session-layer change). Tying only the three `_over` doors —
+   facade wrappers taking `App<H, N, P, S, D>` and fixing `E = TagValue<D, N>` — would remove
+   the side-by-side case and leave `serve` open; it is additive (minor against v0.1.0) and can be
+   added by a later plan without breaking anything, so it is not added here. The rule is a
+   `GUIDE.md` constraint, with a socket test proving the mismatch compiles and what it does.
 6. **Several dialects in one process are several engines**, one per dictionary type — ADR-0080
    decision 1 unchanged. A registry does not choose a dictionary per counterparty.
 7. **Settings.** `UseDataDictionary`, `DataDictionary`, `TransportDataDictionary` and
    `AppDataDictionary` in a configuration file become a named refusal, `Problem::DictionaryIsBuildTime`
    (`Problem` is `#[non_exhaustive]`), whose sentence points at the how-to — where today they are
-   *unknown key*. `ValidateUserDefinedFields` keeps its meaning: with a dialect that defines a tag,
-   that tag is defined, and the knob governs only tags the dialect does not define.
+   *unknown key*. `ValidateUserDefinedFields` keeps its meaning, **and that meaning is a range**
+   *(revision 2026-09-28, step 29)*: with the knob off, the session's field scan skips every tag at
+   or above 5000, **whether or not the dialect defines it** — a defined tag's type, value, place and
+   group count go unchecked, while a required one is still required (the required check reads the
+   dictionary's list, not the wire). `[measured 2026-09-28]`, pinned by
+   `examples/custom-dictionary/tests/venue.rs::a_defined_user_tag_is_not_type_checked_when_user_defined_fields_are_skipped`.
+   QuickFIX C++ differs: at the vendored pin `386ce46`, `DataDictionary.cpp` 167–171 checks a
+   field's format and value (`checkValidFormat`, `checkValue`) before `shouldCheckTag` skips a
+   user-defined one. The behaviour is not changed here — that is a session-layer change and a
+   later plan's; until then `CONFIGURATION.md` §1 and the how-to tell a user of a dialect to leave the knob at `Y`
+   ([validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too](../reference/validate-user-defined-fields-n-skips-the-tags-your-dialect-defines-too.md)).
 8. **Scope of the first version: FIX 4.4 only** (owner, 2026-09-26) — an overlay onto
    `FIX44.xml`, or a whole FIX 4.4 file. Overlays onto the FIXT 1.1 + FIX 5.0 SP2 pair are out of
    scope (plan, *Ngoài phạm vi*); the generator's input type is shaped so a later plan can add
@@ -152,8 +204,18 @@ reason.)
 - A QuickFIX user brings the XML they already have, whole or as the diff.
 - Several venues' conflicting uses of the same tag number live in one binary, each in its own type
   and its own engine, which neither option B nor QuickFIX's global field numbering gives.
-- The 59 definitions keep running against `Fix44`, whose generated bytes are proven unchanged;
-  the overlay path is tested against the same corpus with an empty overlay.
+- The 59 definitions keep running against `Fix44`, whose generated bytes are proven unchanged.
+  *(Revised 2026-09-28.)* The overlay path is **not** run through the corpus a second time: an
+  empty overlay's generated type is held to `Fix44` **answer for answer** — every one of the 14
+  `Dictionary` and `Tables` functions, over every tag to past the highest, every message type
+  and every enumerated value in the file. Session, engine and facade reach a dictionary only
+  through those receiver-less functions, so equal answers are the same monomorphised session, and
+  `Fix44`'s 59 / 59 (in process and over a socket) holds for the generated type. This proves what
+  the table-bytes pin cannot: the emitted `impl Dictionary` / `impl Tables` are a second authored
+  copy of `Fix44`'s hand-written delegations (`codegen/mod.rs` `generate` against `lib.rs` and
+  `tables.rs`), and a delegation wired to the wrong table would read fine and show only as a wrong
+  `373=` code. It needs no third copy of the corpus adapter, and covers `data_length_tag` and
+  `group_order`, which the corpus barely reaches.
 - `Fix44` and every existing door keep their exact signatures.
 
 **Bad — and accepted**
@@ -176,6 +238,17 @@ reason.)
 - **Two copies of `fixbolt-dict` compile** in a user's build (host, for `build.rs`; target, through
   `fixbolt`), and must be the same tag; the version check turns a mismatch into a compile error,
   which is the best that can be done.
+- **Nothing in the types stops an `App` over one dictionary behind a door over another**
+  *(revision 2026-09-28, decision 5)*. It compiles and misbehaves at run time; `GUIDE.md` carries
+  the rule and a socket test shows the result. A later, additive plan can tie the `_over` doors.
+- **The overlay writes something the user did not** *(revision 2026-09-28, decision 3)*: field 35
+  gains the new message's type unasked, so the merged dictionary is not only the overlay's text.
+  And the whole-file refusal applies to this crate's own build too, so a `NANOFIX_FIX44_XML` file
+  with a message missing from field 35 — one QuickFIX would reject at run time on every such
+  message — now fails to build.
+- **An empty overlay is proven equal to `Fix44` over a finite domain**, not over every argument:
+  tags past the highest tested fall into the same bitset branch, and an unknown message type
+  falls through the same `match` arm, but that is an argument, not a measurement.
 - **No acceptance corpus exists for a dialect.** The corpus proves an empty overlay changes nothing;
   what an overlay *adds* is tested only by this repository's own invented fixture, never by a
   venue's rules of engagement (which may not be committed here).
@@ -197,3 +270,12 @@ reason.)
   [#14350](https://github.com/rust-lang/cargo/issues/14350) (closed 2024-08-04), state read with
   `gh api` on 2026-09-26.
 - Code facts in *Context*: the working tree at `6c2192d`.
+- *(Revision 2026-09-28.)* QuickFIX C++ at the vendored pin `386ce46`: `DataDictionary.cpp`
+  376–380 (`addMsgType`, `addValueName(35, …)`), 150 and 172 (header fields go through
+  `checkValue`); `DataDictionary.h` 248–255 and 492–500 (`addFieldValue` / `isFieldValue` /
+  `checkValue` read `m_fieldValues`, which `addValueName` never writes). QuickFIX/J
+  [`DataDictionary.java`](https://github.com/quickfix-j/quickfixj/blob/master/quickfixj-base/src/main/java/quickfix/DataDictionary.java)
+  (`addValueName` → `valueNames`; `isFieldValue` → `fieldValues`), read 2026-09-28. QuickFIX/n
+  [Custom Fields, Groups, and Messages](https://quickfixengine.org/n/documentation/custom-fields-groups-messages.html):
+  a new message is a `<message>` **and** a `<value>` on field 35. Code facts of the revision:
+  the worktree at `9cf64dd`.

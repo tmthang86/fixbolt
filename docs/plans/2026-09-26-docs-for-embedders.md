@@ -1,6 +1,6 @@
 # Tài liệu cho người nhúng fixbolt, và từ điển tuỳ biến (custom tag / từ điển riêng của sàn)
 
-> **Loại:** Plan · **Ngày:** 2026-09-26 · **Trạng thái:** Đã duyệt (2026-09-26)
+> **Loại:** Plan · **Ngày:** 2026-09-26 · **Trạng thái:** Xong (2026-09-28)
 > **Phạm vi:** hai việc trong một plan, theo quyết định của chủ dự án: (A) viết lại bộ tài liệu để
 > fixbolt đọc như một framework FIX mà lập trình viên công ty khác nhúng vào sản phẩm của họ;
 > (B) tính năng mới — tag tuỳ biến và từ điển riêng của sàn (venue dictionary). Thiết kế ở hai ADR
@@ -287,8 +287,10 @@ bật, Q4); không có email liên hệ. Phiên bản được hỗ trợ (tag m
   giữ 0 sau khi thêm tham số `D`.
 - **2 — session thuần.** Không sửa `crates/session`. Session đã generic theo `E::Dict: Tables`.
 - **3 — 59 định nghĩa.** Mọi PR đụng `dict`/`engine`/`library` chạy `cargo test -p fixbolt-session
-  --test score` (59/59) và bộ FIXT với `--features fix50sp2`; thêm `an_empty_overlay_scores_59_of_59`
-  chạy bộ 59 trên kiểu `Plain` sinh bởi đường overlay.
+  --test score` (59/59) và bộ FIXT với `--features fix50sp2`. Bộ 59 **không** chạy lại trên kiểu
+  sinh ra: `an_empty_overlay_type_answers_every_dictionary_question_as_fix44` (bước 27) buộc kiểu
+  `Plain` (overlay rỗng) trả lời y hệt `Fix44` cho cả 14 câu hỏi từ điển, nên 59/59 của `Fix44`
+  cũng là của `Plain` (ADR-0207, sửa 2026-09-28).
 - **4 — theo mode.** Cửa mới dùng chung thân với cửa cũ; không đổi chiến lược chờ. Test
   `serve_over_with_fix44_answers_like_serve` chứng minh cùng byte trên dây.
 - **5 — thứ tự field từ bảng sinh.** Kiểu của người dùng lấy thứ tự từ bảng của chính nó; test group
@@ -347,9 +349,9 @@ nháp ở commit đầu, kết thúc bằng một senior review (context mới) 
 | **PR 6** | **Từ điển tuỳ biến tới tận ứng dụng** — nhánh `library/custom-dictionary` | | | | PR 1, PR 5 |
 | 25 | Test đỏ: `crates/library/tests/dictionary_param.rs` — `a_reply_over_a_dialect_orders_its_custom_group_by_the_dialect`, `an_app_over_the_default_is_fix44`; `crates/engine/tests/serve_over.rs` — `serve_over_with_fix44_answers_like_serve`; test settings `a_data_dictionary_key_is_refused_by_name` (bốn key) | senior developer (opus) | test mới; **không** sửa test có sẵn | output đỏ quote lại | PR 5 |
 | 26 | Cài: `D` trên `App`/`Handler`/`Reply`/`Incoming`; `fixbolt::dict`; ba cửa `_over` với cửa cũ gọi vào chúng; `Problem::DictionaryIsBuildTime` | senior developer (opus) | `crates/library/src/`, `crates/engine/src/lib.rs`, `crates/engine/src/settings.rs`; **không** `crates/session`, `crates/codec` | bước 25 xanh; `grep -n 'Fix44' crates/library/src` chỉ còn default và re-export; `crates/library/benches/alloc.rs` đọc 0; `scripts/check-semver-against-tag.sh` (thêm vào phải là minor — nếu không, dừng, về architect) | 25 |
-| 27 | Crate `examples/custom-dictionary` (thêm vào `members`): `build.rs`, `venue.xml`, `src/main.rs`; test qua socket thật `tests/venue.rs` — `a_custom_tag_reaches_the_handler`, `a_custom_enum_value_is_not_rejected`, `a_custom_group_is_read_and_echoed_in_declared_order`, `a_custom_header_field_is_written_in_the_header`, `a_custom_message_type_is_delivered`, `a_missing_venue_required_field_is_rejected_373_1`, `an_undefined_tag_is_still_rejected_373_0`, `an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`; `tests/plain_scores.rs` — `an_empty_overlay_scores_59_of_59`; `benches/alloc.rs` ba case, thêm vào `scripts/bench.sh` | senior developer (opus) | crate mới, `Cargo.toml` gốc, `scripts/bench.sh` | các test trên xanh; job `bench` in ra ba case với 0 | 26 |
+| 27 | Crate `examples/custom-dictionary` (thêm vào `members`): `build.rs`, `venue.xml`, `src/main.rs`; test qua socket thật `tests/venue.rs` — `a_custom_tag_reaches_the_handler`, `a_custom_enum_value_is_not_rejected`, `a_custom_group_is_read_and_echoed_in_declared_order`, `a_custom_header_field_is_written_in_the_header`, `a_custom_message_type_is_delivered`, `a_missing_venue_required_field_is_rejected_373_1`, `an_undefined_tag_is_still_rejected_373_0`, `an_undefined_user_tag_passes_when_user_defined_fields_are_skipped`, `a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0` (chứng minh câu trong `GUIDE.md`: không gì trong kiểu nối `D` của `App` với từ điển của encoding); `benches/alloc.rs` ba case, thêm vào `scripts/bench.sh`. **(Sửa 2026-09-28, lỗ hổng 1)** Thay `an_empty_overlay_scores_59_of_59`: `build.rs` sinh thêm kiểu `Plain` từ overlay rỗng `<fix type='FIX' major='4' minor='4' servicepack='0'></fix>`, `Paths::facade()`, vào `$OUT_DIR/plain.rs` — ngoài mọi marker `sample:`, có chú thích "chỉ cho test này"; `src/lib.rs` không include nó. `tests/plain_is_fix44.rs` — `an_empty_overlay_type_answers_every_dictionary_question_as_fix44`: so `Plain` với `fixbolt::dict::Fix44` trên cả 14 hàm (5 của `Dictionary`, 9 của `Tables`), với mọi tag 0..=1024 cộng 4999, 5000, 9999, 10000, 20000, `u32::MAX`; mọi `msgtype` và mọi `enum` quét bằng chuỗi từ `crates/dict/spec/FIX44.xml` (`include_str!`, không thêm crate XML) cộng `""`, `"U1"`, `"ZZ"`, `"1 2"`; counter của group = cùng miền tag; khẳng định quét được đúng 93 `msgtype` để test không xanh rỗng; lỗi nêu tên hàm và đối số. Đảo ngược (không commit): nối sai một ủy quyền trong template của `generate` (`is_admin` gọi `tables::is_msg_type`) → đỏ với câu `is_admin("D") differs`; khôi phục → xanh. **(Sửa 2026-09-28, lỗ hổng 2)** Overlay thêm message thì tự thêm `msgtype` vào giá trị của MsgType(35); liệt kê thêm lần nữa vẫn nhận; nguyên file thiếu thì bị từ chối, nêu tên message và `msgtype` (ADR-0207 quyết định 3). Test đỏ trước, trong `crates/dict/tests/overlay.rs`: `an_added_message_type_is_an_allowed_value_of_msgtype` (fixture hiện có, không sửa: `enum_allows(35, "U1") == Some(true)`, `"U3"` → `Some(false)`, `"D"` → `Some(true)`), `a_whole_file_whose_message_type_is_not_listed_on_msgtype_fails_naming_it` (bỏ `<value enum='D' description='NEW_ORDER_SINGLE' />` khỏi file gốc → `GenError::Dictionary` nêu `NewOrderSingle`, `D`, `MsgType(35)`); canh thêm (có thể đã xanh, nói rõ): `an_added_message_type_also_listed_on_msgtype_is_accepted`, `a_whole_file_whose_msgtype_lists_no_values_generates` (`enum_allows(35, _) == None`). Trong `venue.xml`: bỏ giá trị `U1` trên field 35, giữ `U2` (hai thói quen đều chạy), viết lại chú thích — `a_custom_message_type_is_delivered` đỏ (`373=5` trên tag 35) trước khi cài, xanh sau, **không sửa test** | senior developer (opus) | crate mới, `Cargo.toml` gốc, `scripts/bench.sh`; `crates/dict/src/codegen/merge.rs` và nơi dựng model (`mod.rs`/`model.rs`) cho luật field 35, rustdoc của `Source`; `crates/dict/tests/overlay.rs` (chỉ thêm test); **không** sửa fixture hay test có sẵn của `crates/dict` | các test trên xanh; mọi test có sẵn của `overlay.rs` và `generated_is_pinned.rs` xanh không sửa (hash `fix44.rs` không đổi); job `bench` in ra ba case với 0 | 26 |
 | 28 | `scripts/check-custom-dictionary-packaged.sh`: dựng crate ví dụ **ngoài workspace** trên `target/package/` (bản `.crate`), chứng minh `codegen` đọc được `spec/` từ package và đường `::fixbolt::dict` đúng; `cargo tree -e normal` của nó không có `roxmltree`. Gắn vào job `package` | developer (sonnet) | script + CI yml | script thoát 0; đảo ngược (bỏ `spec/**` khỏi `include`) → đỏ | 27 |
-| 29 | Tài liệu cùng commit: `docs/how-to/add-a-custom-tag.md` (hai đường: bỏ qua bằng `ValidateUserDefinedFields=N`, hay định nghĩa nó), `use-a-venue-dictionary.md` (overlay, nguyên file, nhiều sàn = nhiều engine, phải build lại khi đổi, nghĩa vụ `NOTICE`, kích thước bảng với tag cao), `migrate-from-quickfix.md` (bảng key QuickFIX → fixbolt, bốn key bị từ chối, `ValidateFieldsOutOfOrder` không hỗ trợ); marker `sample:` trỏ vào file của crate ví dụ; `CONFIGURATION.md` §1/§4; `GUIDE.md` §3a một đoạn; `SESSION-BEHAVIOUR.md` §3; `DESIGN.md` §3 (crate mới, hàng `library`, `engine`); `PRD.md` §3 hàng mới; `docs/internals/` (trang mới + `library.md`, `engine.md`, `README.md`); `README.md` *Layout*; `SUMMARY.md`; `CHANGELOG.md` | developer (sonnet) | chỉ tài liệu | `check-links.py`, `check-doc-samples.sh`, job `book` | 27 |
+| 29 | Tài liệu cùng commit: `docs/how-to/add-a-custom-tag.md` (hai đường: bỏ qua bằng `ValidateUserDefinedFields=N`, hay định nghĩa nó), `use-a-venue-dictionary.md` (overlay, nguyên file, nhiều sàn = nhiều engine, phải build lại khi đổi, nghĩa vụ `NOTICE`, kích thước bảng với tag cao), `migrate-from-quickfix.md` (bảng key QuickFIX → fixbolt, bốn key bị từ chối, `ValidateFieldsOutOfOrder` không hỗ trợ); marker `sample:` trỏ vào file của crate ví dụ; `CONFIGURATION.md` §1/§4; `GUIDE.md` §3a một đoạn, **và một đoạn ràng buộc (sửa 2026-09-28)**: không gì trong kiểu nối `D` của `App` với từ điển của encoding ở cửa — `App<H, …, Venue>` qua `serve_over::<…, TagValue<Fix44, N>, …>` (hay qua `fixbolt::serve`) vẫn biên dịch, rồi session kiểm theo FIX 4.4 còn handler đọc và xếp theo `Venue`; hai tên phải là một kiểu; nêu test `a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0`; nói vì sao không buộc bằng kiểu (ADR-0207 quyết định 5); `use-a-venue-dictionary.md` và `migrate-from-quickfix.md` nói luật field 35: overlay tự thêm, nguyên file thiếu thì build dừng (khác QuickFIX: ở đó là `373=5` lúc chạy); trang `docs/reference/a-message-type-missing-from-msgtype-values-is-a-373-5-on-tag-35.md`; `docs/internals/dict.md`; `SESSION-BEHAVIOUR.md` §3; `DESIGN.md` §3 (crate mới, hàng `library`, `engine`); `PRD.md` §3 hàng mới; `docs/internals/` (trang mới + `library.md`, `engine.md`, `README.md`); `README.md` *Layout*; `SUMMARY.md`; `CHANGELOG.md` | developer (sonnet) | chỉ tài liệu | `check-links.py`, `check-doc-samples.sh`, job `book` | 27 |
 | 30 | Senior review + CI; `STATUS.md` (*Start here*, *Not proven*); `PRD.md` §2 ghi phase 5 xong; ADR-0206/0207 → Accepted (manager ghi dòng trạng thái); *Nhật ký giao hàng* | senior developer (opus); manager | `STATUS.md`, `PRD.md` §2, hai ADR | CI xanh trên commit đóng, run id | 29 |
 
 **Ranh giới PR:** PR 0 (plan) → PR 1 (khung sách) → PR 2 và PR 3 song song. PR 4 → PR 5 chạy
@@ -383,7 +385,8 @@ viết). PR 6 cần cả PR 1 (sách, kiểm mẫu code) lẫn PR 5.
 - PR 5: các test ở bước 21, cộng `an_empty_overlay_emits_byte_identical_fix44` — đây là sợi dây nối
   đường overlay với đúng bảng mà 59 định nghĩa đang kiểm.
 - PR 6: test socket ở bước 27 là **bản ghi thật đi qua socket kernel thật**, không phải gọi hàm;
-  `an_empty_overlay_scores_59_of_59` chạy cả bộ định nghĩa QuickFIX trên kiểu sinh qua overlay;
+  `an_empty_overlay_type_answers_every_dictionary_question_as_fix44` buộc kiểu sinh qua overlay rỗng
+  trả lời y hệt `Fix44` trên cả 14 hàm, nên 59/59 của `Fix44` là của nó (sửa 2026-09-28);
   `scripts/bench.sh` (job `bench`) in ba case alloc mới với 0 — đọc dòng output, không đọc mã thoát;
   `scripts/check-custom-dictionary-packaged.sh` với dòng `Compiling fixbolt-dict … (…/target/package/…)`.
 - Mọi PR: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -402,7 +405,8 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4 (đi từng hàng):
 - [ ] API công khai (`fixbolt::dict`, tham số `D`, ba cửa `_over`, feature `codegen`, `GenError`):
       `DESIGN.md`, rustdoc, `CHANGELOG.md` (bước 19, 22, 26, 29)
 - [ ] Ràng buộc người dùng phải giữ mà compiler không kiểm (build lại khi đổi phương ngữ; build-dep
-      và runtime cùng tag; nghĩa vụ `NOTICE`): `GUIDE.md` §3a (bước 29)
+      và runtime cùng tag; nghĩa vụ `NOTICE`; `D` của `App` phải là từ điển của encoding ở cửa):
+      `GUIDE.md` §3a (bước 29)
 - [ ] Key cấu hình / feature / hằng số người dùng thấy: `CONFIGURATION.md` §1, §4, §5 (bước 19, 23, 29)
 - [ ] Hành vi biên session (tag định nghĩa bởi phương ngữ): `SESSION-BEHAVIOUR.md` §3, nêu test canh
       (bước 29)
@@ -440,7 +444,11 @@ Theo bảng đồng bộ ở `CLAUDE.md` §4 (đi từng hàng):
 | Bench alloc mới không nằm trong `TARGETS` của `bench.sh` nên không bao giờ chạy | bước 27 thêm vào; đọc dòng output của job `bench` |
 | Cửa `_over` viết thành bản sao của cửa cũ → hai thân hàm trôi khác nhau | cửa cũ gọi cửa mới; `serve_over_with_fix44_answers_like_serve` |
 | Tham số `D` bị `cargo semver-checks` coi là phá API | `check-semver-against-tag.sh` bước 26; đỏ → dừng, về architect |
-| Tag 5000 trong fixture làm `14a_BadField.def` đổi nghĩa nếu chạy bộ 59 trên `Venue` | bộ 59 chỉ chạy trên `Plain`; fixture ghi chú điều này |
+| Tag 5000 trong fixture làm `14a_BadField.def` đổi nghĩa nếu chạy bộ 59 trên `Venue` | bộ 59 chỉ chạy trên `Fix44`; `Plain` được buộc bằng `Fix44` từng câu trả lời (sửa 2026-09-28); fixture ghi chú điều này |
+| `impl Dictionary`/`impl Tables` sinh ra là bản viết tay thứ hai của phần ủy quyền trong `Fix44`; nối sai một hàm thì đọc vẫn đúng, chỉ lộ ra thành mã `373=` sai | `an_empty_overlay_type_answers_every_dictionary_question_as_fix44`, có đảo ngược (bước 27) |
+| Overlay thêm message mà không thêm `msgtype` vào giá trị field 35 → mọi message loại đó bị `373=5` trên tag 35 (QuickFIX cũng vậy) | `an_added_message_type_is_an_allowed_value_of_msgtype`; `a_whole_file_whose_message_type_is_not_listed_on_msgtype_fails_naming_it`; `a_custom_message_type_is_delivered` với `U1` không liệt kê |
+| Luật field 35 chạy trước kiểm tra xung đột của merge → test từ chối có sẵn nêu sai lý do | luật chạy trên model đã gộp, sau các kiểm tra xung đột; `an_existing_message_repeated_with_another_msgtype_fails_naming_both` xanh không sửa |
+| `App<…, Venue>` sau cửa FIX 4.4 vẫn biên dịch: session kiểm theo một bảng, handler đọc và xếp theo bảng khác | `GUIDE.md` §3a; `a_venue_app_behind_a_fix44_door_compiles_and_the_session_rejects_the_venue_tag_373_0` |
 
 ## Rủi ro
 
@@ -534,4 +542,34 @@ Chủ dự án yêu cầu (2026-09-26): mọi bước viết tài liệu chạy 
   `9=`/`10=`; `standard` "chạy mọi OS" (thật ra chỉ Unix); số ca cấp phát 24/33 đã cũ (đúng là
   8/17/35); PRD nói chưa từng TLS với engine khác (CI run 35892604235 đã chạy 7/7); DESIGN §1 trích
   số của fix8 ngoài trang prior-art.
+
+### PR 6 — từ điển tuỳ biến tới tận ứng dụng (nhánh `library/custom-dictionary`)
+
+- **Sửa plan giữa chừng (2026-09-28, architect, ở `9cf64dd`)** — hai lỗ hổng thiết kế lộ ra ở bước 27:
+  - *Lỗ hổng 1:* `an_empty_overlay_scores_59_of_59` không dựng được như đã viết — adapter của bộ 59 là
+    riêng tư (`crates/session/tests/score.rs`, `crates/engine/tests/wire.rs`), còn
+    `crates/conformance` cố ý không có dependency lúc chạy. Thay bằng
+    `an_empty_overlay_type_answers_every_dictionary_question_as_fix44`: kiểu `Plain` trả lời y hệt
+    `Fix44` trên cả 14 hàm. Session, engine và facade chỉ hỏi từ điển qua 14 hàm đó
+    (`Fix44` trong `src` của ba crate chỉ là tham số mặc định, alias hay code `#[cfg(test)]`), nên
+    59/59 của `Fix44` chuyển sang `Plain`. Test này thấy được thứ pin byte của bảng không thấy:
+    phần `impl` sinh ra là bản viết tay thứ hai của phần ủy quyền trong `Fix44`. Chỉ đổi **cách chứng
+    minh**, không đổi thứ giao.
+  - *Lỗ hổng 2:* overlay thêm `U1` vẫn bị `373=5` trên tag 35, vì FIX 4.4 liệt kê mọi loại message
+    làm giá trị của field 35. QuickFIX C++ (pin `386ce46`, `DataDictionary.cpp` 376–380) và QuickFIX/J
+    cũng vậy; tài liệu QuickFIX/n bắt thêm message thành hai bước. Quyết định: overlay tự thêm,
+    liệt kê thêm lần nữa vẫn nhận; nguyên file thiếu thì bị từ chối, nêu tên. **Đổi thứ giao** (bộ
+    sinh có thêm một luật và một lời từ chối) → cần chủ dự án duyệt lại.
+  - *`D` và `E`:* không buộc bằng kiểu — `fixbolt::serve` (v0.1.0) nhận mọi `A: Application`,
+    nên buộc riêng ba cửa `_over` cũng không bịt được lỗ; thành ràng buộc trong `GUIDE.md` và một test
+    socket. Buộc ba cửa `_over` là thay đổi cộng thêm (minor), để cho một plan sau.
+  - ADR-0207 sửa tại chỗ (đang Proposed); hàng 27, 29, mục §2 số 3, phần bằng chứng PR 6, bảng bẫy
+    sửa theo.
+- **Chủ dự án duyệt lại (2026-09-28):** quy tắc field 35 — overlay tự thêm message type mới vào giá trị của `MsgType(35)`; file nguyên thiếu thì bị từ chối.
+- PR 5 (#122): merge `3f7a0a3`, run 36256707376 (22/22). Review ra 2 lỗi trung bình (một tag vừa ở header vừa ở body; DATA trong group đứng trước field độ dài) — đã sửa, kèm từ chối tag 0 và bảng quá 64 MiB.
+- PR 3 (#121): merge `722f356`, run 36255861884 (22/22).
+- PR 6 (#123): bước 25–29 xong; main đóng phase 4 và gỡ `io_uring` giữa chừng — chỉ 4 câu tài liệu phải sửa. Review cuối: không lỗi chặn; hai lỗi nhẹ (thiếu dòng `use` trong mẫu how-to — đã sửa; `D` của `Incoming` chỉ là marker — ghi GUIDE §3a và STATUS item 122).
+- **Phát hiện ghi thành open item:** 120 (test `events` đỏ trên Mac), 121 (`ValidateUserDefinedFields=N` bỏ qua cả tag dialect đã định nghĩa), 122, 123 (CLA/DCO).
+- **Theo lệnh chủ dự án:** không chạy benchmark trên laptop từ bước 27 — job `bench` của CI chạy.
+- ADR-0206 và ADR-0207 chuyển sang Accepted; `PRD.md` §2 ghi phase 5 đóng 2026-09-28.
 

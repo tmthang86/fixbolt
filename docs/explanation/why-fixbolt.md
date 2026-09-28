@@ -109,7 +109,11 @@ decision 1). The generated order is checked against QuickFIX's own generated C++
 `crates/dict/tests/interop_quickfix_order.rs`
 ([CONFORMANCE.md §2](../CONFORMANCE.md#2-dictionary-agreement-with-quickfix)).
 
-**What it costs you.** A dialect change is a rebuild. See *What fixbolt does not do*, below.
+**What it costs you.** A dialect change is a rebuild. A venue's dialect is itself a type your own
+build generates, from an overlay onto the shipped FIX 4.4 or a whole file, and it gets the same
+treatment: its tables are compiled in, and the session reaches them the same way
+([Use a venue dictionary](../how-to/use-a-venue-dictionary.md)). See *What fixbolt does not do*,
+below.
 
 ## 4. Outbound messages are patched, not built
 
@@ -247,14 +251,14 @@ non-goals are [PRD.md §5](../PRD.md#5-permanent-non-goals); the embedding-level
 - **FIX 4.4 is the version.** FIX 5.0 SP2 over FIXT 1.1 exists behind an off-by-default feature,
   with its conformance score and one asserted divergence recorded in
   [CONFORMANCE.md §9](../CONFORMANCE.md). Earlier FIX versions are not supported.
-- **No dictionary at run time, and today no overlay.** A venue's custom fields and messages are
-  expressible today only by replacing the whole FIX 4.4 XML at build time
-  ([CONFIGURATION.md §5](../CONFIGURATION.md#5-build-time-environment-variables)); a plain custom
-  tag at or above 5000 can instead be let through unvalidated with `ValidateUserDefinedFields=N`
-  ([CONFIGURATION.md §1](../CONFIGURATION.md#1-configuration-file-keys)). An overlay generated in
-  your own build is designed and not yet built
-  ([ADR-0207](../decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md),
-  *Proposed*).
+- **No dictionary at run time.** A venue's custom fields, groups and messages are a dictionary
+  type generated in your own build — an overlay onto the shipped FIX 4.4, or a whole FIX 4.4 file —
+  and served through its own engine; changing it means rebuilding, and a configuration file cannot
+  name one ([Use a venue dictionary](../how-to/use-a-venue-dictionary.md),
+  [ADR-0207](../decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md)).
+  Only FIX 4.4 dialects: a FIXT 1.1 / FIX 5.0 SP2 overlay is not supported. A plain custom tag at
+  or above 5000 can instead be let through unchecked with `ValidateUserDefinedFields=N`
+  ([Add a custom tag](../how-to/add-a-custom-tag.md)).
 - **No typed message classes.** You read fields from a view by tag; this is deliberate
   ([ADR-0003](../decisions/ADR-0003-message-representation.md)).
 - **No application-message semantics.** The session validates required fields, types, enum values

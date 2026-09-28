@@ -307,6 +307,16 @@ pub enum ConnectionType {
     Initiator,
 }
 
+/// QuickFIX's run-time dictionary keys, refused by name as
+/// [`Problem::DictionaryIsBuildTime`] rather than as [`Problem::UnknownKey`]
+/// (ADR-0207 decision 7). Not [`Key`]s: nothing here reads their values.
+const QUICKFIX_DICTIONARY_KEYS: [&str; 4] = [
+    "UseDataDictionary",
+    "DataDictionary",
+    "TransportDataDictionary",
+    "AppDataDictionary",
+];
+
 /// What went wrong with the configuration, in the words an operator needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -421,6 +431,20 @@ pub enum Problem {
     /// [`presession::LimitError::NoListenerCadence`](crate::presession::LimitError::NoListenerCadence)
     /// refuses on the builder this key feeds.
     NoListenerCadence,
+    /// `UseDataDictionary`, `DataDictionary`, `TransportDataDictionary` or
+    /// `AppDataDictionary` — QuickFIX's run-time dictionary keys.
+    ///
+    /// **Refused by name, not as an unknown key** (ADR-0207 decision 7): this
+    /// engine's dictionary is a type compiled into the application, so a file
+    /// cannot choose one, and an operator who copied these lines from a
+    /// QuickFIX configuration needs to be told where the dictionary went —
+    /// `docs/how-to/use-a-venue-dictionary.md`.
+    ///
+    /// Refused wherever it appears, `[DEFAULT]` or `[SESSION]`, and whatever
+    /// its value — `UseDataDictionary=N` too, since no value of it changes
+    /// what this engine validates by.
+    /// `tests/settings.rs::a_data_dictionary_key_is_refused_by_name`.
+    DictionaryIsBuildTime,
 }
 
 impl fmt::Display for Problem {
@@ -469,6 +493,9 @@ impl fmt::Display for Problem {
             }
             Self::NoListenerCadence => {
                 "a cadence of zero never polls the listener — no connection would ever be accepted"
+            }
+            Self::DictionaryIsBuildTime => {
+                "the dictionary is chosen when the application is built, not in this file — see docs/how-to/use-a-venue-dictionary.md"
             }
         };
         f.write_str(s)
@@ -1213,6 +1240,15 @@ impl Settings {
                 return Err(SettingsError::at(line, Problem::NotAKeyValue, trimmed));
             };
             let (name, value) = (name.trim(), value.trim());
+            // Before `Key::parse`, so these four are never *unknown*: they are
+            // known and refused, and the refusal says where the dictionary went.
+            if QUICKFIX_DICTIONARY_KEYS.contains(&name) {
+                return Err(SettingsError::at(
+                    line,
+                    Problem::DictionaryIsBuildTime,
+                    name,
+                ));
+            }
             let Some(key) = Key::parse(name) else {
                 return Err(SettingsError::at(line, Problem::UnknownKey, name));
             };

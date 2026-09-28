@@ -29,12 +29,14 @@ No measurements, no dates, no status live here — those belong to `STATUS.md`,
 | [store-sqlite.md](store-sqlite.md) | Where the SQLite journal splits into the engine thread's half and its writer, and where the database is locked, checked and read back |
 | [conformance.md](conformance.md) | Where the 59 acceptance definitions are turned into a runnable gate |
 | [tools.md](tools.md) | Where the `tools/` binaries (`w2w`, `interop`, `jrnl`, `attr-scan`) live and what each measures or checks |
+| [examples-custom-dictionary.md](examples-custom-dictionary.md) | Where a dictionary generated in a user's own `build.rs` is included, handled and served, and which tests prove it over a socket |
 
 ## Reading order across crates
 
 Follow the dependency order in [DESIGN.md §3](../DESIGN.md#3-crates): `codec` → `dict` →
 `session` → `engine` → `library`, with `conformance` built alongside `session` as its gate
-and `tools/` last, since every tool depends on crates above it.
+and `tools/` last, since every tool depends on crates above it. `examples/custom-dictionary`
+depends on `library` at run time and on `dict` as a build-dependency, so it comes after both.
 
 ## Why crate pages instead of one file
 

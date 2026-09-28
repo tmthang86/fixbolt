@@ -105,6 +105,15 @@ CASES=(
   # through build edges only), never "did not match": the XML parser must not
   # reach the target build of a crate that asked for nothing.
   "fixbolt-dict:roxmltree"
+  # `[2026-09-28]` examples/custom-dictionary, plan 2026-09-26-docs-for-embedders
+  # row 27 (ADR-0207). It serves through `fixbolt::serve_over`, so it forwards
+  # `fixbolt/standard` — the forwarding shape of `fixbolt-interop` above, asked
+  # per crate for the same reason. And its `build.rs` runs the generator through
+  # `fixbolt-dict/codegen`, a build-dependency only: `roxmltree` must reach the
+  # host build and never the binary. Plan step 28 asks the packaged copy the
+  # same question; this asks the one in the tree.
+  "fixbolt-example-custom-dictionary:libc"
+  "fixbolt-example-custom-dictionary:roxmltree"
 )
 
 rc=0

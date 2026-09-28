@@ -11,7 +11,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 
 | File | Keeps |
 |---|---|
-| `lib.rs` | `Engine`, `turn`, `run`, `serve*` entry points — one non-blocking pass, and the loop around it |
+| `lib.rs` | `Engine`, `turn`, `run`, `serve*` entry points — one non-blocking pass, and the loop around it. `serve_over`, `serve_hft_over` and `connect_and_serve_over` take the encoding `E` as a parameter ([ADR-0207](../decisions/ADR-0207-a-custom-dictionary-is-an-overlay-generated-in-the-users-build-into-the-users-own-type.md) decision 5); `serve_with`, `serve_with_recovery_with`, `serve_hft_with`, `serve_hft_with_recovery_with` and `connect_and_serve_with` call them with `TagValue<Fix44, N>`, so there is one body per door, not two (`tests/serve_over.rs::serve_over_with_fix44_answers_like_serve`). The sharded and TLS doors build the default encoding only |
 | `transport.rs` | `Transport`, `TcpTransport`, `Loopback`, `Waiting`, the `Io` result type |
 | `frame.rs` | `Framer` — cutting a byte stream into messages by `9=`, nothing parsed |
 | `presession.rs` | `Identity`, `PendingSet`, `Registry`, `Table` — who owns a socket before a session exists |
@@ -24,7 +24,7 @@ only (`fixbolt-dict/fix50sp2`, `fixbolt-session/fix50sp2`) — no module here is
 | `redact.rs` | `MASKED`, `mask`, `carries_secret` — what never reaches disk in clear, and the SOH-splitting scan that finds it, called from `msglog.rs` and `journal.rs`. `[2026-09-23]` |
 | `observe.rs` | `Handles`, `Observer`, `Event`, `Admin` — the operator's on-request view. `[2026-09-24]` `Occupancy { used, capacity }`; `Snapshot::ring_to_app()`/`presession_slots() -> Option<Occupancy>` (`None` means "nothing reported," not zero); `Observer::latest()`, which reads the published cell without raising the request flag — added for `fixbolt-metrics` (ADR-0170) and additive under `cargo-semver-checks`. `[2026-09-24, plan *Sửa 1*, review of PR #108 F5]` `Observer::ask()`, which raises the request flag and locks nothing; `request()` is now `ask()` then `latest()`, so a caller who only wanted the flag raised no longer pays for a copy it throws away |
 | `origin.rs` | `Sender`, the fixed origination queue — a message an application starts from another thread |
-| `settings.rs` | `Settings`, `Problem` — the QuickFIX-shaped configuration file |
+| `settings.rs` | `Settings`, `Problem` — the QuickFIX-shaped configuration file. QuickFIX's four `DataDictionary` keys are refused by name as `Problem::DictionaryIsBuildTime` (`QUICKFIX_DICTIONARY_KEYS`; `tests/settings.rs::a_data_dictionary_key_is_refused_by_name`) |
 | `reconnect.rs` | `Policy` — doubling backoff, and `connect_and_serve` |
 | `clock.rs` | Where the engine gets the time, as a trait — the seam the acceptance corpus drives |
 | `poll.rs`, `block.rs`, `wait.rs`, `waker.rs` | `standard` mode's idle turn: the `poll(2)` call, the policy around it, the mode split, and how another thread wakes a blocked engine |
