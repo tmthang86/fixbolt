@@ -8,10 +8,9 @@
 # was current, and `clippy::byte_char_slices` — a lint absent from 1.94.1 and
 # 1.95.0 — turned `main` red with no commit behind it. STATUS.md open item 19.
 #
-# So the toolchain is pinned and upgraded deliberately. The `clippy-latest-stable`
-# job in .github/workflows/ci.yml runs the newest stable WITHOUT blocking merges,
-# so the next such lint arrives as a warning to read rather than as a red morning
-# spent looking for what you broke.
+# So the toolchain is pinned and upgraded deliberately: a bump is a decision
+# made on purpose, at a time this repository chooses, not a lint arriving
+# uninvited on whatever morning a runner happened to install a newer stable.
 #
 # Pinned to the newest stable that the workspace passes, not to an older one:
 # pinning backwards trades one surprise for a slow drift away from the compiler

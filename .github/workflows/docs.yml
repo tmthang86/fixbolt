@@ -1,0 +1,183 @@
+# ADR-0214 decision 1: a docs-only diff runs only this workflow. `ci.yml`
+# carries the mirror-image `paths` filter (the same list, negated the same
+# way with `!`), so a docs-only push starts no `CI` run at all — this
+# workflow is what such a push runs INSTEAD. It runs unfiltered, on every
+# pull request and every push to `main`, because it IS the documentation
+# gate: ADR-0206 decision 7 names the `book` job as such, and
+# CONTRIBUTING.md refers to it by that id, which is why the id is kept even
+# though the job holds three former `ci.yml` jobs now (ADR-0214 decision 3):
+# `links`, `book` itself, and `stranger-git`, each moved in without changing
+# a step — their own comments travel with them below.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+# Keyed the same way ci.yml's is (see that file's header for the incident
+# that made it a branch key rather than a ref key): the branch, not the ref,
+# so a second push cancels the first push's run of THIS workflow regardless
+# of which event delivered it. Every `pull_request` and `push` to `main`
+# starts a run here — this workflow has no tiers to skip and no full-ci
+# label to react to, so unlike ci.yml's group it needs no `-noop-` suffix.
+concurrency:
+  group: Docs-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ADR-0206 decision 7: the documentation site is an mdBook over docs/, and
+  # this job is its gate on every pull request. `.github/workflows/pages.yml`
+  # builds the same book on push to `main` and deploys it; it repeats the
+  # install and the build (cheap), not the source-side checks below.
+  book:
+    name: The book builds without a warning, and its links, samples and cited headings hold
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # The official release binary, not `cargo install`: pinned by version
+      # AND by the SHA-256 GitHub records for the release asset
+      # (`gh api repos/rust-lang/mdBook/releases/tags/v0.5.4`, field
+      # `digest` of `mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz`), which
+      # was also recomputed from the downloaded bytes on 2026-09-26. mdBook
+      # publishes no checksum file of its own. pages.yml carries the same two
+      # lines; the step "pages.yml pins the same mdBook" holds them equal.
+      MDBOOK_VERSION: "0.5.4"
+      MDBOOK_SHA256: "3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The deepest of what the three merged jobs need (plan
+          # 2026-09-28-ci-tiers.md *Cách làm* 1). `stranger-git`'s `--from git`
+          # mode verifies the built commit's sha against `git rev-parse
+          # v0.1.0^{commit}` IN THIS CHECKOUT — a shallow checkout with no tags
+          # would make that verification impossible rather than merely lenient,
+          # so nothing shallower than full history serves it.
+          # `check-cited-headings.sh` below only ever needed depth 2 (it reads
+          # `HEAD^1`, the tip's immediate parent); `links`'s own informational
+          # step needs no history at all.
+          fetch-depth: 0
+      # ADR-0214 decision 1 / plan step 6 (new): holds the `paths` filter in
+      # ci.yml to what this repository's code actually reads from docs/, and
+      # holds ci.yml's push and pull_request lists equal to each other.
+      - if: ${{ !cancelled() }}
+        run: scripts/check-ci-paths-filter.sh
+      # Also meaningful today: this repository is 17 markdown files and has
+      # already shipped dead links twice, both found by hand.
+      #
+      # Turns GitHub's documented behaviour into this repository's own
+      # measurement. On `pull_request`, `actions/checkout` with no `ref:` checks
+      # out `refs/pull/<n>/merge` — the merge of the head into the base, not the
+      # head itself — which is the reason a run on the merge commit afterwards
+      # adds nothing while the base has not moved. Printed, never asserted: if
+      # GitHub changes this, it should show up here as a surprise to read rather
+      # than as a red build nobody can explain.
+      #
+      # `[measured 2026-09-13]` the first version of this step read `%P` and got
+      # a BLANK line — `actions/checkout` defaults to `fetch-depth: 1`, so the
+      # tip is grafted and has no parents in the local repository. Nothing was
+      # wrong with what was being measured; the field had been emptied by the
+      # fetch depth. `subject` carries the same fact and survives a shallow
+      # clone, and `shallow` is printed beside it so a blank `parents` is never
+      # again read as "not a merge".
+      # docs/reference/a-shallow-clone-emptied-the-field-the-check-read.md
+      - name: What was actually checked out (informational)
+        if: ${{ !cancelled() }}
+        run: |
+          echo "event        = ${{ github.event_name }}"
+          echo "github.sha   = ${{ github.sha }}"
+          echo "pr head sha  = ${{ github.event.pull_request.head.sha }}"
+          echo "pr base sha  = ${{ github.event.pull_request.base.sha }}"
+          echo "shallow      = $(git rev-parse --is-shallow-repository)"
+          git log -1 --format='HEAD    = %H%nsubject = %s%nparents = %P'
+      - if: ${{ !cancelled() }}
+        run: scripts/check-links.py
+      - if: ${{ !cancelled() }}
+        run: scripts/check-adr-numbers.sh
+      # ADR-0206 decision 8 / ADR-0104 decision 7: no banned claim, no
+      # future-licence wording, no marketing comparison against another FIX
+      # engine, held by machine instead of by memory. See the script's own
+      # header for the three rules, the allowlist and what it cannot see.
+      - if: ${{ !cancelled() }}
+        run: scripts/check-doc-claims.sh
+
+      - name: Install mdBook ${{ env.MDBOOK_VERSION }}, the release binary, checked by sha256
+        run: |
+          tgz="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p target/mdbook-pin
+          curl -fsSL --retry 3 -o "target/mdbook-pin/${tgz}" \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/${tgz}"
+          # Checked before a byte of it runs; a mismatch fails this step.
+          echo "${MDBOOK_SHA256}  target/mdbook-pin/${tgz}" | sha256sum --check --strict
+          tar -xzf "target/mdbook-pin/${tgz}" -C target/mdbook-pin
+          echo "${GITHUB_WORKSPACE}/target/mdbook-pin" >> "${GITHUB_PATH}"
+          target/mdbook-pin/mdbook --version
+      - name: pages.yml pins the same mdBook
+        if: ${{ !cancelled() }}
+        run: |
+          for k in MDBOOK_VERSION MDBOOK_SHA256; do
+            if ! grep -Eq "^ +${k}: \"$(printenv "${k}")\"\$" .github/workflows/pages.yml; then
+              echo "::error::.github/workflows/pages.yml does not pin ${k}=$(printenv "${k}") as this job does"
+              exit 1
+            fi
+          done
+      - if: ${{ !cancelled() }}
+        run: python3 scripts/gen-book-summary.py --check
+      # mdBook's own warnings do not fail the build (ADR-0206 decision 7), so
+      # the log is read too. The exit code is captured before the grep runs,
+      # so the grep can neither mask a failed build nor be masked by one.
+      # mdBook logs to stderr, without colour when stderr is not a terminal,
+      # as `<level> <message>` with the level right-aligned (` WARN`, `ERROR`).
+      - name: mdbook build, and no WARN or ERROR line in its log
+        if: ${{ !cancelled() }}
+        env:
+          # The GitHub links the preprocessor writes name the commit under
+          # test: the pull request's head (a commit that stays reachable),
+          # not the throwaway merge commit; on push, the pushed commit.
+          FIXBOLT_BOOK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p target
+          rc=0
+          mdbook build > target/mdbook-build.log 2>&1 || rc=$?
+          cat target/mdbook-build.log
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::mdbook build exited ${rc}"
+            exit "${rc}"
+          fi
+          if grep -En '^[[:space:]]*(WARN|ERROR)([[:space:]]|$)' target/mdbook-build.log; then
+            echo "::error::mdbook build logged the WARN/ERROR line(s) above"
+            exit 1
+          fi
+      - if: ${{ !cancelled() }}
+        run: python3 scripts/check-links.py --rendered target/book
+      - if: ${{ !cancelled() }}
+        run: python3 scripts/check-mdbook-repo-links.py
+      - if: ${{ !cancelled() }}
+        run: scripts/check-doc-samples.sh
+      - name: No cited `## N.` heading disappears relative to the base
+        if: ${{ !cancelled() }}
+        run: |
+          echo "event       = ${{ github.event_name }}"
+          echo "pr base sha = ${{ github.event.pull_request.base.sha }}"
+          echo "shallow     = $(git rev-parse --is-shallow-repository)"
+          git log -1 --format='HEAD^1      = %H%nsubject     = %s' HEAD^1
+          scripts/check-cited-headings.sh HEAD^1
+
+      # ADR-0161 decision 4, plan row 8b. The channel a real stranger actually
+      # uses — `cargo add --git <url> --tag v0.1.0` — over the network, from the
+      # first pull request opened after the tag exists (the tag is a
+      # precondition of both this step and the `semver` job in ci.yml, not
+      # something either one waits to be created). ADR-0214 decision 3 moves
+      # this from its own `ci.yml` job into every pull request (including a
+      # documentation-only one) at no extra billed cost, catching a
+      # docs/GETTING-STARTED.md edit that starts using API the tagged release
+      # does not have yet, before it merges rather than after.
+      - if: ${{ !cancelled() }}
+        run: scripts/stranger-check.sh --from git --tag v0.1.0
