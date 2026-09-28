@@ -1,10 +1,9 @@
 # Contributing
 
-Changes to fixbolt come from the project team. **Contributions from outside the team are not
-accepted yet**: that waits for a licensing ADR deciding between a contributor licence agreement
-and a Developer Certificate of Origin, due before the first outside contribution is taken
-([ADR-0206](decisions/ADR-0206-the-documentation-is-an-mdbook-over-docs-in-place-split-by-diataxis-and-no-cited-file-moves.md),
-decision 4).
+Changes to fixbolt come from the internal project team only. **A pull request from outside the
+team is closed without review**; there is no contributor licence agreement and no Developer
+Certificate of Origin
+([ADR-0213](decisions/ADR-0213-contributions-come-from-the-project-team-only-with-no-cla-and-the-repository-goes-private-when-development-is-done.md)).
 
 Three files at the root of the repository are the starting point:
 

@@ -7,12 +7,12 @@ in one place; this file points at them by section and does not restate them.
 
 ## Who can contribute
 
-Changes come from the project team, which today is the owner alone. **Contributions from
-outside the team are not accepted yet**: a pull request from outside the team is not merged
-until a licensing ADR decides between a contributor licence agreement (CLA) and a Developer
-Certificate of Origin (DCO). That ADR is due before the first outside contribution is accepted
-([ADR-0206](docs/decisions/ADR-0206-the-documentation-is-an-mdbook-over-docs-in-place-split-by-diataxis-and-no-cited-file-moves.md)
-decision 4).
+Changes come from the internal project team only, which today is the owner alone. **A pull
+request from outside the team is closed without review**, however small; a bug found outside the
+team is reported as an issue, and the team writes the fix. There is no contributor licence
+agreement (CLA) and no Developer Certificate of Origin (DCO) sign-off: a team member's
+intellectual property is covered by their employment or contract terms, outside this repository
+([ADR-0213](docs/decisions/ADR-0213-contributions-come-from-the-project-team-only-with-no-cla-and-the-repository-goes-private-when-development-is-done.md)).
 
 A security problem is never reported in an issue or a pull request: see [SECURITY.md](SECURITY.md).
 
